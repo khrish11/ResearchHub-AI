@@ -82,6 +82,27 @@ const Workspace = () => {
     }
   };
 
+  const handleExport = async (format: 'bibtex' | 'csv') => {
+    if (!workspace) return;
+    setError(null);
+    try {
+      const res = await api.get(`/workspaces/${workspace.id}/export?format=${format}`, { responseType: 'blob' });
+      const blob = new Blob([res.data], { type: format === 'csv' ? 'text/csv' : 'application/x-bibtex' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ext = format === 'csv' ? 'csv' : 'bib';
+      a.download = `${workspace.name.replace(/\s+/g, '_')}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to export workspace.');
+    }
+  }; 
+
   return (
     <Layout userEmail="user@example.com" userInitials="U">
       <div>
@@ -96,6 +117,10 @@ const Workspace = () => {
               <div>
                 <h1 className="text-2xl font-bold text-slate-900">{workspace.name}</h1>
                 <p className="text-sm text-slate-600">{workspace.papers.length} papers selected</p>
+              </div>
+              <div className="ml-auto flex gap-2">
+                <button onClick={() => handleExport('bibtex')} className="text-xs px-3 py-2 rounded-xl border bg-slate-50 text-slate-700 hover:bg-slate-100">Export .bib</button>
+                <button onClick={() => handleExport('csv')} className="text-xs px-3 py-2 rounded-xl border bg-slate-50 text-slate-700 hover:bg-slate-100">Export .csv</button>
               </div>
             </div>
 

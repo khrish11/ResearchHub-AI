@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
@@ -136,3 +136,74 @@ def get_or_create_default_workspace(
     db.refresh(workspace)
     return workspace
 
+
+@router.delete("/{workspace_id}")
+def delete_workspace(
+    workspace_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workspace = (
+        db.query(Workspace)
+        .filter(Workspace.id == workspace_id, Workspace.user_id == current_user.id)
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Cascade delete papers and chats
+    db.query(Paper).filter(Paper.workspace_id == workspace_id).delete()
+    db.query(Chat).filter(Chat.workspace_id == workspace_id).delete()
+    db.delete(workspace)
+    db.commit()
+    return {"message": "Workspace deleted successfully"}
+
+
+@router.get("/{workspace_id}/export")
+def export_workspace(
+    workspace_id: int,
+    format: str = "bibtex",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export papers in a workspace as BibTeX or CSV."""
+    workspace = (
+        db.query(Workspace)
+        .filter(Workspace.id == workspace_id, Workspace.user_id == current_user.id)
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    papers = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+
+    if format not in ("bibtex", "csv"):
+        raise HTTPException(status_code=400, detail="Unsupported export format. Use 'bibtex' or 'csv'.")
+
+    # CSV export
+    if format == "csv":
+        import csv, io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["title", "authors", "abstract", "url", "published"])
+        for p in papers:
+            writer.writerow([p.title or "", p.authors or "", p.abstract or "", p.url or "", ""])
+        content = buf.getvalue()
+        return Response(content=content, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.csv"})
+
+    # BibTeX export
+    def _escape(s: str) -> str:
+        return (s or "").replace("\n", " ").replace("{", "").replace("}", "").strip()
+
+    entries = []
+    for p in papers:
+        key = f"paper{p.id}"
+        authors = _escape(p.authors)
+        title = _escape(p.title)
+        year = ""
+        url = _escape(p.url)
+        abstract = _escape(p.abstract)
+        entry = f"@misc{{{key},\n  title = {{{title}}},\n  author = {{{authors}}},\n  year = {{{year}}},\n  url = {{{url}}},\n  abstract = {{{abstract}}}\n}}\n"
+        entries.append(entry)
+    content = "\n".join(entries)
+    return Response(content=content, media_type="application/x-bibtex", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.bib"})

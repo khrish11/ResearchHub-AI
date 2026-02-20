@@ -52,3 +52,26 @@ def test_smoke_endpoints_work():
     r = client.post('/chat/', json={'message': 'Summarize', 'workspace_id': ws['id']}, headers=headers)
     assert r.status_code == 200
     assert 'response' in r.json()
+
+
+def test_export_workspace():
+    token = register_and_get_token('export@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    # create workspace + import a paper
+    r = client.post('/workspaces/', json={'name': 'ExportWS'}, headers=headers)
+    assert r.status_code == 200
+    ws = r.json()
+
+    r = client.post('/papers/import', json={'title': 'ExportPaper', 'authors': ['Auth'], 'abstract': 'Abs', 'workspace_id': ws['id']}, headers=headers)
+    assert r.status_code == 200
+
+    # BibTeX export
+    r = client.get(f"/workspaces/{ws['id']}/export?format=bibtex", headers=headers)
+    assert r.status_code == 200
+    assert '@misc' in r.text or 'ExportPaper' in r.text
+
+    # CSV export
+    r = client.get(f"/workspaces/{ws['id']}/export?format=csv", headers=headers)
+    assert r.status_code == 200
+    assert 'title,authors' in r.text or 'ExportPaper' in r.text
