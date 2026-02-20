@@ -10,6 +10,8 @@ interface Paper {
   authors: string;
   abstract: string;
   url?: string;
+  doi?: string;
+  bibcode?: string;
 }
 
 interface ChatItem {
@@ -171,7 +173,15 @@ const Workspace = () => {
                   workspace.papers.map((paper) => (
                     <div key={paper.id} className="bg-white rounded-lg border border-slate-200 p-6">
                       <h3 className="text-lg font-semibold text-slate-900 mb-2">{paper.title}</h3>
-                      <p className="text-sm text-slate-600 mb-3">{paper.authors}</p>
+                      <p className="text-sm text-slate-600 mb-2">{paper.authors}</p>
+                      <div className="flex items-center gap-2 mb-3 text-xs">
+                        {paper.doi && (
+                          <a href={`https://doi.org/${paper.doi}`} target="_blank" rel="noreferrer" className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium">DOI: {paper.doi}</a>
+                        )}
+                        {paper.bibcode && (
+                          <a href={`https://ui.adsabs.harvard.edu/abs/${paper.bibcode}`} target="_blank" rel="noreferrer" className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium">Bibcode: {paper.bibcode}</a>
+                        )}
+                      </div>
                       <p className="text-sm text-slate-700 mb-4 line-clamp-3">{paper.abstract}</p>
                       {paper.url && (
                         <a

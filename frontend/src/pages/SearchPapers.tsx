@@ -17,6 +17,8 @@ interface Paper {
     source?: string;
     doi?: string;
     bibcode?: string;
+    publication_title?: string;
+    publication_name?: string;
 } 
 
 interface Workspace {
@@ -151,6 +153,8 @@ const SearchPapers = () => {
                 authors: paper.authors,
                 abstract: paper.abstract,
                 url: paper.url,
+                doi: paper.doi,
+                bibcode: paper.bibcode,
                 workspace_id: activeWorkspaceId,
             });
             setImportedSet((prev) => new Set(prev).add(paper.title));
@@ -320,23 +324,30 @@ const SearchPapers = () => {
                                         </span>
                                     ))}
 
+                                    {/* Publication / Journal / Source metadata */}
+                                    {(paper.publication_title || paper.publication_name) && (
+                                        <span className="flex items-center gap-1 bg-slate-50 text-slate-500 px-2 py-1 rounded-lg text-xs font-medium ml-auto">
+                                            {paper.publication_title || paper.publication_name}
+                                        </span>
+                                    )}
+
                                     {/* Source-specific metadata */}
                                     {paper.doi && (
                                         <a href={`https://doi.org/${paper.doi}`} target="_blank" rel="noreferrer"
-                                            className="text-xs font-medium ml-auto px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:underline">
+                                            className="text-xs font-medium ml-2 px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:underline">
                                             DOI: {paper.doi}
                                         </a>
                                     )}
                                     {source === 'nasa' && paper.bibcode && (
                                         <a href={`https://ui.adsabs.harvard.edu/abs/${paper.bibcode}`} target="_blank" rel="noreferrer"
-                                            className="text-xs font-medium ml-auto px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:underline">
+                                            className="text-xs font-medium ml-2 px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:underline">
                                             Bibcode: {paper.bibcode}
                                         </a>
                                     )}
 
                                     {paper.url && (
                                         <a href={paper.url} target="_blank" rel="noreferrer"
-                                            className="flex items-center gap-1 font-medium ml-auto hover:underline"
+                                            className="flex items-center gap-1 font-medium ml-2 hover:underline"
                                             style={{ color: activeSrc.color }}>
                                             View Paper <ExternalLink className="h-3.5 w-3.5" />
                                         </a>

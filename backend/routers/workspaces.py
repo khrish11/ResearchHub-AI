@@ -29,6 +29,8 @@ class PaperOut(BaseModel):
     authors: str
     abstract: str
     url: Optional[str] = None
+    doi: Optional[str] = None
+    bibcode: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -185,9 +187,9 @@ def export_workspace(
         import csv, io
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["title", "authors", "abstract", "url", "published"])
+        writer.writerow(["title", "authors", "abstract", "url", "doi", "bibcode"])
         for p in papers:
-            writer.writerow([p.title or "", p.authors or "", p.abstract or "", p.url or "", ""])
+            writer.writerow([p.title or "", p.authors or "", p.abstract or "", p.url or "", getattr(p, 'doi', '') or "", getattr(p, 'bibcode', '') or ""])
         content = buf.getvalue()
         return Response(content=content, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.csv"})
 
@@ -202,8 +204,15 @@ def export_workspace(
         title = _escape(p.title)
         year = ""
         url = _escape(p.url)
+        doi = _escape(getattr(p, 'doi', '') or "")
         abstract = _escape(p.abstract)
-        entry = f"@misc{{{key},\n  title = {{{title}}},\n  author = {{{authors}}},\n  year = {{{year}}},\n  url = {{{url}}},\n  abstract = {{{abstract}}}\n}}\n"
+        bib_fields = []
+        if doi:
+            bib_fields.append(f"  doi = {{{doi}}},")
+        if url:
+            bib_fields.append(f"  url = {{{url}}},")
+        bib_fields_str = "\n".join(bib_fields)
+        entry = f"@misc{{{key},\n  title = {{{title}}},\n  author = {{{authors}}},{('\n' + bib_fields_str) if bib_fields_str else ''}\n  year = {{{year}}},\n  abstract = {{{abstract}}}\n}}\n"
         entries.append(entry)
     content = "\n".join(entries)
     return Response(content=content, media_type="application/x-bibtex", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.bib"})

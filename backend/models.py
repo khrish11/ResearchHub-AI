@@ -33,6 +33,8 @@ class Paper(Base):
     authors = Column(String)
     abstract = Column(Text)
     url = Column(String, nullable=True)
+    doi = Column(String, nullable=True)
+    bibcode = Column(String, nullable=True)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     
     workspace = relationship("Workspace", back_populates="papers")

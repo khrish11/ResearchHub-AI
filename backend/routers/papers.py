@@ -32,6 +32,8 @@ class PaperImport(BaseModel):
     authors: List[str]
     abstract: str
     url: Optional[str] = None
+    doi: Optional[str] = None
+    bibcode: Optional[str] = None
     workspace_id: int
 
 
@@ -285,7 +287,11 @@ async def search_springer(
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.get(SPRINGER_META_API, params=params)
             response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError:
+            # Return upstream body for debugging (trimmed) when it's not valid JSON
+            raise HTTPException(status_code=502, detail=f"Springer returned non-JSON response: {response.text[:300]}")
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Springer API timed out. Please try again.")
     except httpx.HTTPStatusError as e:
@@ -319,6 +325,7 @@ async def search_springer(
             "published": published,
             "categories": categories[:3],
             "doi": doi or "",
+            "publication_name": pub_name or "",
             "source": "springer",
         })
 
@@ -419,6 +426,8 @@ async def import_paper(
         authors=", ".join(paper_data.authors),
         abstract=paper_data.abstract,
         url=paper_data.url,
+        doi=paper_data.doi,
+        bibcode=paper_data.bibcode,
         workspace_id=paper_data.workspace_id,
     )
     db.add(new_paper)
