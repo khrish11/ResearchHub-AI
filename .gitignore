@@ -1,0 +1,24 @@
+# Node
+node_modules/
+/dist
+
+# Environment files
+.env
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+venv/
+.venv/
+
+# Tests / temp files
+backend/tests/test_temp*.db
+backend/test_temp.db
+
+# Build
+dist/
