@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import auth, papers, chat, workspaces, ai
+from routers import auth, papers, chat, workspaces, ai, upload
 from database import engine, Base
 
 # Create tables
@@ -22,6 +22,7 @@ app.include_router(workspaces.router)
 app.include_router(papers.router)
 app.include_router(chat.router)
 app.include_router(ai.router)
+app.include_router(upload.router)
 
 
 @app.get("/")
