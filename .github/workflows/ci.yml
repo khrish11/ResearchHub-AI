@@ -32,6 +32,10 @@ jobs:
         run: |
           python -m pytest -q
 
+      - name: Compile backend modules
+        run: |
+          python -m compileall backend
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

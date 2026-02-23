@@ -1,18 +1,23 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import AccountSettings from './pages/AccountSettings';
+import Settings from './pages/Settings';
 import Home from './pages/Home';
 import Dashboard from './pages/Dashboard';
 import SearchPapers from './pages/SearchPapers';
 import Workspace from './pages/Workspace';
+import Mindmap from './pages/Mindmap';
 import AITools from './pages/AITools';
 import UploadPDF from './pages/UploadPDF';
 import DocSpace from './pages/DocSpace';
+import { getAppBasePath } from './utils/routing';
 
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
+  const routerBasename = getAppBasePath();
 
   const setAuthToken = (newToken: string | null) => {
     if (newToken) {
@@ -23,12 +28,27 @@ function App() {
     setToken(newToken);
   };
 
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (token) {
+      setAuthToken(token);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
   return (
-    <Router>
+    <Router basename={routerBasename || undefined}>
       <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
         <Routes>
-          <Route path="/login" element={<Login setToken={setAuthToken} />} />
-          <Route path="/register" element={<Register setToken={setAuthToken} />} />
+          <Route
+            path="/login"
+            element={token ? <Navigate to="/home" replace /> : <Login setToken={setAuthToken} />}
+          />
+          <Route
+            path="/register"
+            element={token ? <Navigate to="/home" replace /> : <Register setToken={setAuthToken} />}
+          />
           <Route
             path="/home"
             element={token ? <Home /> : <Navigate to="/login" />}
@@ -46,6 +66,10 @@ function App() {
             element={token ? <Workspace /> : <Navigate to="/login" />}
           />
           <Route
+            path="/mindmap"
+            element={token ? <Mindmap /> : <Navigate to="/login" />}
+          />
+          <Route
             path="/ai-tools"
             element={token ? <AITools /> : <Navigate to="/login" />}
           />
@@ -56,6 +80,14 @@ function App() {
           <Route
             path="/docs"
             element={token ? <DocSpace /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/account"
+            element={token ? <AccountSettings /> : <Navigate to="/login" />}
+          />
+          <Route
+            path="/settings"
+            element={token ? <Settings /> : <Navigate to="/login" />}
           />
           <Route path="/" element={token ? <Navigate to="/home" /> : <Landing />} />
         </Routes>

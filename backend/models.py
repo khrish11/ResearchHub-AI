@@ -1,7 +1,7 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
-import datetime
+from datetime import datetime, timezone
 
 class User(Base):
     __tablename__ = "users"
@@ -9,6 +9,10 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+    google_id = Column(String, unique=True, nullable=True)
+    google_email = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    profile_pic = Column(String, nullable=True)
     
     workspaces = relationship("Workspace", back_populates="owner")
 
@@ -19,7 +23,7 @@ class Workspace(Base):
     name = Column(String, index=True)
     description = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     owner = relationship("User", back_populates="workspaces")
     papers = relationship("Paper", back_populates="workspace")
@@ -46,6 +50,6 @@ class Chat(Base):
     message = Column(Text)
     response = Column(Text)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     workspace = relationship("Workspace", back_populates="chats")

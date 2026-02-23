@@ -1,23 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional
-import fitz  # PyMuPDF
+import pdfplumber
+import io
 
 from database import get_db
 from models import User, Paper, Workspace
 from routers.auth import get_current_user
-from utils.groq_client import client, MODEL_CONFIG
+from utils.groq_client import client, model_config
 
 router = APIRouter(prefix="/papers", tags=["upload"])
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract plain text from PDF bytes using PyMuPDF."""
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    """Extract plain text from PDF bytes using pdfplumber."""
     text_parts = []
-    for page in doc:
-        text_parts.append(page.get_text())
-    doc.close()
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            text_parts.append(page_text)
     return "\n".join(text_parts)
 
 
@@ -26,33 +27,41 @@ def summarize_with_ai(text: str) -> str:
     if not client:
         return "AI summary unavailable: GROQ_API_KEY not configured."
 
-    # Trim text to avoid exceeding context limits
-    trimmed = text[:12000]
+    # Trim text to avoid exceeding context limits while preserving detail.
+    trimmed = (text or "").strip()[:18000]
+    if not trimmed:
+        return "AI summary unavailable: extracted text is empty."
 
     messages = [
         {
             "role": "system",
             "content": (
-                "You are an expert research assistant. "
-                "Given the text of an academic paper, produce a concise summary with these sections:\n"
-                "**Title** (if identifiable)\n"
-                "**Key Contributions** (3-5 bullet points)\n"
-                "**Methodology** (2-3 sentences)\n"
-                "**Results** (2-3 sentences)\n"
-                "**Limitations & Future Work** (1-2 sentences)\n"
-                "Be precise and technical."
+                "You are an expert scientific paper analyst.\n"
+                "Produce high-signal technical synthesis grounded in the provided paper text.\n"
+                "Output in markdown with EXACT sections:\n"
+                "## Paper Snapshot\n"
+                "## Key Contributions\n"
+                "## Methodology and Experimental Setup\n"
+                "## Main Results and Evidence\n"
+                "## Limitations and Threats to Validity\n"
+                "## Reproducibility Checklist\n"
+                "## Practical Next Steps\n"
+                "Use concise bullets and avoid vague statements."
             ),
         },
         {
             "role": "user",
-            "content": f"Summarize the following research paper:\n\n{trimmed}",
+            "content": (
+                "Analyze this paper text and produce the structured summary.\n\n"
+                f"{trimmed}"
+            ),
         },
     ]
 
     try:
         response = client.chat.completions.create(
             messages=messages,
-            **MODEL_CONFIG,
+            **model_config(longform=False, max_tokens=2200, temperature=0.12),
         )
         return response.choices[0].message.content
     except Exception as e:

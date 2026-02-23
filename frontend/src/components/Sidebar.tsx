@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut } from 'lucide-react';
+import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow } from 'lucide-react';
+import { toAppPath } from '../utils/routing';
 
 interface SidebarProps {
   userEmail?: string;
@@ -17,6 +18,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
     { path: '/ai-tools', label: 'AI Tools', icon: Brain },
     { path: '/upload', label: 'Upload PDF', icon: Upload },
     { path: '/docs', label: 'DocSpace', icon: FileText },
+    { path: '/mindmap', label: 'Mindmap', icon: Workflow },
+    { path: '/account', label: 'Account', icon: UserCog },
+    { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
   const isActive = (path: string) => {
@@ -28,50 +32,61 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
 
   const handleLogout = () => {
     localStorage.removeItem('token');
-    window.location.href = '/login';
+    window.location.href = toAppPath('/login');
   };
 
   return (
-    <div className="w-64 bg-white border-r border-slate-200 min-h-screen flex flex-col">
-      <div className="p-6 border-b border-slate-200">
-        <h1 className="text-xl font-bold text-indigo-600">ResearchHub AI</h1>
-      </div>
-      <nav className="flex-1 p-4 space-y-2">
-        {menuItems.map((item) => {
-          const Icon = item.icon;
-          const active = isActive(item.path);
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                active
-                  ? 'bg-indigo-50 text-indigo-600 font-medium'
-                  : 'text-slate-700 hover:bg-slate-50'
-              }`}
-            >
-              <Icon className="h-5 w-5" />
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
-      </nav>
-      <div className="p-4 border-t border-slate-200">
-        {userEmail && (
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-sm font-semibold">{userInitials}</div>
-            <div className="text-sm text-slate-700 truncate">{userEmail}</div>
+    <aside className="hidden md:flex md:w-[260px] lg:w-[280px] xl:w-[300px] min-h-screen px-4 py-4">
+      <div className="sidebar-shell w-full rounded-3xl p-4 flex flex-col">
+        <div className="px-2 pt-2 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-xl sidebar-logo-chip">
+              <Microscope className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <p className="sidebar-brand">ResearchHub AI</p>
+              <p className="text-[11px] text-indigo-200/70 tracking-wide uppercase">Neural Workspace</p>
+            </div>
           </div>
-        )}
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-700 hover:bg-slate-50 w-full"
-        >
-          <LogOut className="h-5 w-5" />
-          <span>Logout</span>
-        </button>
+        </div>
+        <div className="h-px mx-1 mb-3 bg-indigo-200/10" />
+
+        <nav className="flex-1 px-1 space-y-1.5" aria-label="Primary">
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.path);
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                className={`sidebar-nav-item ${active ? 'sidebar-nav-active' : 'sidebar-nav-idle'}`}
+              >
+                <Icon className="h-4.5 w-4.5 flex-shrink-0" style={{ width: 18, height: 18 }} />
+                <span className="tracking-wide">{item.label}</span>
+                {active && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70" />}
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="p-3 mt-auto">
+          <div className="h-px mb-4 bg-indigo-200/10" />
+          {userEmail && (
+            <div className="flex items-center gap-3 px-2 mb-3">
+              <div className="sidebar-avatar">{userInitials}</div>
+              <div className="min-w-0">
+                <p className="text-xs font-medium truncate text-indigo-50">{userEmail}</p>
+                <p className="text-xs text-indigo-200/55">Research Operator</p>
+              </div>
+            </div>
+          )}
+          <button type="button" onClick={handleLogout} className="sidebar-logout" aria-label="Log out">
+            <LogOut style={{ width: 17, height: 17 }} />
+            <span className="font-medium">Logout</span>
+          </button>
+        </div>
       </div>
-    </div>
+    </aside>
   );
 };
 

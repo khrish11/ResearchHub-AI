@@ -1,5 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { FileText, NotebookText, Search, ExternalLink, Trash2, Loader2, AlertCircle, BookOpen } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertCircle,
+  BookOpen,
+  ExternalLink,
+  FileText,
+  Loader2,
+  NotebookText,
+  Search,
+  Sparkles,
+} from 'lucide-react';
 import Layout from '../components/Layout';
 import api from '../api';
 
@@ -14,7 +23,6 @@ interface Paper {
 interface Workspace {
   id: number;
   name: string;
-  description?: string;
 }
 
 const DocSpace: React.FC = () => {
@@ -27,168 +35,211 @@ const DocSpace: React.FC = () => {
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Load workspaces
   useEffect(() => {
-    api.get('/workspaces/')
+    api
+      .get('/workspaces/')
       .then((res) => {
-        setWorkspaces(res.data);
-        if (res.data.length > 0) setSelectedWsId(res.data[0].id);
+        const wsList: Workspace[] = res.data;
+        setWorkspaces(wsList);
+        if (wsList.length > 0) {
+          setSelectedWsId(wsList[0].id);
+        }
       })
       .catch(() => setError('Failed to load workspaces.'))
       .finally(() => setLoadingWs(false));
   }, []);
 
-  // Load papers when workspace changes
   useEffect(() => {
-    if (selectedWsId === null) return;
+    if (selectedWsId === null) {
+      return;
+    }
     setLoadingPapers(true);
     setSelectedPaper(null);
-    api.get(`/workspaces/${selectedWsId}`)
+    api
+      .get(`/workspaces/${selectedWsId}`)
       .then((res) => {
-        setPapers(res.data.papers ?? []);
+        const list: Paper[] = res.data.papers ?? [];
+        setPapers(list);
       })
       .catch(() => setError('Failed to load papers for this workspace.'))
       .finally(() => setLoadingPapers(false));
   }, [selectedWsId]);
 
-  const filteredPapers = papers.filter((p) =>
-    p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.authors.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredPapers = useMemo(
+    () =>
+      papers.filter(
+        (paper) =>
+          paper.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          paper.authors.toLowerCase().includes(searchQuery.toLowerCase())
+      ),
+    [papers, searchQuery]
   );
 
-  const totalChars = papers.reduce((sum, p) => sum + (p.abstract?.length ?? 0), 0);
+  const totalChars = useMemo(
+    () => papers.reduce((sum, paper) => sum + (paper.abstract?.length ?? 0), 0),
+    [papers]
+  );
 
   return (
     <Layout>
-      <div>
-        <h1 className="text-3xl font-bold text-slate-900 mb-1">Doc Space</h1>
-        <p className="text-slate-500 mb-6">
-          All papers saved to your workspaces — view, search, and explore your research library.
-        </p>
+      <div className="page-enter">
+        <section className="studio-hero mb-5">
+          <span className="studio-kicker">
+            <Sparkles className="h-3.5 w-3.5" />
+            Knowledge vault
+          </span>
+          <h2>DocSpace</h2>
+          <p>
+            Central view for workspace papers, searchable metadata, and quick abstract access to speed up
+            literature review cycles.
+          </p>
+          <div className="studio-chip-row">
+            <span className="studio-chip">{workspaces.length} workspaces</span>
+            <span className="studio-chip">{papers.length} papers in scope</span>
+            <span className="studio-chip">{Math.max(0, Math.round(totalChars / 1000))}k chars indexed</span>
+          </div>
+          <div className="studio-orb" aria-hidden="true" />
+        </section>
 
-        {/* Stat cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-          <div className="bg-white rounded-xl border border-slate-200 p-5 flex items-center gap-4">
-            <div className="p-3 bg-indigo-100 rounded-lg"><FileText className="h-6 w-6 text-indigo-600" /></div>
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{papers.length}</p>
-              <p className="text-sm text-slate-500">Source Papers</p>
+        <section className="studio-stat-grid mb-4">
+          <article className="studio-stat-card">
+            <div className="studio-icon-chip bg-indigo-100 text-indigo-600">
+              <FileText className="h-4.5 w-4.5" />
             </div>
-          </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-5 flex items-center gap-4">
-            <div className="p-3 bg-purple-100 rounded-lg"><NotebookText className="h-6 w-6 text-purple-600" /></div>
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{workspaces.length}</p>
-              <p className="text-sm text-slate-500">Workspaces</p>
+            <p className="studio-stat-label">Source papers</p>
+            <p className="studio-stat-value">{papers.length}</p>
+          </article>
+          <article className="studio-stat-card">
+            <div className="studio-icon-chip bg-purple-100 text-purple-600">
+              <NotebookText className="h-4.5 w-4.5" />
             </div>
-          </div>
-          <div className="bg-white rounded-xl border border-slate-200 p-5 flex items-center gap-4">
-            <div className="p-3 bg-green-100 rounded-lg"><BookOpen className="h-6 w-6 text-green-600" /></div>
-            <div>
-              <p className="text-2xl font-bold text-slate-900">{(totalChars / 1000).toFixed(0)}k</p>
-              <p className="text-sm text-slate-500">Characters Indexed</p>
+            <p className="studio-stat-label">Workspaces</p>
+            <p className="studio-stat-value">{workspaces.length}</p>
+          </article>
+          <article className="studio-stat-card">
+            <div className="studio-icon-chip bg-emerald-100 text-emerald-600">
+              <BookOpen className="h-4.5 w-4.5" />
             </div>
-          </div>
-        </div>
+            <p className="studio-stat-label">Indexed chars</p>
+            <p className="studio-stat-value">{Math.max(0, Math.round(totalChars / 1000))}k</p>
+          </article>
+          <article className="studio-stat-card">
+            <div className="studio-icon-chip bg-cyan-100 text-cyan-700">
+              <Search className="h-4.5 w-4.5" />
+            </div>
+            <p className="studio-stat-label">Matches</p>
+            <p className="studio-stat-value">{filteredPapers.length}</p>
+          </article>
+        </section>
 
-        {/* Error */}
         {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
-            <AlertCircle className="h-4 w-4 flex-shrink-0" /> {error}
+          <div className="studio-panel px-4 py-3 mb-4 text-sm text-red-700 border-red-200 bg-red-50 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            {error}
           </div>
         )}
 
-        <div className="flex gap-6">
-          {/* Left: workspace selector + paper list */}
-          <div className="w-72 flex-shrink-0">
-            <div className="bg-white rounded-xl border border-slate-200 p-4 mb-3">
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Workspace</label>
-              {loadingWs ? (
-                <div className="flex items-center gap-2 text-slate-400 text-sm"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</div>
-              ) : (
-                <select
-                  value={selectedWsId ?? ''}
-                  onChange={(e) => setSelectedWsId(Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-600"
-                >
-                  {workspaces.map((w) => (
-                    <option key={w.id} value={w.id}>{w.name}</option>
-                  ))}
-                </select>
-              )}
-            </div>
+        <section className="docspace-shell">
+          <aside className="studio-surface p-3">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+              Workspace
+            </label>
+            {loadingWs ? (
+              <div className="flex items-center gap-2 text-sm text-slate-500 py-3">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading...
+              </div>
+            ) : (
+              <select
+                value={selectedWsId ?? ''}
+                onChange={(e) => setSelectedWsId(Number(e.target.value))}
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {workspaces.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </option>
+                ))}
+              </select>
+            )}
 
-            {/* Search */}
-            <div className="relative mb-3">
+            <div className="relative mt-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
               <input
                 type="text"
-                placeholder="Filter papers…"
+                placeholder="Filter papers..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                className="w-full rounded-xl border border-slate-300 py-2 pl-9 pr-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
 
-            {/* Paper list */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden max-h-[60vh] overflow-y-auto">
+            <div className="mt-3 max-h-[60vh] overflow-y-auto space-y-2 pr-1">
               {loadingPapers ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-slate-400 text-sm">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading papers…
+                <div className="text-sm text-slate-500 flex items-center gap-2 py-4">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading papers...
                 </div>
               ) : filteredPapers.length === 0 ? (
-                <p className="text-center py-8 text-slate-400 text-sm">
-                  {papers.length === 0 ? 'No papers in this workspace yet.' : 'No matches found.'}
+                <p className="text-sm text-slate-500 py-4 text-center">
+                  {papers.length === 0 ? 'No papers in this workspace yet.' : 'No matching papers.'}
                 </p>
               ) : (
                 filteredPapers.map((paper) => (
                   <button
                     key={paper.id}
                     onClick={() => setSelectedPaper(paper)}
-                    className={`w-full text-left px-4 py-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 transition-colors ${selectedPaper?.id === paper.id ? 'bg-indigo-50' : ''}`}
+                    className={`paper-list-item ${selectedPaper?.id === paper.id ? 'active' : ''}`}
                   >
-                    <p className={`text-sm font-medium line-clamp-2 ${selectedPaper?.id === paper.id ? 'text-indigo-700' : 'text-slate-800'}`}>{paper.title}</p>
-                    <p className="text-xs text-slate-400 mt-0.5 truncate">{paper.authors}</p>
+                    <p className="text-sm font-semibold text-slate-800 line-clamp-2">{paper.title}</p>
+                    <p className="text-xs text-slate-500 truncate mt-0.5">{paper.authors}</p>
                   </button>
                 ))
               )}
             </div>
-          </div>
+          </aside>
 
-          {/* Right: paper detail */}
-          <div className="flex-1">
+          <div>
             {selectedPaper ? (
-              <div className="bg-white rounded-xl border border-slate-200 p-6">
-                <div className="flex items-start justify-between gap-4 mb-4">
-                  <h2 className="text-xl font-bold text-slate-900 leading-tight">{selectedPaper.title}</h2>
+              <section className="studio-surface p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                  <h3 className="text-xl font-semibold text-slate-900 leading-tight">
+                    {selectedPaper.title}
+                  </h3>
                   {selectedPaper.url && (
                     <a
                       href={selectedPaper.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="flex-shrink-0 flex items-center gap-1 text-indigo-600 hover:text-indigo-700 text-sm font-medium"
+                      className="hero-btn-secondary"
                     >
-                      Open <ExternalLink className="h-4 w-4" />
+                      Open paper
+                      <ExternalLink className="h-4 w-4" />
                     </a>
                   )}
                 </div>
-                <p className="text-sm text-slate-500 mb-5 flex items-center gap-1">
-                  <NotebookText className="h-4 w-4" /> {selectedPaper.authors}
+                <p className="text-sm text-slate-500 mb-3 inline-flex items-center gap-1.5">
+                  <NotebookText className="h-4 w-4" />
+                  {selectedPaper.authors}
                 </p>
-                <div className="bg-slate-50 rounded-lg p-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Abstract</h3>
+                <div className="studio-panel-quiet p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                    Abstract
+                  </p>
                   <p className="text-sm text-slate-700 leading-relaxed">{selectedPaper.abstract}</p>
                 </div>
-              </div>
+              </section>
             ) : (
-              <div className="bg-white rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center h-80 text-slate-400">
-                <FileText className="h-12 w-12 mb-3" />
-                <p className="text-base font-medium">Select a paper to read its details</p>
-                <p className="text-sm mt-1">Import papers via Search or Upload PDF</p>
-              </div>
+              <section className="studio-panel-quiet p-10 text-center">
+                <FileText className="h-10 w-10 text-slate-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-700">Select a paper to preview details</p>
+                <p className="text-sm text-slate-500 mt-1">
+                  Import papers from Search or Upload PDF to expand this library.
+                </p>
+              </section>
             )}
           </div>
-        </div>
+        </section>
       </div>
     </Layout>
   );

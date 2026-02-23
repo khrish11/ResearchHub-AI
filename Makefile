@@ -18,3 +18,9 @@ build-frontend:
 
 lint:
 	cd frontend && $(NPM) run lint || true
+
+clean:  # remove generated files (safe)
+	@powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path .\\scripts\\cleanup-workspace.ps1) { .\\scripts\\cleanup-workspace.ps1 } else { Write-Output 'Run scripts/cleanup-workspace.ps1 to clean workspace' }" || true
+	@rm -rf frontend/dist || true
+	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+	@find backend/tests -name 'test_temp*.db' -delete 2>/dev/null || true
