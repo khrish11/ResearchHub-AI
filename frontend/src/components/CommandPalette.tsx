@@ -13,6 +13,7 @@ import {
   CornerDownLeft,
   Clock3,
   Bell,
+  MessageSquareCode,
 } from 'lucide-react';
 
 const SAVED_QUERIES_STORAGE_KEY = 'researchhub.saved_queries.v1';
@@ -133,6 +134,15 @@ const CommandPalette: React.FC = () => {
         icon: <Brain className="h-4 w-4" />,
         keywords: ['ai', 'tools'],
         onSelect: () => go('/ai-tools'),
+      },
+      {
+        id: 'go-research-chat',
+        title: 'Go to Research Chat',
+        subtitle: '/research-chat',
+        group: 'Navigation',
+        icon: <MessageSquareCode className="h-4 w-4" />,
+        keywords: ['research', 'chat', 'copilot', 'assistant', 'papers'],
+        onSelect: () => go('/research-chat'),
       },
       {
         id: 'go-upload',

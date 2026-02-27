@@ -1,15 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
+  ArrowRight,
   Check,
+  History,
   KeyRound,
+  LayoutGrid,
   ShieldCheck,
   Sparkles,
   Trash2,
   UserRound,
   X,
 } from 'lucide-react';
+import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import Layout from '../components/Layout';
 import api from '../api';
 import { asApiError, apiErrorMessage } from '../utils/apiError';
@@ -23,12 +27,49 @@ interface UserProfile {
   profile_pic?: string;
 }
 
+interface AccountOverview {
+  account: {
+    created_at?: string;
+    updated_at?: string;
+    account_age_days?: number;
+    google_linked?: boolean;
+    is_verified?: boolean;
+  };
+  counts: {
+    workspaces: number;
+    papers: number;
+    chats: number;
+    searches: number;
+    documents: number;
+  };
+  recent_searches: Array<{
+    id: number;
+    query: string;
+    source?: string;
+    result_count?: number;
+    created_at?: string;
+  }>;
+  recent_workspaces: Array<{
+    id: number;
+    name: string;
+    description?: string;
+    created_at?: string;
+  }>;
+  resume?: {
+    page_path?: string;
+    workspace_id?: number | null;
+    last_query?: string | null;
+    updated_at?: string | null;
+  };
+}
+
 const AccountSettings: React.FC = () => {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [overview, setOverview] = useState<AccountOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
@@ -47,10 +88,16 @@ const AccountSettings: React.FC = () => {
 
   const fetchProfile = async () => {
     try {
-      const res = await api.get('/auth/me');
-      setProfile(res.data);
-      setName(res.data.name || '');
-      setEmail(res.data.email);
+      const [profileRes, overviewRes] = await Promise.all([
+        api.get<UserProfile>('/auth/me'),
+        api.get<AccountOverview>('/auth/me/overview').catch(() => null),
+      ]);
+      setProfile(profileRes.data);
+      setName(profileRes.data.name || '');
+      setEmail(profileRes.data.email);
+      if (overviewRes?.data) {
+        setOverview(overviewRes.data);
+      }
     } catch (err: unknown) {
       const apiErr = asApiError(err);
       if (apiErr.response?.status === 401) {
@@ -183,6 +230,74 @@ const AccountSettings: React.FC = () => {
           <div className="studio-orb" aria-hidden="true" />
         </section>
 
+        {overview && (
+          <>
+            <section className="studio-stat-grid mb-4">
+              <article className="studio-stat-card">
+                <div className="studio-icon-chip bg-indigo-100 text-indigo-600">
+                  <LayoutGrid className="h-4.5 w-4.5" />
+                </div>
+                <p className="studio-stat-label">Workspaces</p>
+                <p className="studio-stat-value">{overview.counts.workspaces}</p>
+              </article>
+              <article className="studio-stat-card">
+                <div className="studio-icon-chip bg-cyan-100 text-cyan-600">
+                  <UserRound className="h-4.5 w-4.5" />
+                </div>
+                <p className="studio-stat-label">Papers tracked</p>
+                <p className="studio-stat-value">{overview.counts.papers}</p>
+              </article>
+              <article className="studio-stat-card">
+                <div className="studio-icon-chip bg-emerald-100 text-emerald-600">
+                  <History className="h-4.5 w-4.5" />
+                </div>
+                <p className="studio-stat-label">Searches run</p>
+                <p className="studio-stat-value">{overview.counts.searches}</p>
+              </article>
+              <article className="studio-stat-card">
+                <div className="studio-icon-chip bg-purple-100 text-purple-600">
+                  <KeyRound className="h-4.5 w-4.5" />
+                </div>
+                <p className="studio-stat-label">Account age</p>
+                <p className="studio-stat-value">{overview.account.account_age_days || 0}d</p>
+              </article>
+            </section>
+
+            <section className="studio-surface p-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="studio-panel-quiet p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Recent searches</p>
+                  {overview.recent_searches.length === 0 && (
+                    <p className="text-sm text-slate-500">No search history yet.</p>
+                  )}
+                  <div className="space-y-2">
+                    {overview.recent_searches.slice(0, 5).map((item) => (
+                      <div key={item.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                        <p className="text-sm font-medium text-slate-800 line-clamp-1">{item.query}</p>
+                        <p className="text-xs text-slate-500">
+                          {item.source || 'global'} | {item.result_count || 0} results
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="studio-panel-quiet p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Continue session</p>
+                  <p className="text-sm text-slate-700">
+                    Last page: <span className="font-semibold">{overview.resume?.page_path || '/home'}</span>
+                  </p>
+                  {overview.resume?.last_query && (
+                    <p className="text-xs text-slate-500 mt-1">Last query: {overview.resume.last_query}</p>
+                  )}
+                  <Link to={overview.resume?.page_path || '/home'} className="hero-btn-secondary mt-3 inline-flex">
+                    Resume last flow <ArrowRight className="h-4 w-4" />
+                  </Link>
+                </div>
+              </div>
+            </section>
+          </>
+        )}
+
         <section className="studio-surface p-4 mb-4">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <h3 className="text-base font-semibold text-slate-900 inline-flex items-center gap-2">
@@ -281,6 +396,11 @@ const AccountSettings: React.FC = () => {
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   placeholder="Enter new password"
                 />
+                {newPassword && (
+                  <div className="mt-2">
+                    <PasswordStrengthIndicator password={newPassword} />
+                  </div>
+                )}
               </div>
               <div className="studio-panel-quiet p-3 md:col-span-2">
                 <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">

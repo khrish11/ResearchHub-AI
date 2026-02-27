@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
 import api, { API_URL, getGoogleLoginUrl } from '../api';
 
@@ -91,6 +92,21 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
             </span>
           </div>
 
+          <div className="auth-metric-grid">
+            <div className="auth-metric">
+              <h4>Fast setup</h4>
+              <p>1-minute onboarding</p>
+            </div>
+            <div className="auth-metric">
+              <h4>14+</h4>
+              <p>Search indices</p>
+            </div>
+            <div className="auth-metric">
+              <h4>AI-native</h4>
+              <p>Research workflows</p>
+            </div>
+          </div>
+
           <div className="auth-orbit" aria-hidden="true">
             <div className="auth-core" />
             <div className="auth-ring auth-ring-a" />
@@ -105,6 +121,11 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <p className="auth-eyebrow">Get started</p>
               <h3 className="auth-title">Create your account</h3>
               <p className="auth-copy">Start building your research workflow.</p>
+              <div className="auth-status-row">
+                <span className={`auth-status-chip ${googleConfigured ? 'auth-status-ok' : 'auth-status-off'}`}>
+                  Google OAuth {googleConfigured ? 'configured' : 'not configured'}
+                </span>
+              </div>
             </div>
 
             <form className="space-y-5" onSubmit={handleSubmit}>
@@ -132,6 +153,9 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
+                <div className="mt-2">
+                  <PasswordStrengthIndicator password={password} />
+                </div>
               </div>
 
               <button type="submit" className="auth-primary-btn">

@@ -40,6 +40,26 @@ interface WorkspaceDetail {
   chats: ChatItem[];
 }
 
+interface FaultResult {
+  fault_count: number;
+  risk_score?: number;
+  quality_score?: number;
+  quality_tier?: string;
+  severity_breakdown?: {
+    high: number;
+    medium: number;
+    low: number;
+  };
+  verification_checklist?: string[];
+  faults: Array<{
+    severity: string;
+    fault_type: string;
+    evidence: string;
+    recommendation: string;
+  }>;
+  analysis: string;
+}
+
 type WorkspaceTab = 'papers' | 'chat' | 'review';
 
 const Workspace: React.FC = () => {
@@ -52,6 +72,10 @@ const Workspace: React.FC = () => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('papers');
   const [reportTopic, setReportTopic] = useState('');
   const [reportGenerating, setReportGenerating] = useState<'pdf' | 'docx' | null>(null);
+  const [chatPaperIds, setChatPaperIds] = useState<number[]>([]);
+  const [faultPaperId, setFaultPaperId] = useState<number | null>(null);
+  const [faultLoading, setFaultLoading] = useState(false);
+  const [faultResult, setFaultResult] = useState<FaultResult | null>(null);
 
   useEffect(() => {
     const fetchWorkspace = async () => {
@@ -61,9 +85,28 @@ const Workspace: React.FC = () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await api.get(`/workspaces/${id}`);
-        setWorkspace(res.data);
-        setReportTopic(res.data?.name ? `${res.data.name} literature synthesis` : '');
+        const [workspaceRes, sessionRes] = await Promise.all([
+          api.get(`/workspaces/${id}`),
+          api.get('/workspaces/session-state').catch(() => ({ data: null })),
+        ]);
+        const data = workspaceRes.data;
+        setWorkspace(data);
+        setReportTopic(data?.name ? `${data.name} literature synthesis` : '');
+        const paperIds = (data?.papers || []).map((paper: Paper) => paper.id);
+
+        const extra = sessionRes?.data?.extra && typeof sessionRes.data.extra === 'object' ? sessionRes.data.extra : {};
+        const restoredIds = Array.isArray(extra.selected_chat_paper_ids)
+          ? extra.selected_chat_paper_ids.map((value: unknown) => Number(value)).filter((value: number) => paperIds.includes(value))
+          : [];
+        setChatPaperIds(restoredIds.length > 0 ? restoredIds : paperIds);
+
+        const restoredFault = Number(extra.fault_paper_id || 0);
+        setFaultPaperId(paperIds.includes(restoredFault) ? restoredFault : paperIds[0] ?? null);
+
+        const restoredTab = String(extra.active_tab || '');
+        if (restoredTab === 'papers' || restoredTab === 'chat' || restoredTab === 'review') {
+          setActiveTab(restoredTab);
+        }
       } catch {
         setError('Failed to load workspace.');
       } finally {
@@ -72,6 +115,25 @@ const Workspace: React.FC = () => {
     };
     fetchWorkspace();
   }, [id]);
+
+  useEffect(() => {
+    if (!workspace) return;
+    const timer = window.setTimeout(() => {
+      void api
+        .put('/workspaces/session-state', {
+          page_path: `/workspace/${workspace.id}`,
+          workspace_id: workspace.id,
+          last_query: chatInput.slice(0, 300),
+          extra: {
+            active_tab: activeTab,
+            selected_chat_paper_ids: chatPaperIds,
+            fault_paper_id: faultPaperId,
+          },
+        })
+        .catch(() => undefined);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [activeTab, chatInput, chatPaperIds, faultPaperId, workspace]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,11 +146,16 @@ const Workspace: React.FC = () => {
       const res = await api.post('/chat/', {
         message: chatInput,
         workspace_id: workspace.id,
+        selected_paper_ids: chatPaperIds.length > 0 ? chatPaperIds : undefined,
       });
+      const papersUsed = Number(res.data?.papers_used || 0);
+      const memoryUsed = Number(res.data?.recent_chat_turns_used || 0);
+      const contextMeta =
+        papersUsed > 0 ? `\n\n[Context: ${papersUsed} paper${papersUsed === 1 ? '' : 's'}${memoryUsed > 0 ? `, ${memoryUsed} recent chat turn${memoryUsed === 1 ? '' : 's'}` : ''}]` : '';
       const newItem: ChatItem = {
         id: Date.now(),
         message: chatInput,
-        response: res.data.response,
+        response: `${String(res.data.response || '')}${contextMeta}`.trim(),
       };
       setWorkspace({
         ...workspace,
@@ -99,6 +166,30 @@ const Workspace: React.FC = () => {
       setError('Failed to send message. Check that GROQ_API_KEY is configured.');
     } finally {
       setSending(false);
+    }
+  };
+
+  const toggleChatPaper = (paperId: number) => {
+    setChatPaperIds((prev) =>
+      prev.includes(paperId) ? prev.filter((idValue) => idValue !== paperId) : [...prev, paperId]
+    );
+  };
+
+  const runFaultDetection = async () => {
+    if (!workspace || !faultPaperId) return;
+    setFaultLoading(true);
+    setFaultResult(null);
+    setError(null);
+    try {
+      const response = await api.post<FaultResult>('/research/fault-detection', {
+        workspace_id: workspace.id,
+        paper_id: faultPaperId,
+      });
+      setFaultResult(response.data);
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to analyze paper faults.'));
+    } finally {
+      setFaultLoading(false);
     }
   };
 
@@ -408,6 +499,42 @@ const Workspace: React.FC = () => {
                   </p>
                 </div>
 
+                <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Context papers ({chatPaperIds.length}/{workspace.papers.length})
+                    </p>
+                    <div className="flex items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setChatPaperIds(workspace.papers.map((paper) => paper.id))}
+                        className="text-indigo-600 font-semibold hover:underline"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChatPaperIds([])}
+                        className="text-slate-500 font-semibold hover:underline"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-36 overflow-auto space-y-1.5 pr-1">
+                    {workspace.papers.map((paper) => (
+                      <label key={paper.id} className="inline-flex w-full items-start gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={chatPaperIds.includes(paper.id)}
+                          onChange={() => toggleChatPaper(paper.id)}
+                        />
+                        <span className="line-clamp-1">{paper.title}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="workspace-chat-window mb-4">
                   {workspace.chats.length === 0 ? (
                     <p className="text-sm text-slate-500">
@@ -445,7 +572,7 @@ const Workspace: React.FC = () => {
                   />
                   <button
                     type="submit"
-                    disabled={sending || !chatInput.trim()}
+                    disabled={sending || !chatInput.trim() || chatPaperIds.length === 0}
                     className="hero-btn-primary disabled:opacity-55 disabled:cursor-not-allowed"
                   >
                     {sending ? (
@@ -461,6 +588,11 @@ const Workspace: React.FC = () => {
                     )}
                   </button>
                 </form>
+                {chatPaperIds.length === 0 && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Select at least one paper to run contextual chat.
+                  </p>
+                )}
               </section>
             )}
 
@@ -481,6 +613,102 @@ const Workspace: React.FC = () => {
                     comparative findings, risks, future directions, and a hierarchical mindmap.
                   </p>
                 </div>
+
+                <div className="studio-panel-quiet p-4 mb-4">
+                  <div className="flex flex-wrap items-end gap-2.5">
+                    <div className="min-w-[220px] flex-1">
+                      <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                        Fault Detection Paper
+                      </label>
+                      <select
+                        value={faultPaperId ?? ''}
+                        onChange={(event) => setFaultPaperId(event.target.value ? Number(event.target.value) : null)}
+                        className="w-full rounded-xl border border-slate-300 py-2.5 px-3.5 text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        {workspace.papers.map((paper) => (
+                          <option key={paper.id} value={paper.id}>
+                            {paper.title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void runFaultDetection()}
+                      disabled={!faultPaperId || faultLoading || workspace.papers.length === 0}
+                      className="hero-btn-secondary disabled:opacity-55 disabled:cursor-not-allowed"
+                    >
+                      {faultLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Detecting...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4" />
+                          Detect Research Faults
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {faultResult && (
+                    <div className="mt-3 space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-rose-50 text-rose-700 px-2.5 py-1 text-xs font-semibold">
+                          Faults: {faultResult.fault_count}
+                        </span>
+                        {typeof faultResult.risk_score === 'number' && (
+                          <span className="rounded-full bg-amber-50 text-amber-700 px-2.5 py-1 text-xs font-semibold">
+                            Risk {faultResult.risk_score}/100
+                          </span>
+                        )}
+                        {typeof faultResult.quality_score === 'number' && (
+                          <span className="rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 text-xs font-semibold">
+                            Quality {faultResult.quality_score}/100
+                          </span>
+                        )}
+                        {faultResult.quality_tier && (
+                          <span className="rounded-full bg-indigo-50 text-indigo-700 px-2.5 py-1 text-xs font-semibold">
+                            Tier {faultResult.quality_tier}
+                          </span>
+                        )}
+                      </div>
+                      {faultResult.severity_breakdown && (
+                        <p className="text-[11px] text-slate-500">
+                          High {faultResult.severity_breakdown.high} | Medium {faultResult.severity_breakdown.medium} | Low {faultResult.severity_breakdown.low}
+                        </p>
+                      )}
+                      <div className="space-y-2">
+                        {faultResult.faults.map((fault, index) => (
+                          <div key={`${fault.fault_type}-${index}`} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                            <p className="text-xs font-semibold text-slate-800">
+                              {fault.severity.toUpperCase()} - {fault.fault_type.replace(/_/g, ' ')}
+                            </p>
+                            <p className="text-xs text-slate-600 mt-1">{fault.evidence}</p>
+                            <p className="text-xs text-indigo-700 mt-1">{fault.recommendation}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {Array.isArray(faultResult.verification_checklist) && faultResult.verification_checklist.length > 0 && (
+                        <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+                          <p className="text-xs font-semibold text-slate-800 mb-1">Verification checklist</p>
+                          <ul className="list-disc pl-4 space-y-1 text-xs text-slate-600">
+                            {faultResult.verification_checklist.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {faultResult.analysis && (
+                        <div className="rounded-lg border border-slate-200 bg-white p-2.5 text-xs text-slate-700 whitespace-pre-wrap max-h-40 overflow-auto">
+                          {faultResult.analysis}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="mb-3">
                   <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
                     Focus topic

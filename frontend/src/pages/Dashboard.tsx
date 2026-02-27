@@ -189,13 +189,13 @@ const Dashboard = () => {
         </button>
       </section>
 
-      <section className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-7">
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-7">
         {stats.map((s) => {
           const Icon = s.icon;
           return (
             <div key={s.label} className="stat-tile">
               <div className="stat-icon" style={{ background: s.bg, color: s.color }}>
-                <Icon className="h-5 w-5" />
+                <Icon className="h-4 w-4 md:h-5 md:w-5" />
               </div>
               <p className="stat-label">{s.label}</p>
               <p className="stat-value">{loading ? '-' : s.value}</p>
@@ -204,13 +204,15 @@ const Dashboard = () => {
         })}
       </section>
 
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xl font-bold text-slate-900">Your Workspaces</h3>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <h3 className="text-lg md:text-xl font-bold text-slate-900">Your Workspaces</h3>
         <Link
           to="/search"
-          className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700"
+          className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors"
         >
-          Search Papers <ArrowUpRight className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Search Papers</span>
+          <span className="sm:hidden">Search</span>
+          <ArrowUpRight className="h-3.5 w-3.5" />
         </Link>
       </div>
 

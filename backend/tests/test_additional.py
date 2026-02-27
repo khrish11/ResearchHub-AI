@@ -150,3 +150,77 @@ def test_search_springer_handles_subjects_string(monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data['papers'] and ('Genetics' in data['papers'][0].get('categories', []) or 'Genetics' in data['papers'][0].get('publication_name', ''))
+
+
+def test_workspace_papers_persist_after_relogin():
+    email = f"persist-{uuid.uuid4().hex[:8]}@example.com"
+    password = "pw"
+
+    register_resp = client.post('/auth/register', json={'email': email, 'password': password})
+    assert register_resp.status_code == 200
+    token = register_resp.json()['access_token']
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/default', headers=headers)
+    assert ws_resp.status_code == 200
+    workspace_id = ws_resp.json()['id']
+
+    import_resp = client.post(
+        '/papers/import',
+        json={
+            'title': 'Persistence Test Paper',
+            'authors': ['Author One'],
+            'abstract': 'This paper validates persistence across logout/login cycles.',
+            'workspace_id': workspace_id,
+        },
+        headers=headers,
+    )
+    assert import_resp.status_code == 200
+
+    relogin_resp = client.post('/auth/token', data={'username': email, 'password': password})
+    assert relogin_resp.status_code == 200
+    new_token = relogin_resp.json()['access_token']
+    relogin_headers = {'Authorization': f'Bearer {new_token}'}
+
+    ws_list_resp = client.get('/workspaces/', headers=relogin_headers)
+    assert ws_list_resp.status_code == 200
+    workspace_ids = [item['id'] for item in ws_list_resp.json()]
+    assert workspace_id in workspace_ids
+
+    ws_detail_resp = client.get(f'/workspaces/{workspace_id}', headers=relogin_headers)
+    assert ws_detail_resp.status_code == 200
+    papers = ws_detail_resp.json().get('papers', [])
+    assert any((paper.get('title') or '').strip() == 'Persistence Test Paper' for paper in papers)
+
+
+def test_auth_me_marks_developer_email(monkeypatch):
+    dev_email = f"dev-{uuid.uuid4().hex[:6]}@example.com"
+    monkeypatch.setenv('DEVELOPER_EMAILS', dev_email)
+
+    token = register(dev_email)
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/auth/me', headers=headers)
+    assert r.status_code == 200
+    assert r.json().get('is_developer') is True
+
+
+def test_developer_overview_access_control(monkeypatch):
+    # non-developer should be denied when local bypass is disabled
+    monkeypatch.delenv('DEVELOPER_EMAILS', raising=False)
+    monkeypatch.setenv('ALLOW_DEV_PANEL', '0')
+    monkeypatch.setenv('APP_ENV', 'production')
+    non_dev = f"user-{uuid.uuid4().hex[:6]}@example.com"
+    token_non_dev = register(non_dev)
+    headers_non_dev = {'Authorization': f'Bearer {token_non_dev}'}
+    denied = client.get('/developer/overview', headers=headers_non_dev)
+    assert denied.status_code == 403
+
+    # developer email should be granted
+    dev_email = f"dev-{uuid.uuid4().hex[:6]}@example.com"
+    monkeypatch.setenv('DEVELOPER_EMAILS', dev_email)
+    token_dev = register(dev_email)
+    headers_dev = {'Authorization': f'Bearer {token_dev}'}
+    allowed = client.get('/developer/overview', headers=headers_dev)
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert 'summary' in payload and 'users' in payload['summary']

@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
+  CheckCircle2,
   ExternalLink,
   FileText,
   Loader2,
@@ -25,6 +26,14 @@ interface Workspace {
   name: string;
 }
 
+interface DocspaceDocument {
+  workspace_id: number;
+  title: string;
+  content: string;
+  version: number;
+  updated_at?: string;
+}
+
 const DocSpace: React.FC = () => {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWsId, setSelectedWsId] = useState<number | null>(null);
@@ -34,6 +43,32 @@ const DocSpace: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [docTitle, setDocTitle] = useState('Research Notes');
+  const [docContent, setDocContent] = useState('');
+  const [docVersion, setDocVersion] = useState(1);
+  const [docLoading, setDocLoading] = useState(false);
+  const [docSaving, setDocSaving] = useState(false);
+  const [docDirty, setDocDirty] = useState(false);
+  const [docUpdatedAt, setDocUpdatedAt] = useState<string | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState('');
+
+  const buildSnapshot = useCallback((title: string, content: string) => `${title}\n---\n${content}`, []);
+
+  const applyDocumentState = useCallback(
+    (doc: DocspaceDocument) => {
+      const nextTitle = String(doc.title || 'Research Notes');
+      const nextContent = String(doc.content || '');
+      const snapshot = buildSnapshot(nextTitle, nextContent);
+      setDocTitle(nextTitle);
+      setDocContent(nextContent);
+      setDocVersion(Number(doc.version || 1));
+      setDocUpdatedAt(doc.updated_at || null);
+      setLastSavedSnapshot(snapshot);
+      setDocDirty(false);
+    },
+    [buildSnapshot]
+  );
 
   useEffect(() => {
     api
@@ -49,6 +84,22 @@ const DocSpace: React.FC = () => {
       .finally(() => setLoadingWs(false));
   }, []);
 
+  const loadDocspaceDocument = useCallback(
+    async (workspaceId: number) => {
+      setDocLoading(true);
+      setDocError(null);
+      try {
+        const response = await api.get<DocspaceDocument>(`/workspaces/${workspaceId}/docspace`);
+        applyDocumentState(response.data);
+      } catch {
+        setDocError('Failed to load editable doc for this workspace.');
+      } finally {
+        setDocLoading(false);
+      }
+    },
+    [applyDocumentState]
+  );
+
   useEffect(() => {
     if (selectedWsId === null) {
       return;
@@ -63,7 +114,95 @@ const DocSpace: React.FC = () => {
       })
       .catch(() => setError('Failed to load papers for this workspace.'))
       .finally(() => setLoadingPapers(false));
-  }, [selectedWsId]);
+    void loadDocspaceDocument(selectedWsId);
+  }, [selectedWsId, loadDocspaceDocument]);
+
+  const saveDocspaceDocument = useCallback(
+    async (force = false) => {
+      if (selectedWsId === null || docLoading) {
+        return;
+      }
+      const payloadTitle = String(docTitle || '').trim() || 'Research Notes';
+      const payloadContent = docContent || '';
+      const snapshot = buildSnapshot(payloadTitle, payloadContent);
+      if (!force && snapshot === lastSavedSnapshot) {
+        return;
+      }
+
+      setDocSaving(true);
+      setDocError(null);
+      try {
+        const response = await api.put<DocspaceDocument>(`/workspaces/${selectedWsId}/docspace`, {
+          title: payloadTitle,
+          content: payloadContent,
+        });
+        applyDocumentState(response.data);
+      } catch {
+        setDocError('Auto-save failed. Your local draft is still in the editor.');
+      } finally {
+        setDocSaving(false);
+      }
+    },
+    [applyDocumentState, buildSnapshot, docContent, docLoading, docTitle, lastSavedSnapshot, selectedWsId]
+  );
+
+  useEffect(() => {
+    if (selectedWsId === null || docLoading) {
+      return;
+    }
+    const payloadTitle = String(docTitle || '').trim() || 'Research Notes';
+    const snapshot = buildSnapshot(payloadTitle, docContent || '');
+    if (snapshot === lastSavedSnapshot) {
+      setDocDirty(false);
+      return;
+    }
+    setDocDirty(true);
+    const timer = window.setTimeout(() => {
+      void saveDocspaceDocument(false);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [buildSnapshot, docContent, docLoading, docTitle, lastSavedSnapshot, saveDocspaceDocument, selectedWsId]);
+
+  useEffect(() => {
+    if (selectedWsId === null) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      if (docDirty || docSaving) {
+        return;
+      }
+      void api
+        .get<DocspaceDocument>(`/workspaces/${selectedWsId}/docspace`)
+        .then((response) => {
+          const remoteVersion = Number(response.data?.version || 1);
+          if (remoteVersion > docVersion) {
+            applyDocumentState(response.data);
+          }
+        })
+        .catch(() => undefined);
+    }, 12000);
+    return () => window.clearInterval(intervalId);
+  }, [applyDocumentState, docDirty, docSaving, docVersion, selectedWsId]);
+
+  const insertSelectedPaperReference = useCallback(() => {
+    if (!selectedPaper) {
+      return;
+    }
+    const link = selectedPaper.url ? ` (${selectedPaper.url})` : '';
+    const citationLine = `- ${selectedPaper.title}${link}\n`;
+    setDocContent((prev) => `${prev}${prev.endsWith('\n') || prev.length === 0 ? '' : '\n'}${citationLine}`);
+  }, [selectedPaper]);
+
+  const insertSelectedAbstract = useCallback(() => {
+    if (!selectedPaper) {
+      return;
+    }
+    const abstractBlock =
+      `\n## ${selectedPaper.title}\n` +
+      `${selectedPaper.authors}\n\n` +
+      `${selectedPaper.abstract || 'No abstract available.'}\n`;
+    setDocContent((prev) => `${prev}${prev.endsWith('\n') || prev.length === 0 ? '' : '\n'}${abstractBlock}`);
+  }, [selectedPaper]);
 
   const filteredPapers = useMemo(
     () =>
@@ -97,6 +236,7 @@ const DocSpace: React.FC = () => {
             <span className="studio-chip">{workspaces.length} workspaces</span>
             <span className="studio-chip">{papers.length} papers in scope</span>
             <span className="studio-chip">{Math.max(0, Math.round(totalChars / 1000))}k chars indexed</span>
+            <span className="studio-chip">{docSaving ? 'Saving notes...' : docDirty ? 'Draft unsaved' : 'Notes synced'}</span>
           </div>
           <div className="studio-orb" aria-hidden="true" />
         </section>
@@ -136,6 +276,12 @@ const DocSpace: React.FC = () => {
           <div className="studio-panel px-4 py-3 mb-4 text-sm text-red-700 border-red-200 bg-red-50 flex items-center gap-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0" />
             {error}
+          </div>
+        )}
+        {docError && (
+          <div className="studio-panel px-4 py-3 mb-4 text-sm text-amber-700 border-amber-200 bg-amber-50 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            {docError}
           </div>
         )}
 
@@ -199,7 +345,7 @@ const DocSpace: React.FC = () => {
             </div>
           </aside>
 
-          <div>
+          <div className="space-y-4">
             {selectedPaper ? (
               <section className="studio-surface p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
@@ -238,6 +384,87 @@ const DocSpace: React.FC = () => {
                 </p>
               </section>
             )}
+
+            <section className="studio-surface p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <h3 className="text-base font-semibold text-slate-900 inline-flex items-center gap-2">
+                  <NotebookText className="h-4.5 w-4.5 text-indigo-600" />
+                  Live Workspace Notes
+                </h3>
+                <div className="flex items-center gap-2 text-xs">
+                  {docSaving ? (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-600">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving...
+                    </span>
+                  ) : docDirty ? (
+                    <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700">
+                      Unsaved changes
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-emerald-700">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Synced
+                    </span>
+                  )}
+                  {docUpdatedAt && (
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">
+                      {new Date(docUpdatedAt).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {docLoading ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500 py-4">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading editable document...
+                </div>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={docTitle}
+                    onChange={(e) => setDocTitle(e.target.value)}
+                    placeholder="Document title"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <textarea
+                    value={docContent}
+                    onChange={(e) => setDocContent(e.target.value)}
+                    placeholder="Write notes, draft sections, and references here. Changes auto-save."
+                    className="w-full mt-3 min-h-[260px] rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void saveDocspaceDocument(true)}
+                      disabled={docSaving}
+                      className="hero-btn-primary disabled:opacity-60"
+                    >
+                      {docSaving ? 'Saving...' : 'Save now'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={insertSelectedPaperReference}
+                      disabled={!selectedPaper}
+                      className="hero-btn-secondary disabled:opacity-50"
+                    >
+                      Insert paper reference
+                    </button>
+                    <button
+                      type="button"
+                      onClick={insertSelectedAbstract}
+                      disabled={!selectedPaper}
+                      className="hero-btn-secondary disabled:opacity-50"
+                    >
+                      Insert selected abstract
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Version {docVersion}. Auto-save runs every ~1 second while typing.
+                  </p>
+                </>
+              )}
+            </section>
           </div>
         </section>
       </div>

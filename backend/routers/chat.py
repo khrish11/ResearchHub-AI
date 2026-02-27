@@ -6,7 +6,7 @@ from routers.auth import get_current_user
 from utils.groq_client import client, model_config
 from pydantic import BaseModel
 import re
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -14,6 +14,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 class ChatMessage(BaseModel):
     message: str
     workspace_id: int
+    selected_paper_ids: Optional[List[int]] = None
+    include_recent_chats: bool = True
 
 
 _STOP_WORDS = {
@@ -78,6 +80,31 @@ def build_context(papers: List[Paper], query: str, max_papers: int = 12, max_cha
     return joined[:max_chars]
 
 
+def _recent_chat_context(
+    db: Session,
+    workspace_id: int,
+    limit: int = 4,
+    max_chars: int = 3600,
+) -> Tuple[str, int]:
+    rows = (
+        db.query(Chat)
+        .filter(Chat.workspace_id == workspace_id)
+        .order_by(Chat.timestamp.desc())
+        .limit(max(0, limit))
+        .all()
+    )
+    if not rows:
+        return "", 0
+    lines: List[str] = []
+    for idx, row in enumerate(reversed(rows), start=1):
+        user_msg = (row.message or "").strip().replace("\n", " ")
+        ai_msg = (row.response or "").strip().replace("\n", " ")
+        if len(ai_msg) > 600:
+            ai_msg = ai_msg[:600] + "..."
+        lines.append(f"[Chat {idx}] User: {user_msg}\n[Chat {idx}] Assistant: {ai_msg}")
+    return "\n\n".join(lines)[:max_chars], len(rows)
+
+
 @router.post("/")
 async def chat_with_papers(
     chat_msg: ChatMessage,
@@ -99,8 +126,21 @@ async def chat_with_papers(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    workspace_papers = db.query(Paper).filter(Paper.workspace_id == chat_msg.workspace_id).all()
+    paper_query = db.query(Paper).filter(Paper.workspace_id == chat_msg.workspace_id)
+    if chat_msg.selected_paper_ids:
+        clean_ids = sorted({paper_id for paper_id in chat_msg.selected_paper_ids if isinstance(paper_id, int) and paper_id > 0})
+        if clean_ids:
+            paper_query = paper_query.filter(Paper.id.in_(clean_ids))
+    workspace_papers = paper_query.all()
+    if not workspace_papers:
+        raise HTTPException(
+            status_code=400,
+            detail="No papers available for chat context. Import papers or adjust selected papers.",
+        )
     context = build_context(workspace_papers, question)
+    conversation_context, recent_chat_turns = (
+        _recent_chat_context(db, chat_msg.workspace_id) if chat_msg.include_recent_chats else ("", 0)
+    )
 
     system_prompt = (
         "You are ResearchHub Copilot, a rigorous research analyst.\n"
@@ -116,6 +156,7 @@ async def chat_with_papers(
 
     user_prompt = (
         f"User question:\n{question}\n\n"
+        f"Recent chat context (if available):\n{conversation_context or 'No prior chat context.'}\n\n"
         f"Workspace paper context:\n{context}\n\n"
         "Constraints:\n"
         "- Prefer concise bullet points where possible.\n"
@@ -143,5 +184,8 @@ async def chat_with_papers(
     db.add(new_chat)
     db.commit()
 
-    return {"response": ai_response}
-
+    return {
+        "response": ai_response,
+        "papers_used": len(workspace_papers),
+        "recent_chat_turns_used": recent_chat_turns,
+    }

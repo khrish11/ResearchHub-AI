@@ -1,14 +1,16 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow } from 'lucide-react';
+import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
 import { toAppPath } from '../utils/routing';
 
 interface SidebarProps {
   userEmail?: string;
   userInitials?: string;
+  mobile?: boolean;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
+const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile = false }) => {
   const location = useLocation();
 
   const menuItems = [
@@ -16,6 +18,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
     { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { path: '/search', label: 'Search Papers', icon: Search },
     { path: '/ai-tools', label: 'AI Tools', icon: Brain },
+    { path: '/research-agent', label: 'Research Agent', icon: Bot },
+    { path: '/research-chat', label: 'Research Chat', icon: MessageSquareCode },
     { path: '/upload', label: 'Upload PDF', icon: Upload },
     { path: '/docs', label: 'DocSpace', icon: FileText },
     { path: '/mindmap', label: 'Mindmap', icon: Workflow },
@@ -36,7 +40,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
   };
 
   return (
-    <aside className="hidden md:flex md:w-[260px] lg:w-[280px] xl:w-[300px] min-h-screen px-4 py-4">
+    <aside className={`${mobile ? 'flex w-full' : 'hidden md:flex md:w-[260px] lg:w-[280px] xl:w-[300px]'} min-h-screen px-4 py-4`}>
       <div className="sidebar-shell w-full rounded-3xl p-4 flex flex-col">
         <div className="px-2 pt-2 pb-4">
           <div className="flex items-center gap-3">
@@ -70,20 +74,28 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U' }) => {
         </nav>
 
         <div className="p-3 mt-auto">
-          <div className="h-px mb-4 bg-indigo-200/10" />
-          {userEmail && (
-            <div className="flex items-center gap-3 px-2 mb-3">
-              <div className="sidebar-avatar">{userInitials}</div>
-              <div className="min-w-0">
-                <p className="text-xs font-medium truncate text-indigo-50">{userEmail}</p>
-                <p className="text-xs text-indigo-200/55">Research Operator</p>
-              </div>
+          <div className="px-2 pb-2">
+            <div className="mb-3">
+              <ThemeToggle className="w-full" />
             </div>
-          )}
-          <button type="button" onClick={handleLogout} className="sidebar-logout" aria-label="Log out">
-            <LogOut style={{ width: 17, height: 17 }} />
-            <span className="font-medium">Logout</span>
-          </button>
+            {userEmail && (
+              <div className="flex items-center gap-3 px-2 mb-3">
+                <div
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 sidebar-user-avatar"
+                >
+                  {userInitials}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium truncate sidebar-user-email">{userEmail}</p>
+                  <p className="text-xs sidebar-user-role">Researcher</p>
+                </div>
+              </div>
+            )}
+            <button type="button" onClick={handleLogout} className="sidebar-logout" aria-label="Log out">
+              <LogOut style={{ width: 17, height: 17 }} />
+              <span className="font-medium">Logout</span>
+            </button>
+          </div>
         </div>
       </div>
     </aside>

@@ -11,12 +11,13 @@ if not hasattr(_bcrypt, '__about__'):
 
 # Load environment variables early so routers that read os.getenv() at import
 # time will see values from backend/.env (prevents missing-key issues).
-# Use override=True in dev to ensure changes to backend/.env take effect when the
-# server starts (helps avoid token/proc-env mismatches during local development).
+# Important: keep process env precedence (override=False). This prevents
+# accidentally clobbering explicit DATABASE_URL values (e.g. during tests),
+# which can otherwise lead to data appearing to "disappear" across runs.
 from dotenv import load_dotenv
 from pathlib import Path
 BACKEND_ENV_PATH = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=BACKEND_ENV_PATH, override=True)
+load_dotenv(dotenv_path=BACKEND_ENV_PATH, override=False)
 load_dotenv(override=False)
 
 # Enforce secure configuration in production
@@ -33,7 +34,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 
-from routers import auth, papers, chat, workspaces, ai, upload
+from routers import auth, papers, chat, workspaces, ai, upload, research_agent, developer
 from sqlalchemy import text
 from database import engine, Base
 
@@ -147,6 +148,19 @@ app.include_router(papers.router)
 app.include_router(chat.router)
 app.include_router(ai.router)
 app.include_router(upload.router)
+app.include_router(research_agent.router)
+app.include_router(developer.router)
+
+logger.info(
+    json.dumps(
+        {
+            "event": "startup_config",
+            "app_env": APP_ENV,
+            "backend_env_path": str(BACKEND_ENV_PATH),
+            "database_url": str(engine.url),
+        }
+    )
+)
 
 
 @app.get("/")

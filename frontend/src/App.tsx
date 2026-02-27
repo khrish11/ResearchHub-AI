@@ -3,16 +3,24 @@ import { useState, useEffect } from 'react';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Register from './pages/Register';
-import AccountSettings from './pages/AccountSettings';
+import EmailVerification from './pages/EmailVerification';
 import Settings from './pages/Settings';
+import AccountSettings from './pages/AccountSettings';
 import Home from './pages/Home';
 import Dashboard from './pages/Dashboard';
 import SearchPapers from './pages/SearchPapers';
 import Workspace from './pages/Workspace';
 import Mindmap from './pages/Mindmap';
 import AITools from './pages/AITools';
+import ResearchAgent from './pages/ResearchAgent';
 import UploadPDF from './pages/UploadPDF';
 import DocSpace from './pages/DocSpace';
+import WritingChat from './pages/WritingChat';
+import DeveloperConsole from './pages/DeveloperConsole';
+import { ThemeProvider } from './contexts/ThemeContext';
+import { ToastProvider } from './contexts/ToastContext';
+import ErrorBoundary from './components/ErrorBoundary';
+import ToastContainer from './components/ToastContainer';
 import { getAppBasePath } from './utils/routing';
 
 function App() {
@@ -38,61 +46,82 @@ function App() {
   }, []);
 
   return (
-    <Router basename={routerBasename || undefined}>
-      <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
-        <Routes>
-          <Route
-            path="/login"
-            element={token ? <Navigate to="/home" replace /> : <Login setToken={setAuthToken} />}
-          />
-          <Route
-            path="/register"
-            element={token ? <Navigate to="/home" replace /> : <Register setToken={setAuthToken} />}
-          />
-          <Route
-            path="/home"
-            element={token ? <Home /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/dashboard"
-            element={token ? <Dashboard /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/search"
-            element={token ? <SearchPapers /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/workspace/:id"
-            element={token ? <Workspace /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/mindmap"
-            element={token ? <Mindmap /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/ai-tools"
-            element={token ? <AITools /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/upload"
-            element={token ? <UploadPDF /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/docs"
-            element={token ? <DocSpace /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/account"
-            element={token ? <AccountSettings /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/settings"
-            element={token ? <Settings /> : <Navigate to="/login" />}
-          />
-          <Route path="/" element={token ? <Navigate to="/home" /> : <Landing />} />
-        </Routes>
-      </div>
-    </Router>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <ToastProvider>
+          <Router basename={routerBasename || undefined}>
+            <div className="min-h-screen bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 transition-colors duration-200">
+              <Routes>
+                <Route
+                  path="/login"
+                  element={token ? <Navigate to="/home" replace /> : <Login setToken={setAuthToken} />}
+                />
+                <Route
+                  path="/register"
+                  element={token ? <Navigate to="/home" replace /> : <Register setToken={setAuthToken} />}
+                />
+                <Route
+                  path="/home"
+                  element={token ? <Home /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/dashboard"
+                  element={token ? <Dashboard /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/search"
+                  element={token ? <SearchPapers /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/workspace/:id"
+                  element={token ? <Workspace /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/mindmap"
+                  element={token ? <Mindmap /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/ai-tools"
+                  element={token ? <AITools /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/research-agent"
+                  element={token ? <ResearchAgent /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/upload"
+                  element={token ? <UploadPDF /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/docs"
+                  element={token ? <DocSpace /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/research-chat"
+                  element={token ? <WritingChat /> : <Navigate to="/login" />}
+                />
+                <Route path="/writing-chat" element={<Navigate to="/research-chat" replace />} />
+                <Route
+                  path="/account"
+                  element={token ? <AccountSettings /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/settings"
+                  element={token ? <Settings /> : <Navigate to="/login" />}
+                />
+                <Route
+                  path="/developer"
+                  element={token ? <DeveloperConsole /> : <Navigate to="/login" />}
+                />
+                <Route path="/verify-email" element={<EmailVerification />} />
+                <Route path="/" element={token ? <Navigate to="/home" /> : <Landing />} />
+              </Routes>
+              <ToastContainer />
+            </div>
+          </Router>
+        </ToastProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
 

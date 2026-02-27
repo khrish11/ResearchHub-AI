@@ -1,32 +1,218 @@
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MessageSquare, FileText, BookOpen, Sparkles, Orbit, BrainCircuit, Layers3, ArrowRight } from 'lucide-react';
+import { Search, MessageSquare, FileText, BookOpen, Sparkles, Orbit, BrainCircuit, Layers3, ArrowRight, RefreshCw } from 'lucide-react';
 import Layout from '../components/Layout';
+import api from '../api';
+
+interface Workspace {
+  id: number;
+  name: string;
+}
+
+interface SessionState {
+  page_path: string;
+  workspace_id?: number | null;
+  last_query?: string | null;
+  updated_at?: string | null;
+}
+
+interface RecommendationPaper {
+  title: string;
+  source?: string;
+  year?: number;
+  url?: string;
+  doi?: string;
+  score?: number;
+  ranking_score?: number;
+  freshness_score?: number;
+  reason?: string;
+}
+
+interface PersonalizedFeedResponse {
+  trending_papers: RecommendationPaper[];
+  seed_keywords?: string[];
+  relevance_context?: {
+    realtime_keywords?: string[];
+    history_queries?: string[];
+  };
+}
+
+interface SearchHistoryInsights {
+  top_queries: Array<{ query: string; display_query?: string; count: number; weight: number }>;
+}
+
+interface SearchGlobalFallbackResponse {
+  papers: Array<{
+    title: string;
+    source?: string;
+    published?: string;
+    url?: string;
+    doi?: string;
+  }>;
+}
+
+const parseYearFromPublished = (value?: string): number | undefined => {
+  const match = String(value || '').match(/(19|20)\d{2}/);
+  return match ? Number(match[0]) : undefined;
+};
+
+const normalizeRecKey = (item: RecommendationPaper): string => {
+  const doi = String(item.doi || '').trim().toLowerCase();
+  if (doi) return `doi:${doi}`;
+  const url = String(item.url || '').trim().toLowerCase();
+  if (url) return `url:${url}`;
+  return `title:${String(item.title || '').trim().toLowerCase()}`;
+};
 
 const Home = () => {
+  const [resumeState, setResumeState] = useState<SessionState | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationPaper[]>([]);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationError, setRecommendationError] = useState<string | null>(null);
+  const [seedKeywords, setSeedKeywords] = useState<string[]>([]);
+  const [realtimeKeywords, setRealtimeKeywords] = useState<string[]>([]);
+  const [historySeeds, setHistorySeeds] = useState<string[]>([]);
+  const [recommendationUpdatedAt, setRecommendationUpdatedAt] = useState<string | null>(null);
+
+  const loadHomeData = useCallback(async (forceLive = false) => {
+    setRecommendationLoading(true);
+    setRecommendationError(null);
+    try {
+      const [sessionRes, workspaceRes, historyRes] = await Promise.all([
+        api.get<SessionState>('/workspaces/session-state').catch(() => ({ data: { page_path: '/home' } as SessionState })),
+        api.get<Workspace[]>('/workspaces/').catch(() => ({ data: [] as Workspace[] })),
+        api.get<SearchHistoryInsights>('/papers/search-history/insights').catch(() => ({ data: { top_queries: [] } as SearchHistoryInsights })),
+      ]);
+
+      const session = sessionRes.data || { page_path: '/home' };
+      setResumeState(session);
+
+      const historySeedQueries = (historyRes.data?.top_queries || [])
+        .map((item) => item.display_query || item.query)
+        .filter(Boolean)
+        .slice(0, 4);
+      setHistorySeeds(historySeedQueries);
+      const workspaces = workspaceRes.data || [];
+
+      let recs: RecommendationPaper[] = [];
+      let recKeywords: string[] = [];
+
+      if (workspaces.length > 0) {
+        const preferredWorkspaceId =
+          session.workspace_id && workspaces.some((workspace) => workspace.id === session.workspace_id)
+            ? Number(session.workspace_id)
+            : workspaces[0].id;
+        try {
+          const feedRes = await api.post<PersonalizedFeedResponse>('/research/personalized-feed', {
+            workspace_id: preferredWorkspaceId,
+            max_suggestions: 8,
+            force_live: forceLive,
+            refresh_seed: forceLive ? `${Date.now()}` : undefined,
+          });
+          recs = Array.isArray(feedRes.data?.trending_papers) ? feedRes.data.trending_papers : [];
+          const realtime = Array.isArray(feedRes.data?.relevance_context?.realtime_keywords)
+            ? (feedRes.data?.relevance_context?.realtime_keywords as string[])
+            : [];
+          const history = Array.isArray(feedRes.data?.relevance_context?.history_queries)
+            ? (feedRes.data?.relevance_context?.history_queries as string[])
+            : [];
+          recKeywords = Array.isArray(feedRes.data?.seed_keywords) ? feedRes.data.seed_keywords.slice(0, 8) : [];
+          setRealtimeKeywords(realtime.slice(0, 8));
+          setHistorySeeds(history.slice(0, 4));
+        } catch {
+          recs = [];
+        }
+      }
+
+      if (recs.length === 0) {
+        const fallbackQueries = [...historySeedQueries, 'graph neural networks', 'federated learning security', 'renewable energy storage'];
+        const dedup = new Map<string, RecommendationPaper>();
+        for (const query of fallbackQueries) {
+          if (!query || dedup.size >= 8) continue;
+          try {
+            const fallbackRes = await api.get<SearchGlobalFallbackResponse>('/papers/search-global', {
+              params: {
+                query,
+                max_results: 6,
+                offset: forceLive ? Math.abs((Date.now() + query.length) % 24) : 0,
+                track_history: false,
+              },
+            });
+            for (const paper of fallbackRes.data?.papers || []) {
+              const item: RecommendationPaper = {
+                title: paper.title,
+                source: paper.source,
+                year: parseYearFromPublished(paper.published),
+                url: paper.url,
+                doi: paper.doi,
+                reason: `Trending around "${query}"`,
+              };
+              const key = normalizeRecKey(item);
+              if (!dedup.has(key)) dedup.set(key, item);
+              if (dedup.size >= 8) break;
+            }
+          } catch {
+            // Continue fallback attempts.
+          }
+        }
+        recs = Array.from(dedup.values());
+        if (recKeywords.length === 0) {
+          recKeywords = historySeedQueries.slice(0, 8);
+        }
+      }
+
+      setRecommendations(recs.slice(0, 8));
+      setSeedKeywords(recKeywords);
+      if (recs.length === 0) {
+        setRealtimeKeywords([]);
+      }
+      setRecommendationUpdatedAt(new Date().toISOString());
+      if (recs.length === 0) {
+        setRecommendationError('No recommendations available yet. Add papers or run a few searches.');
+      }
+    } catch {
+      setRecommendationError('Unable to fetch live recommendations yet.');
+    } finally {
+      setRecommendationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadHomeData(false);
+  }, [loadHomeData]);
+
   const featureCards = [
     {
       title: 'Signal Search',
       desc: 'Probe multi-source paper indexes with richer relevance and live source diagnostics.',
       icon: Search,
       color: '#4f46e5',
+      to: '/search',
+      cta: 'Open Search',
     },
     {
       title: 'Context Chat',
       desc: 'Ask long-horizon research questions and keep context pinned to your workspace.',
       icon: MessageSquare,
       color: '#0284c7',
+      to: '/ai-tools',
+      cta: 'Open AI Tools',
     },
     {
       title: 'Doc Studio',
       desc: 'Draft, refine, and structure manuscripts with AI-guided editing workflows.',
       icon: FileText,
       color: '#0f766e',
+      to: '/docs',
+      cta: 'Open DocSpace',
     },
     {
       title: 'Review Engine',
       desc: 'Synthesize connected literature clusters instead of isolated single-paper summaries.',
       icon: BookOpen,
       color: '#9333ea',
+      to: '/mindmap',
+      cta: 'Open Mindmap',
     },
   ];
 
@@ -61,13 +247,120 @@ const Home = () => {
         </div>
       </section>
 
+      {resumeState?.page_path && resumeState.page_path !== '/home' && (
+        <section className="mb-5 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-indigo-700 mb-1">Continue Session</p>
+              <p className="text-sm text-indigo-900 font-semibold">Resume from: {resumeState.page_path}</p>
+              {resumeState.last_query && (
+                <p className="text-xs text-indigo-700 mt-1">Last query: {resumeState.last_query}</p>
+              )}
+            </div>
+            <Link to={resumeState.page_path} className="hero-btn-primary">
+              Continue where you left off <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </section>
+      )}
+
+      <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-1">Trending Research Feed</p>
+            <h3 className="text-xl font-bold text-slate-900">Personalized Real-Time Recommendations</h3>
+            {recommendationUpdatedAt && (
+              <p className="text-xs text-slate-500 mt-1">
+                Updated {new Date(recommendationUpdatedAt).toLocaleTimeString()}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void loadHomeData(true)}
+              disabled={recommendationLoading}
+              className="hero-btn-secondary disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${recommendationLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+            <Link to="/research-agent" className="hero-btn-secondary">
+              Open Research Agent
+            </Link>
+          </div>
+        </div>
+
+        {seedKeywords.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {seedKeywords.map((keyword) => (
+              <span key={keyword} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600">
+                {keyword}
+              </span>
+            ))}
+          </div>
+        )}
+        {realtimeKeywords.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {realtimeKeywords.map((keyword) => (
+              <span key={`rt-${keyword}`} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700">
+                realtime: {keyword}
+              </span>
+            ))}
+          </div>
+        )}
+        {historySeeds.length > 0 && (
+          <p className="text-xs text-slate-500 mb-3">
+            Personalized from recent searches: {historySeeds.join(' | ')}
+          </p>
+        )}
+
+        {recommendationLoading && (
+          <p className="text-sm text-slate-500">Loading recommendations...</p>
+        )}
+        {!recommendationLoading && recommendationError && (
+          <p className="text-sm text-amber-700">{recommendationError}</p>
+        )}
+        {!recommendationLoading && !recommendationError && recommendations.length === 0 && (
+          <p className="text-sm text-slate-500">
+            Add papers to a workspace to unlock live topic-based recommendations.
+          </p>
+        )}
+        {!recommendationLoading && recommendations.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {recommendations.map((paper, index) => {
+              const link = paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : '');
+              return (
+                <article key={`${paper.title}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-sm font-semibold text-slate-900 line-clamp-2">{paper.title}</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {paper.source || 'multi-source'} {paper.year ? ` | ${paper.year}` : ''}
+                  </p>
+                  {(paper.ranking_score || paper.score) && (
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      relevance score: {(paper.ranking_score || paper.score || 0).toFixed(2)}
+                    </p>
+                  )}
+                  {paper.reason && <p className="text-[11px] text-indigo-600 mt-1">{paper.reason}</p>}
+                  {link && (
+                    <a href={link} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-indigo-700">
+                      Open paper <ArrowRight className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-7">
         <div className="stat-tile">
           <div className="stat-icon" style={{ background: 'rgba(79, 70, 229, 0.12)', color: '#4f46e5' }}>
             <Orbit className="h-5 w-5" />
           </div>
           <p className="stat-label">Search Fabric</p>
-          <p className="stat-value">5 Unified Sources</p>
+          <p className="stat-value">14 Unified Sources</p>
         </div>
         <div className="stat-tile">
           <div className="stat-icon" style={{ background: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
@@ -91,13 +384,16 @@ const Home = () => {
           {featureCards.map((card) => {
             const Icon = card.icon;
             return (
-              <div key={card.title} className="feature-surface">
+              <Link key={card.title} to={card.to} className="feature-surface group cursor-pointer">
                 <div className="feature-icon" style={{ background: `${card.color}1f`, color: card.color }}>
                   <Icon className="h-5 w-5" />
                 </div>
                 <h4 className="text-base font-semibold text-slate-900 mt-3">{card.title}</h4>
                 <p className="text-sm text-slate-600 mt-1 leading-relaxed">{card.desc}</p>
-              </div>
+                <span className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: card.color }}>
+                  {card.cta} <ArrowRight className="h-3.5 w-3.5 transition-transform duration-150 group-hover:translate-x-0.5" />
+                </span>
+              </Link>
             );
           })}
         </div>

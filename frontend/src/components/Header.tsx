@@ -49,10 +49,12 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
     if (path.startsWith('/mindmap')) return 'Mindmap Studio';
     if (path.startsWith('/workspace')) return 'Workspace';
     if (path.startsWith('/ai-tools')) return 'AI Tools';
+    if (path.startsWith('/research-chat') || path.startsWith('/writing-chat')) return 'Research Chatbot';
     if (path.startsWith('/upload')) return 'Upload Center';
     if (path.startsWith('/docs')) return 'DocSpace';
     if (path.startsWith('/account')) return 'Account';
     if (path.startsWith('/settings')) return 'Settings';
+    if (path.startsWith('/developer')) return 'Developer Console';
     return 'Research Command';
   }, [location.pathname]);
 

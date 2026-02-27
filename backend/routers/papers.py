@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from database import get_db
-from models import User, Paper, Workspace
+from database import SessionLocal, get_db
+from models import SearchHistory, User, Paper, Workspace
 from routers.auth import get_current_user
 from pydantic import BaseModel
 from typing import List, Optional, Tuple
@@ -41,26 +41,26 @@ _GLOBAL_SEARCH_METRICS: Dict[str, Any] = {
 }
 # Keep multi-source search responsive: each source has a bounded budget and
 # the whole request returns partial merged results quickly.
-GLOBAL_SOURCE_TIMEOUT_SECONDS = 8.0
-GLOBAL_SEARCH_WAIT_SECONDS = 10.0
-GLOBAL_SOURCE_CONCURRENCY = 5
+GLOBAL_SOURCE_TIMEOUT_SECONDS = 6.0
+GLOBAL_SEARCH_WAIT_SECONDS = 8.0
+GLOBAL_SOURCE_CONCURRENCY = 7
 GLOBAL_UNPAYWALL_TIMEOUT_SECONDS = 2.0
 GLOBAL_UNPAYWALL_MAX_LOOKUPS = 2
 GLOBAL_SOURCE_TIMEOUT_OVERRIDES: Dict[str, float] = {
-    "openalex": 7.0,
-    "arxiv": 7.0,
-    "semantic": 7.0,
-    "springer": 7.0,
-    "europepmc": 7.0,
-    "doaj": 7.0,
-    "hal": 7.0,
-    "plos": 6.0,
-    "pubmed": 7.0,
-    "nasa": 7.0,
-    "elife": 7.0,
-    "datacite": 6.0,
-    "biorxiv": 6.0,
-    "medrxiv": 6.0,
+    "openalex": 5.0,
+    "arxiv": 5.0,
+    "semantic": 5.0,
+    "springer": 5.0,
+    "europepmc": 5.0,
+    "doaj": 5.0,
+    "hal": 5.0,
+    "plos": 4.5,
+    "pubmed": 5.5,
+    "nasa": 5.0,
+    "elife": 5.0,
+    "datacite": 4.5,
+    "biorxiv": 4.5,
+    "medrxiv": 4.5,
 }
 
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -93,6 +93,79 @@ class PaperImport(BaseModel):
     doi: Optional[str] = None
     bibcode: Optional[str] = None
     workspace_id: int
+
+
+def _record_search_history(
+    user_id: int,
+    query: str,
+    result_count: int,
+    max_results: int,
+    offset: int,
+    source_status: Optional[Dict[str, Any]] = None,
+    cache_hit: bool = False,
+) -> None:
+    trimmed_query = (query or "").strip()
+    if not trimmed_query:
+        return
+
+    payload = {
+        "max_results": max(1, int(max_results or 0)),
+        "offset": max(0, int(offset or 0)),
+        "cache_hit": bool(cache_hit),
+        "source_status": source_status or {},
+    }
+
+    db = SessionLocal()
+    try:
+        latest = (
+            db.query(SearchHistory)
+            .filter(SearchHistory.user_id == user_id, SearchHistory.source == "global_merged")
+            .order_by(SearchHistory.created_at.desc())
+            .first()
+        )
+        now_utc = datetime.now(timezone.utc)
+        should_update_latest = False
+        if latest and str(latest.query or "").strip().lower() == trimmed_query.lower():
+            created = latest.created_at
+            if created is not None:
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_seconds = abs((now_utc - created).total_seconds())
+                should_update_latest = age_seconds <= 240
+
+        if should_update_latest and latest is not None:
+            latest.result_count = max(0, int(result_count or 0))
+            latest.filters_json = json.dumps(payload)
+            latest.created_at = now_utc
+        else:
+            db.add(
+                SearchHistory(
+                    user_id=user_id,
+                    query=trimmed_query[:300],
+                    source="global_merged",
+                    result_count=max(0, int(result_count or 0)),
+                    filters_json=json.dumps(payload),
+                    created_at=now_utc,
+                )
+            )
+        db.commit()
+
+        old_rows = (
+            db.query(SearchHistory.id)
+            .filter(SearchHistory.user_id == user_id)
+            .order_by(SearchHistory.created_at.desc())
+            .offset(250)
+            .all()
+        )
+        old_ids = [int(row[0]) for row in old_rows]
+        if old_ids:
+            db.query(SearchHistory).filter(SearchHistory.id.in_(old_ids)).delete(synchronize_session=False)
+            db.commit()
+    except Exception:
+        logging.exception("Failed to record search history")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _get_nasa_token() -> str:
@@ -459,7 +532,31 @@ async def search_papers(
         except ET.ParseError as e:
             raise HTTPException(status_code=502, detail=f"Failed to parse ArXiv response: {str(e)}")
 
-    raise HTTPException(status_code=504, detail=last_error)
+    # Keep search usable even if ArXiv is temporarily slow/unreachable.
+    # This prevents hard failures in local/dev and provides users with an
+    # actionable response while upstream recovers.
+    fallback_paper = {
+        "title": f"ArXiv temporarily unavailable for: {query}",
+        "authors": ["ResearchHub AI"],
+        "abstract": (
+            "ArXiv did not respond in time. Retry in a moment, or use the global "
+            "search endpoint for merged results across other sources."
+        ),
+        "url": "",
+        "published": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "categories": ["availability", "fallback"],
+        "source": "arxiv",
+    }
+    return {
+        "papers": [fallback_paper],
+        "total": 1,
+        "returned": 1,
+        "offset": start_offset,
+        "next_offset": start_offset + 1,
+        "has_more": False,
+        "source": "arxiv",
+        "notice": last_error or "ArXiv timed out. Showing fallback result.",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1726,6 +1823,7 @@ async def search_global(
     query: str,
     max_results: int = 60,
     offset: int = 0,
+    track_history: bool = True,
     current_user: User = Depends(get_current_user),
 ):
     """Search all sources together and return merged, de-duplicated results."""
@@ -1750,23 +1848,33 @@ async def search_global(
             duration_ms=elapsed_ms,
             returned=int(cached.get("returned") or 0),
         )
+        if track_history:
+            _record_search_history(
+                user_id=current_user.id,
+                query=query,
+                result_count=int(cached.get("returned") or 0),
+                max_results=page_size,
+                offset=start_offset,
+                source_status=cached.get("source_status") or {},
+                cache_hit=True,
+            )
         return cached
 
     source_order = [
         "openalex",
         "arxiv",
-        "semantic",
-        "springer",
         "europepmc",
+        "pubmed",
         "doaj",
         "hal",
-        "plos",
-        "pubmed",
-        "nasa",
-        "elife",
-        "datacite",
         "biorxiv",
         "medrxiv",
+        "plos",
+        "elife",
+        "semantic",
+        "springer",
+        "datacite",
+        "nasa",
     ]
     per_source_limit = max(8, min(30, (page_size // max(1, len(source_order))) + 8))
     source_semaphore = asyncio.Semaphore(GLOBAL_SOURCE_CONCURRENCY)
@@ -1897,7 +2005,7 @@ async def search_global(
     collected_raw = 0
     successful_sources = 0
     fast_path_reached = False
-    fast_path_target = max(12, min(page_size, 20))
+    fast_path_target = max(26, min(page_size + 10, 72))
 
     try:
         for finished in asyncio.as_completed(list(task_map.keys()), timeout=GLOBAL_SEARCH_WAIT_SECONDS):
@@ -1913,7 +2021,7 @@ async def search_global(
                 collected_raw += len(papers)
             # Fast-path: once we have enough material from multiple sources,
             # avoid waiting for the slowest providers.
-            if successful_sources >= 2 and collected_raw >= fast_path_target:
+            if successful_sources >= 3 and collected_raw >= fast_path_target:
                 fast_path_reached = True
                 break
     except asyncio.TimeoutError:
@@ -1979,49 +2087,61 @@ async def search_global(
     # Recovery pass: if the parallel run produced zero papers (for example during
     # transient upstream latency spikes), retry a few high-yield sources directly.
     if not merged_papers:
-        async def _run_recovery(source_name: str) -> Optional[Dict[str, Any]]:
-            if source_name == "openalex":
-                return await search_openalex(
-                    query=query,
-                    max_results=min(page_size, 40),
-                    offset=start_offset,
-                    current_user=current_user,
-                )
-            if source_name == "arxiv":
-                return await search_papers(
-                    query=query,
-                    max_results=min(page_size, 40),
-                    offset=start_offset,
-                    category="all",
-                    sort_by="relevance",
-                    current_user=current_user,
-                )
-            if source_name == "springer":
-                return await search_springer(
-                    query=query,
-                    max_results=min(page_size, 25),
-                    offset=start_offset,
-                    current_user=current_user,
-                )
-            return None
-
-        for source_name in ("openalex", "arxiv", "springer"):
+        async def _run_recovery(source_name: str) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
             try:
-                recovered = await _run_recovery(source_name)
+                if source_name == "openalex":
+                    payload = await asyncio.wait_for(
+                        search_openalex(
+                            query=query,
+                            max_results=min(page_size, 30),
+                            offset=start_offset,
+                            current_user=current_user,
+                        ),
+                        timeout=4.5,
+                    )
+                    return source_name, payload, None
+                if source_name == "arxiv":
+                    payload = await asyncio.wait_for(
+                        search_papers(
+                            query=query,
+                            max_results=min(page_size, 30),
+                            offset=start_offset,
+                            category="all",
+                            sort_by="relevance",
+                            current_user=current_user,
+                        ),
+                        timeout=4.5,
+                    )
+                    return source_name, payload, None
+                if source_name == "europepmc":
+                    payload = await asyncio.wait_for(
+                        search_europepmc(
+                            query=query,
+                            max_results=min(page_size, 30),
+                            offset=start_offset,
+                            current_user=current_user,
+                        ),
+                        timeout=4.5,
+                    )
+                    return source_name, payload, None
+                return source_name, None, "unsupported"
             except HTTPException as exc:
-                source_counts[source_name] = 0
-                source_status[source_name] = {
-                    "status": "error",
-                    "count": 0,
-                    "detail": f"Recovery pass failed: {str(exc.detail)[:120]}",
-                }
-                continue
+                return source_name, None, str(exc.detail)
             except Exception:
+                return source_name, None, "Recovery pass failed."
+
+        recovery_results = await asyncio.gather(
+            *[_run_recovery(name) for name in ("openalex", "arxiv", "europepmc")],
+            return_exceptions=False,
+        )
+
+        for source_name, recovered, recovery_error in recovery_results:
+            if recovery_error:
                 source_counts[source_name] = 0
                 source_status[source_name] = {
                     "status": "error",
                     "count": 0,
-                    "detail": "Recovery pass failed.",
+                    "detail": f"Recovery pass failed: {str(recovery_error)[:120]}",
                 }
                 continue
 
@@ -2045,9 +2165,6 @@ async def search_global(
                     "count": 0,
                     "detail": "Recovery pass returned no papers.",
                 }
-
-            if len(merged_papers) >= max(10, page_size // 2):
-                break
 
     for name in source_order:
         if name not in source_status:
@@ -2148,8 +2265,143 @@ async def search_global(
         cache_hit=False,
     )
 
+    if track_history:
+        _record_search_history(
+            user_id=current_user.id,
+            query=query,
+            result_count=len(merged_page),
+            max_results=page_size,
+            offset=start_offset,
+            source_status=source_status,
+            cache_hit=False,
+        )
+
     _global_cache_put(cache_key, response_payload)
     return response_payload
+
+
+@router.get("/search-history")
+def get_search_history(
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    page_size = max(1, min(limit, 200))
+    rows = (
+        db.query(SearchHistory)
+        .filter(SearchHistory.user_id == current_user.id)
+        .order_by(SearchHistory.created_at.desc())
+        .limit(page_size)
+        .all()
+    )
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        filters: Dict[str, Any] = {}
+        if row.filters_json:
+            try:
+                parsed = json.loads(row.filters_json)
+                if isinstance(parsed, dict):
+                    filters = parsed
+            except Exception:
+                filters = {}
+        items.append(
+            {
+                "id": row.id,
+                "query": row.query,
+                "source": row.source,
+                "result_count": row.result_count,
+                "created_at": (
+                    row.created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    if row.created_at
+                    else None
+                ),
+                "filters": filters,
+            }
+        )
+    return {"items": items, "count": len(items)}
+
+
+@router.get("/search-history/insights")
+def get_search_history_insights(
+    limit: int = 120,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    size = max(10, min(limit, 500))
+    rows = (
+        db.query(SearchHistory)
+        .filter(SearchHistory.user_id == current_user.id)
+        .order_by(SearchHistory.created_at.desc())
+        .limit(size)
+        .all()
+    )
+
+    query_counts: Dict[str, int] = {}
+    weighted_counts: Dict[str, float] = {}
+    display_queries: Dict[str, str] = {}
+    source_counts: Dict[str, int] = {}
+    total_results = 0
+
+    for row in rows:
+        query_text = str(row.query or "").strip()
+        if not query_text:
+            continue
+        key = query_text.lower()
+        query_counts[key] = query_counts.get(key, 0) + 1
+        weighted_counts[key] = weighted_counts.get(key, 0.0) + max(0, int(row.result_count or 0)) / 10.0 + 1.0
+        if key not in display_queries:
+            display_queries[key] = query_text
+        src = str(row.source or "unknown").lower()
+        source_counts[src] = source_counts.get(src, 0) + 1
+        total_results += max(0, int(row.result_count or 0))
+
+    top_queries = sorted(
+        (
+            {
+                "query": query,
+                "display_query": display_queries.get(query, query),
+                "count": query_counts[query],
+                "weight": round(weighted_counts.get(query, 0.0), 2),
+            }
+            for query in query_counts.keys()
+        ),
+        key=lambda item: (item["weight"], item["count"]),
+        reverse=True,
+    )[:12]
+
+    avg_results = round((total_results / len(rows)), 2) if rows else 0.0
+    last_at = (
+        rows[0].created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        if rows and rows[0].created_at
+        else None
+    )
+    return {
+        "count": len(rows),
+        "avg_result_count": avg_results,
+        "top_queries": top_queries,
+        "source_counts": source_counts,
+        "last_activity_at": last_at,
+    }
+
+
+@router.delete("/search-history")
+def delete_search_history(
+    item_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(SearchHistory).filter(SearchHistory.user_id == current_user.id)
+    if item_id is not None:
+        row = query.filter(SearchHistory.id == item_id).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Search history item not found.")
+        db.delete(row)
+        db.commit()
+        return {"message": "Search history item deleted."}
+
+    deleted = query.delete(synchronize_session=False)
+    db.commit()
+    return {"message": "Search history cleared.", "deleted": int(deleted or 0)}
 
 
 @router.get("/metrics")

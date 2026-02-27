@@ -5,6 +5,7 @@ interface UserInfo {
     id: number;
     email: string;
     initials: string;
+    isDeveloper: boolean;
 }
 
 /**
@@ -24,6 +25,7 @@ export function useUser() {
         api.get('/auth/me')
             .then((res) => {
                 const email: string = res.data.email;
+                const isDeveloper = Boolean(res.data.is_developer);
                 // Build initials: first letter of each part before @ split by dot
                 const local = email.split('@')[0];
                 const parts = local.split(/[._-]/);
@@ -31,7 +33,12 @@ export function useUser() {
                     .slice(0, 2)
                     .map((p) => p[0]?.toUpperCase() ?? '')
                     .join('');
-                setUser({ id: res.data.id, email, initials: initials || email[0].toUpperCase() });
+                setUser({
+                    id: res.data.id,
+                    email,
+                    initials: initials || email[0].toUpperCase(),
+                    isDeveloper,
+                });
             })
             .catch(() => setUser(null))
             .finally(() => setLoading(false));
