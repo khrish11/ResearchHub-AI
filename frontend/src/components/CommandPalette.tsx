@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Brain,
@@ -92,10 +92,10 @@ const CommandPalette: React.FC = () => {
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }, [open]);
 
-  const go = (path: string) => {
+  const go = useCallback((path: string) => {
     navigate(path);
     setOpen(false);
-  };
+  }, [navigate]);
 
   const baseCommands = useMemo<CommandItem[]>(
     () => [
@@ -193,7 +193,7 @@ const CommandPalette: React.FC = () => {
         },
       },
     ],
-    []
+    [go]
   );
 
   const savedQueryCommands = useMemo<CommandItem[]>(
@@ -296,7 +296,7 @@ const CommandPalette: React.FC = () => {
   useEffect(() => {
     if (!open) return;
     setOpen(false);
-  }, [location.pathname]);
+  }, [location.pathname, open]);
 
   if (!open) {
     return null;

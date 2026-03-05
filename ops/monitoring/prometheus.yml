@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: "researchhub-api"
+    metrics_path: /ops/metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "127.0.0.1:8010"
+    # Add token only if METRICS_AUTH_TOKEN is enabled in backend:
+    # headers:
+    #   X-Metrics-Token: "<metrics-token>"

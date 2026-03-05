@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database import SessionLocal, get_db
 from models import SearchHistory, User, Paper, Workspace
 from routers.auth import get_current_user
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
 import asyncio
 import httpx
@@ -46,10 +47,23 @@ GLOBAL_SEARCH_WAIT_SECONDS = 8.0
 GLOBAL_SOURCE_CONCURRENCY = 7
 GLOBAL_UNPAYWALL_TIMEOUT_SECONDS = 2.0
 GLOBAL_UNPAYWALL_MAX_LOOKUPS = 2
+GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE: Dict[str, int] = {
+    "fast": 0,
+    "balanced": GLOBAL_UNPAYWALL_MAX_LOOKUPS,
+    "deep": 4,
+}
 GLOBAL_SOURCE_TIMEOUT_OVERRIDES: Dict[str, float] = {
     "openalex": 5.0,
     "arxiv": 5.0,
     "semantic": 5.0,
+    "crossref": 5.5,
+    "dblp": 4.5,
+    "zenodo": 4.5,
+    "openaire": 5.0,
+    "figshare": 4.5,
+    "osf": 4.5,
+    "dryad": 4.5,
+    "inspire": 4.5,
     "springer": 5.0,
     "europepmc": 5.0,
     "doaj": 5.0,
@@ -63,6 +77,94 @@ GLOBAL_SOURCE_TIMEOUT_OVERRIDES: Dict[str, float] = {
     "medrxiv": 4.5,
 }
 
+GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
+    "fast": [
+        "openalex",
+        "arxiv",
+        "semantic",
+        "inspire",
+        "dblp",
+        "openaire",
+        "osf",
+        "europepmc",
+        "pubmed",
+        "biorxiv",
+        "medrxiv",
+        "doaj",
+    ],
+    "balanced": [
+        "openalex",
+        "arxiv",
+        "europepmc",
+        "pubmed",
+        "doaj",
+        "hal",
+        "biorxiv",
+        "medrxiv",
+        "plos",
+        "elife",
+        "openaire",
+        "figshare",
+        "osf",
+        "dryad",
+        "inspire",
+        "dblp",
+        "zenodo",
+        "semantic",
+        "springer",
+        "datacite",
+        "nasa",
+    ],
+    "deep": [
+        "openalex",
+        "arxiv",
+        "europepmc",
+        "pubmed",
+        "doaj",
+        "hal",
+        "biorxiv",
+        "medrxiv",
+        "plos",
+        "elife",
+        "openaire",
+        "figshare",
+        "osf",
+        "dryad",
+        "inspire",
+        "dblp",
+        "zenodo",
+        "semantic",
+        "springer",
+        "datacite",
+        "crossref",
+        "nasa",
+    ],
+}
+
+GLOBAL_SEARCH_MAX_RESULTS_BY_MODE: Dict[str, int] = {
+    "fast": 100,
+    "balanced": 140,
+    "deep": 200,
+}
+
+GLOBAL_SOURCE_CONCURRENCY_BY_MODE: Dict[str, int] = {
+    "fast": 6,
+    "balanced": GLOBAL_SOURCE_CONCURRENCY,
+    "deep": 9,
+}
+
+GLOBAL_SEARCH_WAIT_BY_MODE: Dict[str, float] = {
+    "fast": 5.5,
+    "balanced": GLOBAL_SEARCH_WAIT_SECONDS,
+    "deep": 11.0,
+}
+
+GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE: Dict[str, float] = {
+    "fast": 0.7,
+    "balanced": 1.0,
+    "deep": 1.15,
+}
+
 ARXIV_API = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 OPENALEX_API = "https://api.openalex.org/works"
@@ -72,6 +174,13 @@ PUBMED_ESEARCH_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi
 PUBMED_ESUMMARY_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 DOAJ_API_BASE = "https://doaj.org/api/search/articles"
 DATACITE_WORKS_API = "https://api.datacite.org/works"
+DBLP_API = "https://dblp.org/search/publ/api"
+ZENODO_API = "https://zenodo.org/api/records"
+OPENAIRE_API = "https://api.openaire.eu/search/publications"
+FIGSHARE_API = "https://api.figshare.com/v2/articles"
+OSF_PREPRINT_API = "https://api.osf.io/v2/preprints/"
+DRYAD_API = "https://datadryad.org/api/v2/search"
+INSPIRE_HEP_API = "https://inspirehep.net/api/literature"
 UNPAYWALL_API = "https://api.unpaywall.org/v2/"
 HAL_API_SEARCH = "https://api.archives-ouvertes.fr/search/"
 BIORXIV_API_BASE = "https://api.biorxiv.org/details"
@@ -80,6 +189,25 @@ PLOS_API = "https://api.plos.org/search"
 SPRINGER_META_API = "https://api.springernature.com/meta/v2/json"
 
 NASA_ADS_API = "https://api.adsabs.harvard.edu/v1/search/query"
+
+OPEN_ACCESS_SOURCES = {
+    "arxiv",
+    "europepmc",
+    "europe_pmc",
+    "doaj",
+    "hal",
+    "biorxiv",
+    "medrxiv",
+    "plos",
+    "elife",
+    "pubmed",
+    "openalex",
+    "zenodo",
+    "openaire",
+    "figshare",
+    "osf",
+    "dryad",
+}
 
 # ---------------------------------------------------------------------------
 # Models
@@ -92,7 +220,46 @@ class PaperImport(BaseModel):
     url: Optional[str] = None
     doi: Optional[str] = None
     bibcode: Optional[str] = None
+    source: Optional[str] = None
+    pdf_url: Optional[str] = None
+    institutional_url: Optional[str] = None
+    access_type: Optional[str] = None
+    full_text_available: Optional[bool] = None
     workspace_id: int
+
+
+class InstitutionalPaperEntry(BaseModel):
+    title: str = Field(min_length=2, max_length=600)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    doi: Optional[str] = Field(default=None, max_length=300)
+    authors: Optional[List[str]] = None
+    abstract: Optional[str] = Field(default="", max_length=6000)
+    pdf_url: Optional[str] = Field(default=None, max_length=2000)
+    institutional_url: Optional[str] = Field(default=None, max_length=2000)
+
+
+class InstitutionalImportRequest(BaseModel):
+    workspace_id: int
+    source_name: str = Field(default="institutional_portal", max_length=120)
+    entries: Optional[List[InstitutionalPaperEntry]] = None
+    raw_text: Optional[str] = Field(default=None, max_length=150000)
+
+
+class AccessResolveRequest(BaseModel):
+    workspace_id: Optional[int] = None
+    paper_id: Optional[int] = None
+    title: Optional[str] = Field(default="", max_length=600)
+    source: Optional[str] = Field(default="", max_length=120)
+    doi: Optional[str] = Field(default=None, max_length=300)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    pdf_url: Optional[str] = Field(default=None, max_length=2000)
+    institutional_url: Optional[str] = Field(default=None, max_length=2000)
+
+
+class WorkspaceAccessResolveRequest(BaseModel):
+    workspace_id: int
+    refresh_all: bool = False
+    max_unpaywall_lookups: int = Field(default=20, ge=2, le=80)
 
 
 def _record_search_history(
@@ -285,6 +452,35 @@ def _strip_xml_html_tags(text: str) -> str:
     return clean
 
 
+def _xml_local_name(tag: str) -> str:
+    return str(tag or "").split("}")[-1]
+
+
+def _xml_text_values(node: ET.Element, local_name: str, max_items: int = 50) -> List[str]:
+    out: List[str] = []
+    expected = str(local_name or "").strip().lower()
+    if not expected:
+        return out
+    for el in node.iter():
+        if _xml_local_name(el.tag).lower() != expected:
+            continue
+        value = re.sub(r"\s+", " ", str(el.text or "").strip())
+        if not value:
+            continue
+        out.append(value)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _first_nonempty(values: List[str], default: str = "") -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return default
+
+
 def _extract_crossref_published(item: Dict[str, Any]) -> str:
     """Extract publication date from common Crossref date containers."""
     for key in ("published-print", "published-online", "issued", "created"):
@@ -344,9 +540,159 @@ def _has_pdf(paper: Dict[str, Any]) -> bool:
     return url.endswith(".pdf") or pdf_url.endswith(".pdf") or bool(pdf_url)
 
 
-def _global_cache_key(query: str, max_results: int, offset: int, user_id: int) -> str:
+def _is_pdf_url(url: str) -> bool:
+    raw = str(url or "").strip().lower()
+    if not raw:
+        return False
+    return raw.endswith(".pdf") or "/pdf" in raw or "downloadpdf" in raw
+
+
+def _normalize_doi(doi: str) -> str:
+    cleaned = str(doi or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+    cleaned = re.sub(r"^doi:\s*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def _paper_full_text_url_from_fields(
+    pdf_url: Optional[str],
+    institutional_url: Optional[str],
+    url: Optional[str],
+) -> str:
+    pdf_value = str(pdf_url or "").strip()
+    institutional_value = str(institutional_url or "").strip()
+    url_value = str(url or "").strip()
+    if pdf_value:
+        return pdf_value
+    if institutional_value:
+        return institutional_value
+    if _is_pdf_url(url_value):
+        return url_value
+    return ""
+
+
+def _annotate_access_metadata(paper: Dict[str, Any]) -> Dict[str, Any]:
+    source = str(paper.get("source") or "").strip().lower()
+    doi = _normalize_doi(str(paper.get("doi") or ""))
+    url = str(paper.get("url") or "").strip()
+    pdf_url = str(paper.get("pdf_url") or "").strip()
+    institutional_url = str(paper.get("institutional_url") or "").strip()
+
+    full_text_url = _paper_full_text_url_from_fields(pdf_url, institutional_url, url)
+    full_text_available = bool(full_text_url)
+
+    if institutional_url and full_text_url == institutional_url and not pdf_url:
+        access_type = "institutional"
+        access_label = "Institutional Full Text"
+    elif full_text_available and (source in OPEN_ACCESS_SOURCES or bool(pdf_url)):
+        access_type = "open_access"
+        access_label = "Open Full Text"
+    elif full_text_available:
+        access_type = "full_text_link"
+        access_label = "Full Text Link"
+    elif doi:
+        access_type = "doi_only"
+        access_label = "DOI Available"
+    else:
+        access_type = "metadata_only"
+        access_label = "Metadata Only"
+
+    paper["doi"] = doi or paper.get("doi") or ""
+    paper["full_text_available"] = full_text_available
+    paper["access_type"] = access_type
+    paper["access_label"] = access_label
+    if full_text_url:
+        paper["full_text_url"] = full_text_url
+    elif "full_text_url" in paper:
+        paper.pop("full_text_url", None)
+    return paper
+
+
+def _looks_like_doi(token: str) -> str:
+    text = str(token or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", text)
+    if not match:
+        return ""
+    return _normalize_doi(match.group(1))
+
+
+def _entry_title_from_url(url: str) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return ""
+    candidate = value.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
+    if not candidate:
+        return "Imported paper"
+    return candidate[:220]
+
+
+def _parse_institutional_raw_text(raw_text: str) -> List[InstitutionalPaperEntry]:
+    entries: List[InstitutionalPaperEntry] = []
+    for raw_line in (raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+
+        parts = [segment.strip() for segment in re.split(r"\s*\|\s*|\t", line) if segment.strip()]
+        if not parts:
+            continue
+
+        title = parts[0]
+        url = ""
+        doi = ""
+        authors: List[str] = []
+        pdf_url = ""
+
+        for token in parts[1:]:
+            token_val = token.strip()
+            if not token_val:
+                continue
+            if token_val.lower().startswith("http"):
+                if not url:
+                    url = token_val
+                if _is_pdf_url(token_val) and not pdf_url:
+                    pdf_url = token_val
+                continue
+            possible_doi = _looks_like_doi(token_val)
+            if possible_doi and not doi:
+                doi = possible_doi
+                continue
+            authors.append(token_val)
+
+        if title.lower().startswith("http"):
+            if not url:
+                url = title
+            title = _entry_title_from_url(url)
+
+        title = re.sub(r"^\d+[\).\-\s]+", "", title).strip()[:600]
+        if not title:
+            continue
+
+        entries.append(
+            InstitutionalPaperEntry(
+                title=title,
+                url=url or None,
+                doi=doi or None,
+                authors=authors[:12] if authors else [],
+                abstract="",
+                pdf_url=pdf_url or None,
+                institutional_url=url or None,
+            )
+        )
+    return entries
+
+
+def _global_cache_key(query: str, max_results: int, offset: int, search_mode: str = "balanced") -> str:
     """Build a stable cache key for a global search request."""
-    return f"{user_id}:{query.strip().lower()}:{max_results}:{offset}"
+    mode = _normalize_search_mode(search_mode)
+    normalized_query = re.sub(r"\s+", " ", str(query or "").strip().lower())
+    return f"{mode}:{normalized_query}:{max_results}:{offset}"
 
 
 def _global_cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
@@ -382,6 +728,13 @@ def _log_search_event(event: str, **fields: Any) -> None:
         logging.getLogger(__name__).info(json.dumps(payload, default=str))
     except Exception:
         logging.getLogger(__name__).info("search_event=%s fields=%s", event, str(fields))
+
+
+def _normalize_search_mode(value: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in GLOBAL_SEARCH_SOURCE_PRESETS:
+        return mode
+    return "balanced"
 
 
 def _get_core_key() -> str:
@@ -1813,6 +2166,859 @@ async def search_datacite(
     }
 
 
+def _extract_dblp_author_names(raw_authors: Any) -> List[str]:
+    if isinstance(raw_authors, dict):
+        raw_authors = raw_authors.get("author")
+    if isinstance(raw_authors, str):
+        raw_authors = [raw_authors]
+    elif isinstance(raw_authors, dict):
+        raw_authors = [raw_authors]
+    if not isinstance(raw_authors, list):
+        return []
+
+    authors: List[str] = []
+    for item in raw_authors:
+        if isinstance(item, dict):
+            name = str(item.get("text") or item.get("@text") or item.get("name") or "").strip()
+        else:
+            name = str(item or "").strip()
+        if not name or name in authors:
+            continue
+        authors.append(name)
+        if len(authors) >= 12:
+            break
+    return authors
+
+
+# ---------------------------------------------------------------------------
+# DBLP search (computer science bibliography)
+# ---------------------------------------------------------------------------
+
+@router.get("/search-dblp")
+async def search_dblp(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search DBLP publication index."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    params = {
+        "q": query,
+        "h": page_size,
+        "f": start_offset,
+        "format": "json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                DBLP_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="DBLP timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="DBLP rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="DBLP API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="DBLP API error.")
+
+    result = data.get("result") or {}
+    hits = result.get("hits") or {}
+    raw_items = hits.get("hit") or []
+    if isinstance(raw_items, dict):
+        raw_items = [raw_items]
+
+    papers = []
+    for row in raw_items:
+        info = row.get("info") if isinstance(row, dict) else {}
+        if not isinstance(info, dict):
+            continue
+
+        title = str(info.get("title") or "").strip()
+        if not title:
+            continue
+
+        doi = _normalize_doi(str(info.get("doi") or ""))
+        ee_field = info.get("ee")
+        ee_url = ""
+        if isinstance(ee_field, list):
+            ee_url = str(ee_field[0] or "").strip() if ee_field else ""
+        elif isinstance(ee_field, str):
+            ee_url = ee_field.strip()
+        url = ee_url or str(info.get("url") or "").strip()
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+
+        year = str(info.get("year") or "").strip()
+        published = f"{year}-01-01" if re.fullmatch(r"\d{4}", year) else year
+        venue = str(info.get("venue") or "").strip()
+        publication_type = str(info.get("type") or "").strip()
+        categories = [item for item in [venue, publication_type] if item][:3]
+
+        papers.append(
+            {
+                "title": title,
+                "authors": _extract_dblp_author_names(info.get("authors")),
+                "abstract": "No abstract available.",
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi,
+                "publication_name": venue,
+                "source": "dblp",
+            }
+        )
+
+    total = hits.get("@total") if isinstance(hits, dict) else None
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "dblp",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Zenodo search (open repository records)
+# ---------------------------------------------------------------------------
+
+@router.get("/search-zenodo")
+async def search_zenodo(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search Zenodo records and return publication-like entries."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "q": query,
+        "page": page,
+        "size": page_size,
+        "sort": "mostrecent",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                ZENODO_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Zenodo timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Zenodo rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="Zenodo API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Zenodo API error.")
+
+    hits = data.get("hits") or {}
+    raw_items = hits.get("hits") or []
+    papers = []
+
+    for row in raw_items:
+        metadata = row.get("metadata") if isinstance(row, dict) else {}
+        if not isinstance(metadata, dict):
+            continue
+        title = str(metadata.get("title") or "").strip()
+        if not title:
+            continue
+
+        creators = metadata.get("creators") or []
+        authors = []
+        if isinstance(creators, list):
+            for creator in creators:
+                if not isinstance(creator, dict):
+                    continue
+                name = str(creator.get("name") or "").strip()
+                if not name:
+                    continue
+                authors.append(name)
+                if len(authors) >= 12:
+                    break
+
+        description = _strip_xml_html_tags(metadata.get("description") or "")
+        if not description:
+            description = "No abstract available."
+
+        doi = _normalize_doi(str(row.get("doi") or metadata.get("doi") or ""))
+        links = row.get("links") if isinstance(row.get("links"), dict) else {}
+        url = str(links.get("html") or links.get("self_html") or links.get("record_html") or "").strip()
+        if not url:
+            rec_id = row.get("id")
+            if rec_id is not None:
+                url = f"https://zenodo.org/records/{rec_id}"
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+
+        pdf_url = ""
+        for file_obj in row.get("files") or []:
+            if not isinstance(file_obj, dict):
+                continue
+            file_links = file_obj.get("links") if isinstance(file_obj.get("links"), dict) else {}
+            candidate = str(file_links.get("self") or file_links.get("download") or "").strip()
+            key = str(file_obj.get("key") or "").strip()
+            if not candidate and key.endswith(".pdf"):
+                rec_id = row.get("id")
+                if rec_id is not None:
+                    candidate = f"https://zenodo.org/records/{rec_id}/files/{key}?download=1"
+            if candidate and _is_pdf_url(candidate):
+                pdf_url = candidate
+                break
+
+        resource_type_obj = metadata.get("resource_type") or {}
+        resource_type = ""
+        if isinstance(resource_type_obj, dict):
+            resource_type = str(
+                resource_type_obj.get("title")
+                or resource_type_obj.get("type")
+                or ""
+            ).strip()
+        keywords = metadata.get("keywords") if isinstance(metadata.get("keywords"), list) else []
+        categories = [resource_type] if resource_type else []
+        for keyword in keywords:
+            k = str(keyword or "").strip()
+            if not k:
+                continue
+            categories.append(k)
+            if len(categories) >= 3:
+                break
+
+        published_raw = str(
+            metadata.get("publication_date")
+            or metadata.get("date")
+            or row.get("created")
+            or ""
+        ).strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        paper_row = {
+            "title": title,
+            "authors": authors,
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": categories[:3],
+            "doi": doi,
+            "pdf_url": pdf_url or None,
+            "source": "zenodo",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    total = hits.get("total")
+    if isinstance(total, dict):
+        total = total.get("value")
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "zenodo",
+    }
+
+
+@router.get("/search-openaire")
+async def search_openaire(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search OpenAIRE publications."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "keywords": query,
+        "size": page_size,
+        "page": page,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                OPENAIRE_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        root = ET.fromstring(response.text)
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="OpenAIRE timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="OpenAIRE rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="OpenAIRE API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="OpenAIRE API error.")
+    except ET.ParseError:
+        raise HTTPException(status_code=502, detail="OpenAIRE returned invalid XML.")
+
+    papers: List[Dict[str, Any]] = []
+    result_nodes = root.findall(".//result")
+    for row in result_nodes:
+        titles = _xml_text_values(row, "title", max_items=8)
+        title = _first_nonempty(titles)
+        if not title:
+            continue
+
+        creators = _xml_text_values(row, "creator", max_items=16)
+        descriptions = _xml_text_values(row, "description", max_items=6)
+        subjects = _xml_text_values(row, "subject", max_items=10)
+        fulltexts = _xml_text_values(row, "fulltext", max_items=6)
+        urls = _xml_text_values(row, "url", max_items=10)
+        pids = (
+            _xml_text_values(row, "pid", max_items=8)
+            + _xml_text_values(row, "alternateidentifier", max_items=8)
+            + _xml_text_values(row, "originalid", max_items=8)
+        )
+        date_values = (
+            _xml_text_values(row, "dateofacceptance", max_items=4)
+            + _xml_text_values(row, "relevantdate", max_items=4)
+            + _xml_text_values(row, "dateofcollection", max_items=4)
+        )
+        source_values = _xml_text_values(row, "source", max_items=3)
+
+        description = _first_nonempty([_strip_xml_html_tags(item) for item in descriptions], "No abstract available.")
+        if not description:
+            description = "No abstract available."
+
+        doi = ""
+        for token in pids + urls:
+            doi_candidate = _looks_like_doi(token)
+            if doi_candidate:
+                doi = doi_candidate
+                break
+
+        full_text_url = _first_nonempty(fulltexts)
+        first_url = _first_nonempty([item for item in urls if str(item).startswith("http")])
+        url = full_text_url or first_url
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+
+        published_raw = _first_nonempty(date_values)
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        categories: List[str] = []
+        for value in subjects:
+            tag = str(value or "").strip()
+            if not tag or tag in categories:
+                continue
+            categories.append(tag)
+            if len(categories) >= 3:
+                break
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": creators[:12],
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": categories,
+            "doi": doi,
+            "pdf_url": full_text_url if _is_pdf_url(full_text_url) else None,
+            "publication_name": _first_nonempty(source_values),
+            "source": "openaire",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    total_value = root.findtext("./header/total", "")
+    try:
+        total = int(total_value) if str(total_value).strip() else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "openaire",
+    }
+
+
+@router.get("/search-figshare")
+async def search_figshare(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search Figshare public records."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "search_for": query,
+        "page": page,
+        "page_size": page_size,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                FIGSHARE_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        rows = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Figshare timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Figshare rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="Figshare API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Figshare API error.")
+
+    if not isinstance(rows, list):
+        rows = []
+
+    papers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "").strip()
+        if not title:
+            continue
+        doi = _normalize_doi(str(row.get("doi") or ""))
+        url = str(row.get("url_public_html") or "").strip()
+        if not url:
+            handle = str(row.get("handle") or "").strip()
+            if handle:
+                url = f"https://hdl.handle.net/{handle}"
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+        published_raw = str(row.get("published_date") or "").strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+        defined_type_name = str(row.get("defined_type_name") or "").strip()
+        resource_title = str(row.get("resource_title") or "").strip()
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": [],
+            "abstract": "No abstract available.",
+            "url": url,
+            "published": published,
+            "categories": [item for item in [defined_type_name, resource_title] if item][:3],
+            "doi": doi,
+            "source": "figshare",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = returned == page_size
+    return {
+        "papers": papers,
+        "total": None,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "figshare",
+    }
+
+
+@router.get("/search-osf")
+async def search_osf(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search OSF preprints."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "filter[title]": query,
+        "page[size]": page_size,
+        "page": page,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                OSF_PREPRINT_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="OSF timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="OSF rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="OSF API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="OSF API error.")
+
+    rows = data.get("data") if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+
+    papers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        attrs = row.get("attributes") if isinstance(row.get("attributes"), dict) else {}
+        links = row.get("links") if isinstance(row.get("links"), dict) else {}
+        title = str(attrs.get("title") or "").strip()
+        if not title:
+            continue
+        doi = _normalize_doi(str(attrs.get("doi") or ""))
+        if not doi:
+            doi = _looks_like_doi(str(links.get("preprint_doi") or ""))
+        url = str(links.get("html") or links.get("preprint_doi") or links.get("self") or "").strip()
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+        description = _strip_xml_html_tags(attrs.get("description") or "")
+        if not description:
+            description = "No abstract available."
+        published_raw = str(attrs.get("date_published") or attrs.get("original_publication_date") or "").strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        subject_tags: List[str] = []
+        subjects = attrs.get("subjects")
+        if isinstance(subjects, list):
+            for branch in subjects:
+                if not isinstance(branch, list):
+                    continue
+                for subject in branch:
+                    if not isinstance(subject, dict):
+                        continue
+                    text = str(subject.get("text") or "").strip()
+                    if not text or text in subject_tags:
+                        continue
+                    subject_tags.append(text)
+                    if len(subject_tags) >= 3:
+                        break
+                if len(subject_tags) >= 3:
+                    break
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": [],
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": subject_tags,
+            "doi": doi,
+            "source": "osf",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = bool((data.get("links") or {}).get("next")) if isinstance(data, dict) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": None,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "osf",
+    }
+
+
+@router.get("/search-dryad")
+async def search_dryad(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search Dryad datasets/publications."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "query": query,
+        "page[size]": page_size,
+        "page[number]": page,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                DRYAD_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Dryad timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="Dryad rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="Dryad API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Dryad API error.")
+
+    embedded = data.get("_embedded") if isinstance(data, dict) else {}
+    if not isinstance(embedded, dict):
+        embedded = {}
+    rows = embedded.get("stash:datasets")
+    if not isinstance(rows, list):
+        rows = []
+
+    papers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "").strip()
+        if not title:
+            continue
+        doi = _normalize_doi(str(row.get("identifier") or ""))
+        url = f"https://doi.org/{doi}" if doi else ""
+        if not url:
+            links = row.get("_links") if isinstance(row.get("_links"), dict) else {}
+            self_link = links.get("self") if isinstance(links.get("self"), dict) else {}
+            href = str(self_link.get("href") or "").strip()
+            if href.startswith("/"):
+                url = f"https://datadryad.org{href}"
+            else:
+                url = href
+        description = _strip_xml_html_tags(row.get("abstract") or "")
+        if not description:
+            description = "No abstract available."
+        published_raw = str(row.get("publicationDate") or "").strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        authors = []
+        for author in row.get("authors") or []:
+            if not isinstance(author, dict):
+                continue
+            first = str(author.get("firstName") or "").strip()
+            last = str(author.get("lastName") or "").strip()
+            full_name = f"{first} {last}".strip() or str(author.get("name") or "").strip()
+            if not full_name:
+                continue
+            authors.append(full_name)
+            if len(authors) >= 12:
+                break
+
+        categories = []
+        for keyword in row.get("keywords") or []:
+            value = str(keyword or "").strip()
+            if not value or value in categories:
+                continue
+            categories.append(value)
+            if len(categories) >= 3:
+                break
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": authors,
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": categories,
+            "doi": doi,
+            "source": "dryad",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    total = data.get("total") if isinstance(data, dict) else None
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "dryad",
+    }
+
+
+@router.get("/search-inspire")
+async def search_inspire(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search INSPIRE-HEP literature API."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "q": query,
+        "size": page_size,
+        "page": page,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(
+                INSPIRE_HEP_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="INSPIRE-HEP timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="INSPIRE-HEP rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="INSPIRE-HEP API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="INSPIRE-HEP API error.")
+
+    hits = data.get("hits") if isinstance(data, dict) else {}
+    if not isinstance(hits, dict):
+        hits = {}
+    rows = hits.get("hits")
+    if not isinstance(rows, list):
+        rows = []
+
+    papers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        titles = metadata.get("titles") if isinstance(metadata.get("titles"), list) else []
+        first_title = titles[0] if titles and isinstance(titles[0], dict) else {}
+        title = str(first_title.get("title") or "").strip()
+        if not title:
+            continue
+
+        abstracts = metadata.get("abstracts") if isinstance(metadata.get("abstracts"), list) else []
+        first_abstract = abstracts[0] if abstracts and isinstance(abstracts[0], dict) else {}
+        description = _strip_xml_html_tags(first_abstract.get("value") or "")
+        if not description:
+            description = "No abstract available."
+
+        authors = []
+        for author in metadata.get("authors") or []:
+            if not isinstance(author, dict):
+                continue
+            name = str(author.get("full_name") or "").strip()
+            if not name:
+                continue
+            authors.append(name)
+            if len(authors) >= 12:
+                break
+
+        doi = ""
+        for item in metadata.get("dois") or []:
+            if not isinstance(item, dict):
+                continue
+            doi = _normalize_doi(str(item.get("value") or ""))
+            if doi:
+                break
+
+        published_raw = str(metadata.get("earliest_date") or metadata.get("preprint_date") or "").strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+        control_number = metadata.get("control_number") or row.get("id")
+        url = f"https://inspirehep.net/literature/{control_number}" if control_number else ""
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+
+        categories = []
+        for cat in metadata.get("inspire_categories") or []:
+            if not isinstance(cat, dict):
+                continue
+            term = str(cat.get("term") or "").strip()
+            if not term or term in categories:
+                continue
+            categories.append(term)
+            if len(categories) >= 3:
+                break
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": authors,
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": categories,
+            "doi": doi,
+            "source": "inspire",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    total = hits.get("total")
+    if isinstance(total, dict):
+        total = total.get("value")
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "inspire",
+    }
+
+
 
 # ---------------------------------------------------------------------------
 # Global merged search (query all sources and merge)
@@ -1823,15 +3029,23 @@ async def search_global(
     query: str,
     max_results: int = 60,
     offset: int = 0,
+    search_mode: str = "balanced",
     track_history: bool = True,
     current_user: User = Depends(get_current_user),
 ):
     """Search all sources together and return merged, de-duplicated results."""
     started_at = time.perf_counter()
     _GLOBAL_SEARCH_METRICS["requests_total"] = int(_GLOBAL_SEARCH_METRICS.get("requests_total", 0)) + 1
-    page_size = max(10, min(max_results, 120))
+    resolved_mode = _normalize_search_mode(search_mode)
+    max_cap = int(GLOBAL_SEARCH_MAX_RESULTS_BY_MODE.get(resolved_mode, 140))
+    page_size = max(10, min(max_results, max_cap))
     start_offset = max(0, offset)
-    cache_key = _global_cache_key(query=query, max_results=page_size, offset=start_offset, user_id=current_user.id)
+    cache_key = _global_cache_key(
+        query=query,
+        max_results=page_size,
+        offset=start_offset,
+        search_mode=resolved_mode,
+    )
     cached = _global_cache_get(cache_key)
     if cached:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1842,6 +3056,7 @@ async def search_global(
         _log_search_event(
             "search_global_cache_hit",
             user_id=current_user.id,
+            search_mode=resolved_mode,
             query_len=len(query.strip()),
             offset=start_offset,
             max_results=page_size,
@@ -1860,24 +3075,15 @@ async def search_global(
             )
         return cached
 
-    source_order = [
-        "openalex",
-        "arxiv",
-        "europepmc",
-        "pubmed",
-        "doaj",
-        "hal",
-        "biorxiv",
-        "medrxiv",
-        "plos",
-        "elife",
-        "semantic",
-        "springer",
-        "datacite",
-        "nasa",
-    ]
-    per_source_limit = max(8, min(30, (page_size // max(1, len(source_order))) + 8))
-    source_semaphore = asyncio.Semaphore(GLOBAL_SOURCE_CONCURRENCY)
+    source_order = list(GLOBAL_SEARCH_SOURCE_PRESETS.get(resolved_mode, GLOBAL_SEARCH_SOURCE_PRESETS["balanced"]))
+    if resolved_mode == "fast":
+        per_source_limit = max(6, min(20, (page_size // max(1, len(source_order))) + 6))
+    elif resolved_mode == "deep":
+        per_source_limit = max(10, min(40, (page_size // max(1, len(source_order))) + 12))
+    else:
+        per_source_limit = max(8, min(30, (page_size // max(1, len(source_order))) + 8))
+    source_concurrency = int(GLOBAL_SOURCE_CONCURRENCY_BY_MODE.get(resolved_mode, GLOBAL_SOURCE_CONCURRENCY))
+    source_semaphore = asyncio.Semaphore(max(3, source_concurrency))
 
     async def _run_source(source_name: str):
         try:
@@ -1926,10 +3132,66 @@ async def search_global(
                     offset=start_offset,
                     current_user=current_user,
                 )
+            elif source_name == "openaire":
+                data = await search_openaire(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "figshare":
+                data = await search_figshare(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "osf":
+                data = await search_osf(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "dryad":
+                data = await search_dryad(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "inspire":
+                data = await search_inspire(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "dblp":
+                data = await search_dblp(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "zenodo":
+                data = await search_zenodo(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
             elif source_name == "datacite":
                 data = await search_datacite(
                     query=query,
                     max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "crossref":
+                data = await search_crossref(
+                    query=query,
+                    max_results=min(per_source_limit, 50),
                     offset=start_offset,
                     current_user=current_user,
                 )
@@ -1992,7 +3254,9 @@ async def search_global(
             return source_name, None, str(exc)
 
     async def _run_with_cap(name: str):
-        timeout_budget = float(GLOBAL_SOURCE_TIMEOUT_OVERRIDES.get(name, GLOBAL_SOURCE_TIMEOUT_SECONDS))
+        base_timeout = float(GLOBAL_SOURCE_TIMEOUT_OVERRIDES.get(name, GLOBAL_SOURCE_TIMEOUT_SECONDS))
+        timeout_factor = float(GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE.get(resolved_mode, 1.0))
+        timeout_budget = max(2.5, base_timeout * timeout_factor)
         try:
             async with source_semaphore:
                 return await asyncio.wait_for(_run_source(name), timeout=timeout_budget)
@@ -2005,10 +3269,16 @@ async def search_global(
     collected_raw = 0
     successful_sources = 0
     fast_path_reached = False
-    fast_path_target = max(26, min(page_size + 10, 72))
+    if resolved_mode == "fast":
+        fast_path_target = max(18, min(page_size + 8, 52))
+    elif resolved_mode == "deep":
+        fast_path_target = max(36, min(page_size + 18, 110))
+    else:
+        fast_path_target = max(26, min(page_size + 10, 72))
 
     try:
-        for finished in asyncio.as_completed(list(task_map.keys()), timeout=GLOBAL_SEARCH_WAIT_SECONDS):
+        wait_budget = float(GLOBAL_SEARCH_WAIT_BY_MODE.get(resolved_mode, GLOBAL_SEARCH_WAIT_SECONDS))
+        for finished in asyncio.as_completed(list(task_map.keys()), timeout=wait_budget):
             result = await finished
             source_results.append(result)
             source_name, data, error = result
@@ -2176,7 +3446,12 @@ async def search_global(
             source_counts[name] = source_counts.get(name, 0)
 
     # Enrich missing PDFs via Unpaywall for a small bounded set only.
-    max_unpaywall_lookups = GLOBAL_UNPAYWALL_MAX_LOOKUPS
+    max_unpaywall_lookups = int(
+        GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE.get(resolved_mode, GLOBAL_UNPAYWALL_MAX_LOOKUPS)
+    )
+    if start_offset > 0:
+        # Keep "load more" fast and avoid repeated DOI enrichment costs on later pages.
+        max_unpaywall_lookups = 0
     enrich_candidates = [
         paper
         for paper in merged_papers
@@ -2199,6 +3474,9 @@ async def search_global(
 
     if enrich_candidates:
         await asyncio.gather(*[_enrich_pdf(p) for p in enrich_candidates], return_exceptions=True)
+
+    for paper in merged_papers:
+        _annotate_access_metadata(paper)
 
     merged_papers.sort(
         key=lambda p: (
@@ -2230,17 +3508,20 @@ async def search_global(
         "next_offset": start_offset + len(merged_page),
         "has_more": has_more,
         "source": "global_merged",
+        "search_mode": resolved_mode,
         "sources_queried": source_order,
         "source_counts": source_counts,
         "source_status": source_status,
         "notice": notice,
         "cache_hit": False,
+        "duration_ms": 0,
     }
 
     timeout_count = sum(1 for item in source_status.values() if str(item.get("status")) == "timeout")
     error_count = sum(1 for item in source_status.values() if str(item.get("status")) == "error")
     partial = any(str(item.get("status")) in {"timeout", "error", "warning"} for item in source_status.values())
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    response_payload["duration_ms"] = elapsed_ms
 
     _GLOBAL_SEARCH_METRICS["timeouts_total"] = int(_GLOBAL_SEARCH_METRICS.get("timeouts_total", 0)) + timeout_count
     _GLOBAL_SEARCH_METRICS["errors_total"] = int(_GLOBAL_SEARCH_METRICS.get("errors_total", 0)) + error_count
@@ -2254,6 +3535,7 @@ async def search_global(
     _log_search_event(
         "search_global_complete",
         user_id=current_user.id,
+        search_mode=resolved_mode,
         query_len=len(query.strip()),
         offset=start_offset,
         max_results=page_size,
@@ -2890,6 +4172,311 @@ async def source_health(current_user: User = Depends(get_current_user)):
     return {"checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "sources": sources}
 
 
+def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int) -> Workspace:
+    workspace = (
+        db.query(Workspace)
+        .filter(Workspace.id == workspace_id, Workspace.user_id == user_id)
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return workspace
+
+
+async def _resolve_access_payload(
+    source: str,
+    doi: Optional[str],
+    url: Optional[str],
+    pdf_url: Optional[str],
+    institutional_url: Optional[str],
+) -> Dict[str, Any]:
+    normalized_doi = _normalize_doi(doi or "")
+    url_value = str(url or "").strip()
+    pdf_value = str(pdf_url or "").strip()
+    institutional_value = str(institutional_url or "").strip()
+
+    resolved_pdf = pdf_value or (url_value if _is_pdf_url(url_value) else "")
+    resolution_source = "existing_link" if resolved_pdf else None
+
+    if not resolved_pdf and normalized_doi:
+        try:
+            resolved_pdf = await asyncio.wait_for(
+                _fetch_unpaywall_pdf(normalized_doi),
+                timeout=GLOBAL_UNPAYWALL_TIMEOUT_SECONDS,
+            ) or ""
+            if resolved_pdf:
+                resolution_source = "unpaywall"
+        except asyncio.TimeoutError:
+            resolved_pdf = ""
+
+    payload: Dict[str, Any] = {
+        "source": str(source or "").strip().lower() or "manual_import",
+        "doi": normalized_doi or None,
+        "url": url_value or None,
+        "pdf_url": resolved_pdf or None,
+        "institutional_url": institutional_value or None,
+    }
+    _annotate_access_metadata(payload)
+    payload["resolution_source"] = resolution_source or (
+        "institutional" if institutional_value else "heuristic"
+    )
+    return payload
+
+
+@router.post("/import-institutional")
+async def import_institutional_papers(
+    payload: InstitutionalImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+    entries: List[InstitutionalPaperEntry] = []
+    if payload.entries:
+        entries.extend(payload.entries)
+    if payload.raw_text:
+        entries.extend(_parse_institutional_raw_text(payload.raw_text))
+
+    if not entries:
+        raise HTTPException(status_code=400, detail="No institutional entries provided.")
+
+    imported = 0
+    updated = 0
+    skipped = 0
+    errors: List[str] = []
+
+    for idx, entry in enumerate(entries, start=1):
+        title = str(entry.title or "").strip()
+        if len(title) < 2:
+            skipped += 1
+            continue
+
+        doi_norm = _normalize_doi(str(entry.doi or ""))
+        existing: Optional[Paper] = None
+        if doi_norm:
+            existing = (
+                db.query(Paper)
+                .filter(Paper.workspace_id == workspace.id, Paper.doi == doi_norm)
+                .first()
+            )
+        if not existing:
+            existing = (
+                db.query(Paper)
+                .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == title.lower())
+                .first()
+            )
+
+        try:
+            resolved = await _resolve_access_payload(
+                source=payload.source_name or "institutional_portal",
+                doi=doi_norm or None,
+                url=entry.url,
+                pdf_url=entry.pdf_url,
+                institutional_url=entry.institutional_url or entry.url,
+            )
+        except Exception as exc:
+            errors.append(f"Entry {idx}: {str(exc)[:140]}")
+            skipped += 1
+            continue
+
+        if existing:
+            existing.title = title[:600] or existing.title
+            if entry.authors:
+                existing.authors = ", ".join(entry.authors)[:2000]
+            if entry.abstract:
+                existing.abstract = str(entry.abstract)
+            existing.url = str(entry.url or existing.url or "").strip() or existing.url
+            if doi_norm:
+                existing.doi = doi_norm
+            existing.source = str(resolved.get("source") or existing.source or "institutional_portal")
+            existing.pdf_url = str(resolved.get("pdf_url") or existing.pdf_url or "").strip() or existing.pdf_url
+            existing.institutional_url = str(
+                resolved.get("institutional_url") or existing.institutional_url or ""
+            ).strip() or existing.institutional_url
+            existing.access_type = str(resolved.get("access_type") or existing.access_type or "institutional")
+            existing.full_text_available = bool(
+                resolved.get("full_text_available") or existing.full_text_available
+            )
+            updated += 1
+            continue
+
+        paper = Paper(
+            title=title[:600],
+            authors=", ".join(entry.authors or [])[:2000],
+            abstract=str(entry.abstract or "").strip() or "Institutional import entry.",
+            url=str(entry.url or "").strip() or None,
+            doi=doi_norm or None,
+            source=str(resolved.get("source") or "institutional_portal"),
+            pdf_url=str(resolved.get("pdf_url") or "").strip() or None,
+            institutional_url=str(resolved.get("institutional_url") or "").strip() or None,
+            access_type=str(resolved.get("access_type") or "institutional"),
+            full_text_available=bool(resolved.get("full_text_available")),
+            workspace_id=workspace.id,
+        )
+        db.add(paper)
+        imported += 1
+
+    db.commit()
+
+    return {
+        "workspace_id": workspace.id,
+        "workspace_name": workspace.name,
+        "source": str(payload.source_name or "institutional_portal").strip().lower(),
+        "received": len(entries),
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors[:12],
+    }
+
+
+@router.post("/resolve-access")
+async def resolve_access(
+    payload: AccessResolveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    paper: Optional[Paper] = None
+    if payload.workspace_id and payload.paper_id:
+        workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+        paper = (
+            db.query(Paper)
+            .filter(Paper.id == payload.paper_id, Paper.workspace_id == workspace.id)
+            .first()
+        )
+        if not paper:
+            raise HTTPException(status_code=404, detail="Paper not found in workspace.")
+
+    source = payload.source or (paper.source if paper else "") or "manual_import"
+    doi = payload.doi or (paper.doi if paper else "")
+    url = payload.url or (paper.url if paper else "")
+    pdf_url = payload.pdf_url or (paper.pdf_url if paper else "")
+    institutional_url = payload.institutional_url or (paper.institutional_url if paper else "")
+
+    resolved = await _resolve_access_payload(
+        source=str(source),
+        doi=doi,
+        url=url,
+        pdf_url=pdf_url,
+        institutional_url=institutional_url,
+    )
+
+    if paper:
+        if resolved.get("doi"):
+            paper.doi = str(resolved.get("doi"))
+        if resolved.get("url"):
+            paper.url = str(resolved.get("url"))
+        if resolved.get("pdf_url"):
+            paper.pdf_url = str(resolved.get("pdf_url"))
+        if resolved.get("institutional_url"):
+            paper.institutional_url = str(resolved.get("institutional_url"))
+        paper.source = str(resolved.get("source") or paper.source or "manual_import")
+        paper.access_type = str(resolved.get("access_type") or "metadata_only")
+        paper.full_text_available = bool(resolved.get("full_text_available"))
+        db.commit()
+        db.refresh(paper)
+
+    return {
+        "paper_id": paper.id if paper else None,
+        "title": (paper.title if paper else payload.title) or "",
+        "resolved": resolved,
+    }
+
+
+@router.post("/resolve-workspace-access")
+async def resolve_workspace_access(
+    payload: WorkspaceAccessResolveRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+    rows = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+    if not rows:
+        return {
+            "workspace_id": workspace.id,
+            "workspace_name": workspace.name,
+            "processed": 0,
+            "full_text_count": 0,
+            "updated": 0,
+            "sample": [],
+        }
+
+    unresolved = [
+        row for row in rows
+        if payload.refresh_all or not bool(row.full_text_available)
+    ]
+    max_unpaywall = max(2, min(payload.max_unpaywall_lookups, 80))
+    doi_lookups_used = 0
+    updated = 0
+    sample: List[Dict[str, Any]] = []
+
+    for row in unresolved:
+        doi_allowed = bool(row.doi) and doi_lookups_used < max_unpaywall
+        if doi_allowed:
+            doi_lookups_used += 1
+        resolved = await _resolve_access_payload(
+            source=str(row.source or "manual_import"),
+            doi=row.doi if doi_allowed else None,
+            url=row.url,
+            pdf_url=row.pdf_url,
+            institutional_url=row.institutional_url,
+        )
+
+        previous = (
+            bool(row.full_text_available),
+            str(row.access_type or ""),
+            str(row.pdf_url or ""),
+            str(row.institutional_url or ""),
+        )
+        row.source = str(resolved.get("source") or row.source or "manual_import")
+        row.access_type = str(resolved.get("access_type") or "metadata_only")
+        row.full_text_available = bool(resolved.get("full_text_available"))
+        if resolved.get("pdf_url"):
+            row.pdf_url = str(resolved.get("pdf_url"))
+        if resolved.get("institutional_url"):
+            row.institutional_url = str(resolved.get("institutional_url"))
+        after = (
+            bool(row.full_text_available),
+            str(row.access_type or ""),
+            str(row.pdf_url or ""),
+            str(row.institutional_url or ""),
+        )
+        if after != previous:
+            updated += 1
+
+        if len(sample) < 12:
+            sample.append(
+                {
+                    "paper_id": row.id,
+                    "title": row.title,
+                    "access_type": row.access_type,
+                    "full_text_available": bool(row.full_text_available),
+                    "full_text_url": _paper_full_text_url_from_fields(
+                        row.pdf_url,
+                        row.institutional_url,
+                        row.url,
+                    ) or None,
+                }
+            )
+
+    db.commit()
+
+    full_text_count = (
+        db.query(Paper)
+        .filter(Paper.workspace_id == workspace.id, Paper.full_text_available.is_(True))
+        .count()
+    )
+
+    return {
+        "workspace_id": workspace.id,
+        "workspace_name": workspace.name,
+        "processed": len(unresolved),
+        "full_text_count": int(full_text_count),
+        "updated": updated,
+        "doi_lookups_used": doi_lookups_used,
+        "sample": sample,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Import a paper into a workspace
 # ---------------------------------------------------------------------------
@@ -2908,16 +4495,69 @@ async def import_paper(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
+    normalized_doi = _normalize_doi(paper_data.doi or "")
+    normalized_title = re.sub(r"\s+", " ", str(paper_data.title or "").strip().lower())
+
+    existing: Optional[Paper] = None
+    if normalized_doi:
+        existing = (
+            db.query(Paper)
+            .filter(Paper.workspace_id == workspace.id, Paper.doi == normalized_doi)
+            .first()
+        )
+    if not existing and normalized_title:
+        existing = (
+            db.query(Paper)
+            .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == normalized_title)
+            .first()
+        )
+
+    source_name = str(paper_data.source or "manual_import").strip().lower()[:120] or "manual_import"
+    pdf_url = str(paper_data.pdf_url or "").strip()
+    institutional_url = str(paper_data.institutional_url or "").strip()
+    full_text_url = _paper_full_text_url_from_fields(pdf_url, institutional_url, paper_data.url)
+    full_text_available = (
+        bool(paper_data.full_text_available)
+        if paper_data.full_text_available is not None
+        else bool(full_text_url)
+    )
+
+    if existing:
+        existing.title = paper_data.title.strip()[:600] or existing.title
+        existing.authors = ", ".join(paper_data.authors or []).strip() or existing.authors
+        existing.abstract = (paper_data.abstract or "").strip() or existing.abstract
+        existing.url = (paper_data.url or existing.url or "").strip() or None
+        if normalized_doi:
+            existing.doi = normalized_doi
+        existing.bibcode = (paper_data.bibcode or existing.bibcode or "").strip() or None
+        existing.source = source_name or existing.source
+        existing.pdf_url = pdf_url or existing.pdf_url
+        existing.institutional_url = institutional_url or existing.institutional_url
+        existing.full_text_available = bool(full_text_available or existing.full_text_available)
+        existing.access_type = (
+            str(paper_data.access_type or "").strip().lower()
+            or existing.access_type
+            or ("open_access" if full_text_available else "metadata_only")
+        )
+        db.commit()
+        db.refresh(existing)
+        return {"message": "Paper updated successfully", "paper_id": existing.id, "updated": True}
+
     new_paper = Paper(
-        title=paper_data.title,
-        authors=", ".join(paper_data.authors),
+        title=paper_data.title.strip()[:600],
+        authors=", ".join(paper_data.authors or []),
         abstract=paper_data.abstract,
         url=paper_data.url,
-        doi=paper_data.doi,
+        doi=normalized_doi or None,
         bibcode=paper_data.bibcode,
+        source=source_name,
+        pdf_url=pdf_url or None,
+        institutional_url=institutional_url or None,
+        access_type=(str(paper_data.access_type or "").strip().lower() or ("open_access" if full_text_available else "metadata_only")),
+        full_text_available=bool(full_text_available),
         workspace_id=paper_data.workspace_id,
     )
     db.add(new_paper)
     db.commit()
     db.refresh(new_paper)
-    return {"message": "Paper imported successfully", "paper_id": new_paper.id}
+    return {"message": "Paper imported successfully", "paper_id": new_paper.id, "updated": False}

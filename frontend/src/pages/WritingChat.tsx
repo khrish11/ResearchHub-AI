@@ -87,6 +87,33 @@ declare global {
 const LAST_WORKSPACE_KEY = 'researchhub.last_workspace_id';
 const RESEARCH_CHAT_STORE_KEY = 'researchhub.research_chat.v1';
 
+interface StoredChatCitationLike {
+  label?: unknown;
+  paper_id?: unknown;
+  title?: unknown;
+  doi?: unknown;
+  url?: unknown;
+}
+
+interface StoredChatMessageLike {
+  role?: unknown;
+  content?: unknown;
+  createdAt?: unknown;
+  actions?: unknown;
+  citations?: unknown;
+  confidence?: unknown;
+  evidenceMap?: unknown;
+}
+
+const isStoredChatMessageLike = (value: unknown): value is StoredChatMessageLike => {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as StoredChatMessageLike;
+  return (
+    (record.role === 'user' || record.role === 'assistant') &&
+    typeof record.content === 'string'
+  );
+};
+
 const loadStoredThreads = (): Record<string, ChatMessage[]> => {
   try {
     const raw = localStorage.getItem(RESEARCH_CHAT_STORE_KEY);
@@ -97,7 +124,7 @@ const loadStoredThreads = (): Record<string, ChatMessage[]> => {
     Object.entries(parsed).forEach(([key, value]) => {
       if (!Array.isArray(value)) return;
       const messages = value
-        .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+        .filter(isStoredChatMessageLike)
         .map((item) => ({
           role: item.role as 'user' | 'assistant',
           content: String(item.content || ''),
@@ -105,19 +132,19 @@ const loadStoredThreads = (): Record<string, ChatMessage[]> => {
           actions: Array.isArray(item.actions) ? item.actions.map((x: unknown) => String(x)) : [],
           citations: Array.isArray(item.citations)
             ? item.citations
-                .filter((ref: unknown) => ref && typeof ref === 'object')
-                .map((ref: any) => ({
+                .filter((ref): ref is StoredChatCitationLike => Boolean(ref) && typeof ref === 'object')
+                .map((ref) => ({
                   label: String(ref.label || ''),
                   paper_id: Number(ref.paper_id || 0),
                   title: String(ref.title || ''),
                   doi: String(ref.doi || ''),
                   url: String(ref.url || ''),
                 }))
-                .filter((ref: ChatCitation) => ref.label && ref.title)
+                .filter((ref) => ref.label && ref.title)
             : [],
-          confidence: Number.isFinite(Number((item as any).confidence)) ? Number((item as any).confidence) : undefined,
-          evidenceMap: Array.isArray((item as any).evidenceMap)
-            ? (item as any).evidenceMap.map((x: unknown) => String(x))
+          confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : undefined,
+          evidenceMap: Array.isArray(item.evidenceMap)
+            ? item.evidenceMap.map((x: unknown) => String(x))
             : [],
         }));
       out[key] = messages.slice(-24);

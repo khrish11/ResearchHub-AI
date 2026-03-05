@@ -17,7 +17,7 @@ import {
 const featureCards = [
   {
     title: 'Signal Search',
-    description: 'Query ArXiv, Semantic Scholar, IEEE, Springer, and NASA ADS from one place.',
+    description: 'Query ArXiv, Semantic Scholar, OpenAIRE, Springer, and NASA ADS from one place.',
     icon: Search,
     bg: 'rgba(79, 70, 229, 0.12)',
     color: '#4f46e5',
@@ -150,6 +150,20 @@ const Landing: React.FC = () => {
           <p className="landing-footer-note">
             FastAPI backend | React + TypeScript frontend | secure auth with local and Google sign in
           </p>
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-xs text-slate-300">
+            <Link to="/privacy" className="hover:text-white">
+              Privacy
+            </Link>
+            <Link to="/terms" className="hover:text-white">
+              Terms
+            </Link>
+            <Link to="/cookies" className="hover:text-white">
+              Cookies
+            </Link>
+            <Link to="/data-rights" className="hover:text-white">
+              Data Rights
+            </Link>
+          </div>
         </main>
       </div>
     </div>

@@ -148,8 +148,9 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
               )}
 
               <div>
-                <label className="auth-label">Email</label>
+                <label htmlFor="login-email" className="auth-label">Email</label>
                 <input
+                  id="login-email"
                   type="email"
                   required
                   className="auth-input"
@@ -160,8 +161,9 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
               </div>
 
               <div>
-                <label className="auth-label">Password</label>
+                <label htmlFor="login-password" className="auth-label">Password</label>
                 <input
+                  id="login-password"
                   type="password"
                   required
                   className="auth-input"

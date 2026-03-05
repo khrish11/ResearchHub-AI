@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Download, Upload, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import type { AxiosError } from 'axios';
 import api from '../api';
 import { useToast } from '../contexts/ToastContext';
 
@@ -48,7 +49,7 @@ const DataExportImport: React.FC<DataExportImportProps> = ({
       window.URL.revokeObjectURL(url);
 
       showSuccess(`Papers exported successfully as ${format.toUpperCase()}`);
-    } catch (error) {
+    } catch {
       showError('Failed to export papers');
     } finally {
       setExporting(null);
@@ -90,8 +91,10 @@ const DataExportImport: React.FC<DataExportImportProps> = ({
         showError(`Failed to import ${results.failed} papers`);
       }
 
-    } catch (error: any) {
-      const message = error?.response?.data?.detail || 'Failed to import papers';
+    } catch (error: unknown) {
+      const message =
+        (error as AxiosError<{ detail?: string }>)?.response?.data?.detail ||
+        'Failed to import papers';
       showError(message);
     } finally {
       setImporting(false);

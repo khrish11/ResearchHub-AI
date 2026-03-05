@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from sqlalchemy.exc import SQLAlchemyError
 from passlib.context import CryptContext
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 from urllib.parse import urlencode, urlparse
@@ -23,7 +24,7 @@ from email_service import (
     verify_email_token
 )
 from database import get_db
-from models import User, Workspace, Paper, Chat, SearchHistory, UserSessionState, WorkspaceDocument
+from models import User, Workspace, Paper, Chat, SearchHistory, UserSessionState, WorkspaceDocument, DataRightsRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -341,7 +342,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-    except JWTError:
+    except InvalidTokenError:
         raise credentials_exception
     normalized_email = _normalize_email(email)
     user = _merge_duplicate_users_for_email(db, normalized_email)
@@ -872,6 +873,7 @@ async def delete_account(
         db.query(Workspace).filter(Workspace.id.in_(workspace_ids)).delete(synchronize_session=False)
     db.query(WorkspaceDocument).filter(WorkspaceDocument.user_id == current_user.id).delete(synchronize_session=False)
     db.query(SearchHistory).filter(SearchHistory.user_id == current_user.id).delete(synchronize_session=False)
+    db.query(DataRightsRequest).filter(DataRightsRequest.user_id == current_user.id).delete(synchronize_session=False)
     db.query(UserSessionState).filter(UserSessionState.user_id == current_user.id).delete(synchronize_session=False)
 
     db.delete(current_user)

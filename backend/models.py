@@ -24,6 +24,7 @@ class User(Base):
     search_history = relationship("SearchHistory", back_populates="user")
     session_state = relationship("UserSessionState", back_populates="user", uselist=False)
     documents = relationship("WorkspaceDocument", back_populates="owner")
+    data_rights_requests = relationship("DataRightsRequest", back_populates="user")
 
 class Workspace(Base):
     __tablename__ = "workspaces"
@@ -49,6 +50,11 @@ class Paper(Base):
     url = Column(String, nullable=True)
     doi = Column(String, nullable=True)
     bibcode = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    pdf_url = Column(String, nullable=True)
+    institutional_url = Column(String, nullable=True)
+    access_type = Column(String, nullable=True)
+    full_text_available = Column(Boolean, default=False)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     
     workspace = relationship("Workspace", back_populates="papers")
@@ -108,3 +114,19 @@ class WorkspaceDocument(Base):
 
     workspace = relationship("Workspace", back_populates="document")
     owner = relationship("User", back_populates="documents")
+
+
+class DataRightsRequest(Base):
+    __tablename__ = "data_rights_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    email = Column(String, index=True)
+    request_type = Column(String, index=True)
+    jurisdiction = Column(String, nullable=True)
+    details = Column(Text, nullable=True)
+    status = Column(String, default="submitted", index=True)
+    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="data_rights_requests")

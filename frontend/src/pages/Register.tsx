@@ -121,19 +121,15 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <p className="auth-eyebrow">Get started</p>
               <h3 className="auth-title">Create your account</h3>
               <p className="auth-copy">Start building your research workflow.</p>
-              <div className="auth-status-row">
-                <span className={`auth-status-chip ${googleConfigured ? 'auth-status-ok' : 'auth-status-off'}`}>
-                  Google OAuth {googleConfigured ? 'configured' : 'not configured'}
-                </span>
-              </div>
             </div>
 
             <form className="space-y-5" onSubmit={handleSubmit}>
               {error && <div className="auth-error">{error}</div>}
 
               <div>
-                <label className="auth-label">Email</label>
+                <label htmlFor="register-email" className="auth-label">Email</label>
                 <input
+                  id="register-email"
                   type="email"
                   required
                   className="auth-input"
@@ -144,8 +140,9 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               </div>
 
               <div>
-                <label className="auth-label">Password</label>
+                <label htmlFor="register-password" className="auth-label">Password</label>
                 <input
+                  id="register-password"
                   type="password"
                   required
                   className="auth-input"

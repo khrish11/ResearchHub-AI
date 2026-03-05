@@ -1,0 +1,83 @@
+name: Security Scans
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Public URL for OWASP ZAP baseline scan (example: https://app.example.com)"
+        required: false
+        type: string
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  dependency-and-sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backend deps and security tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install bandit pip-audit
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run Bandit (backend SAST)
+        run: |
+          mkdir -p security-reports
+          bandit -r backend -x backend/venv,backend/tests -ll -f json -o security-reports/bandit.json
+
+      - name: Run pip-audit (Python dependencies)
+        run: |
+          pip-audit -r backend/requirements.txt -f json -o security-reports/pip-audit.json
+
+      - name: Run npm audit (frontend dependencies)
+        working-directory: frontend
+        run: |
+          npm audit --json > ../security-reports/npm-audit.json
+
+      - name: Run Gitleaks (secret scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: security-reports/
+          if-no-files-found: warn
+
+  owasp-zap-baseline:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target_url != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: OWASP ZAP Baseline
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ github.event.inputs.target_url }}
+          fail_action: false
+          allow_issue_writing: false
+          cmd_options: "-a"

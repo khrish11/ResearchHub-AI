@@ -20,7 +20,7 @@ ResearchHub-AI is an end-to-end research workspace where users can:
 ## Tech Stack
 
 1. Frontend: React, TypeScript, Vite, Tailwind, Axios, React Router.
-2. Backend: FastAPI, SQLAlchemy, Pydantic, Authlib, python-jose.
+2. Backend: FastAPI, SQLAlchemy, Pydantic, Authlib, PyJWT.
 3. AI: Groq API (Llama model family).
 4. Database: SQLite by default (configurable via `DATABASE_URL`).
 5. Testing/CI: Pytest + GitHub Actions workflow (`.github/workflows/ci.yml`).
@@ -145,6 +145,90 @@ npm run build
 1. Keep only placeholders in `.env.example`.
 2. Store real keys only in local `.env` files or secret managers.
 3. Rotate any key that was accidentally exposed.
+4. Install local pre-push secret guard:
+   ```powershell
+   .\scripts\install-git-hooks.ps1
+   ```
+
+## Production Hardening
+
+1. Built-in API rate limiting is configurable with:
+   `RATE_LIMIT_ENABLED`, `RATE_LIMIT_WINDOW_SECONDS`, `RATE_LIMIT_AUTH_PER_WINDOW`, `RATE_LIMIT_API_PER_WINDOW`.
+2. Security headers can be toggled with `SECURITY_HEADERS_ENABLED`.
+3. Health probes:
+   - Liveness: `GET /health/live`
+   - Readiness (DB check): `GET /health/ready`
+
+## External Security Testing
+
+1. Automated security workflow: `.github/workflows/security-scans.yml`
+2. Secret scan workflow: `.github/workflows/secret-scan.yml`
+3. OWASP ZAP local scan:
+   ```powershell
+   .\scripts\run_owasp_zap.ps1 -TargetUrl https://app.example.com
+   ```
+4. Manual penetration testing playbook:
+   - `docs/security/penetration-testing-playbook.md`
+   - `docs/security/owasp-scan-operations.md`
+5. Dependency update automation: `.github/dependabot.yml`
+
+## Production Edge Setup
+
+1. Nginx reverse-proxy baseline: `deploy/nginx/researchhub.conf`
+2. Cloudflare rules template: `deploy/cloudflare/waf-rules.json`
+3. Edge deployment guide: `docs/edge/global-edge-deployment.md`
+
+## Observability and SRE
+
+1. Prometheus scrape endpoint: `GET /ops/metrics` (supports optional `X-Metrics-Token`)
+2. SLO endpoint: `GET /ops/slo`
+3. Monitoring configs:
+   - `ops/monitoring/prometheus.yml`
+   - `ops/monitoring/alerts.yml`
+4. Runbooks:
+   - `ops/runbooks/incident-response.md`
+   - `ops/runbooks/slo-policy.md`
+
+## Data Resilience
+
+1. Backup:
+   ```powershell
+   python scripts/db_backup.py --out-dir backups
+   ```
+2. Restore:
+   ```powershell
+   python scripts/db_restore.py --backup-file backups/<file> --manifest-file backups/<manifest> --force
+   ```
+3. Disaster-recovery drill:
+   ```powershell
+   python scripts/backup_restore_drill.py
+   ```
+4. CI drill workflow: `.github/workflows/dr-backup-restore-drill.yml`
+5. DR plan: `docs/resilience/backup-restore-dr-plan.md`
+
+## Compliance and Legal
+
+1. Public legal pages:
+   - `/privacy`
+   - `/terms`
+   - `/cookies`
+   - `/data-rights`
+2. Data rights API:
+   - `POST /compliance/data-rights-request`
+   - `GET /compliance/data-rights-request/me`
+   - `GET /compliance/export-my-data`
+
+## Accessibility (WCAG 2.2 AA)
+
+1. Automated audit:
+   ```powershell
+   cd frontend
+   npm run build
+   npm run a11y:ci
+   ```
+2. Audit config: `frontend/.pa11yci.json`
+3. CI audit workflow: `.github/workflows/accessibility-audit.yml`
+4. Manual checklist: `docs/accessibility/wcag-2.2-aa-audit-checklist.md`
 
 ## License
 

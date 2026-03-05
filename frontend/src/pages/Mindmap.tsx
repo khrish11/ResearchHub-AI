@@ -264,6 +264,7 @@ const Mindmap = () => {
   const [activeVisualNodeId, setActiveVisualNodeId] = useState<string | null>(null);
   const visualMapRef = useRef<SVGSVGElement | null>(null);
   const visualPanStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const autoPreviewWorkspaceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const fetchWorkspaces = async () => {
@@ -319,8 +320,14 @@ const Mindmap = () => {
     () => (selectedWorkspaceDetail?.papers || []).slice(0, MAX_VISIBLE_PAPERS),
     [selectedWorkspaceDetail]
   );
-  const previewNodes: MindmapNode[] = preview?.mindmap_nodes || [];
-  const previewPaperLinks = preview?.paper_links || [];
+  const previewNodes = useMemo<MindmapNode[]>(
+    () => preview?.mindmap_nodes || [],
+    [preview?.mindmap_nodes]
+  );
+  const previewPaperLinks = useMemo(
+    () => preview?.paper_links || [],
+    [preview?.paper_links]
+  );
   const reportDepthMeta = DEPTH_OPTIONS.find((item) => item.value === depth);
   const reportFocusMeta = FOCUS_OPTIONS.find((item) => item.value === focusMode);
   const visualMindmap = useMemo(() => buildMindmapLayout(previewNodes), [previewNodes]);
@@ -483,6 +490,19 @@ const Mindmap = () => {
       setPreviewLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!selectedWorkspace) return;
+    if (selectedCount === 0) return;
+    if (previewLoading) return;
+    if (preview?.workspace_id === selectedWorkspace.id) return;
+    if (autoPreviewWorkspaceRef.current === selectedWorkspace.id) return;
+
+    autoPreviewWorkspaceRef.current = selectedWorkspace.id;
+    void handlePreview();
+    // Intentionally exclude handlePreview to avoid re-triggering on each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWorkspace, selectedCount, previewLoading, preview?.workspace_id]);
 
   const handleExport = async (format: 'pdf' | 'docx') => {
     if (!selectedWorkspace) {
@@ -1117,6 +1137,17 @@ const Mindmap = () => {
                       <div className="mindmap-preview-empty">
                         <p>No visual mindmap yet.</p>
                         <p>Generate preview to build the connected graph.</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handlePreview();
+                          }}
+                          disabled={previewLoading || selectedCount === 0}
+                          className="mt-2 inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          {previewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                          Generate Preview
+                        </button>
                       </div>
                     )}
                   </div>

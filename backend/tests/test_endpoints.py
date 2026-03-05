@@ -41,6 +41,117 @@ def register_and_get_token(email: str):
     return resp.json()['access_token']
 
 
+def test_health_endpoints_and_security_headers():
+    live = client.get('/health/live')
+    assert live.status_code == 200
+    assert live.json().get('status') == 'ok'
+    assert live.headers.get('x-content-type-options') == 'nosniff'
+    assert live.headers.get('x-frame-options') == 'DENY'
+    assert live.headers.get('x-request-id')
+    assert live.headers.get('x-process-time-ms')
+    assert 'content-security-policy' in {k.lower(): v for k, v in live.headers.items()}
+
+    ready = client.get('/health/ready')
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload.get('status') == 'ok'
+    assert payload.get('database') == 'up'
+
+
+def test_auth_rate_limit_blocks_when_threshold_exceeded(monkeypatch):
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_ENABLED', True)
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_WINDOW_SECONDS', 60)
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_AUTH_PER_WINDOW', 1)
+    main_mod._RATE_LIMIT_BUCKETS.clear()
+
+    first = client.post('/auth/register', json={'email': 'ratelimit-1@example.com', 'password': 'pw'})
+    assert first.status_code == 200
+
+    second = client.post('/auth/register', json={'email': 'ratelimit-2@example.com', 'password': 'pw'})
+    assert second.status_code == 429
+    assert second.json().get('detail')
+    assert second.headers.get('retry-after')
+
+    main_mod._RATE_LIMIT_BUCKETS.clear()
+
+
+def test_compliance_data_rights_and_export_flow():
+    token = register_and_get_token('compliance@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'ComplianceWS'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    imp = client.post(
+        '/papers/import',
+        json={
+            'title': 'Compliance Paper',
+            'authors': ['Author'],
+            'abstract': 'Compliance abstract',
+            'workspace_id': ws['id'],
+        },
+        headers=headers,
+    )
+    assert imp.status_code == 200
+
+    summary = client.get('/compliance/privacy-summary')
+    assert summary.status_code == 200
+    assert summary.json().get('supports', {}).get('data_export') is True
+
+    dsr = client.post(
+        '/compliance/data-rights-request',
+        json={
+            'request_type': 'access',
+            'jurisdiction': 'gdpr',
+            'details': 'Please provide my full account export.',
+        },
+        headers=headers,
+    )
+    assert dsr.status_code == 200
+    assert dsr.json().get('request_type') == 'access'
+
+    mine = client.get('/compliance/data-rights-request/me', headers=headers)
+    assert mine.status_code == 200
+    assert int(mine.json().get('count', 0)) >= 1
+
+    export_resp = client.get('/compliance/export-my-data', headers=headers)
+    assert export_resp.status_code == 200
+    payload = export_resp.json()
+    assert payload.get('user', {}).get('email') == 'compliance@example.com'
+    assert isinstance(payload.get('workspaces'), list)
+    assert isinstance(payload.get('papers'), list)
+    assert isinstance(payload.get('search_history'), list)
+    assert isinstance(payload.get('data_rights_requests'), list)
+
+
+def test_ops_slo_and_metrics_endpoints():
+    slo = client.get('/ops/slo')
+    assert slo.status_code == 200
+    payload = slo.json()
+    assert 'windows' in payload
+    assert '5m' in payload['windows']
+
+    metrics = client.get('/ops/metrics')
+    assert metrics.status_code == 200
+    assert 'researchhub_http_requests_total' in metrics.text
+
+
+def test_ops_metrics_token_gate(monkeypatch):
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, 'METRICS_AUTH_TOKEN', 'token-123')
+    blocked = client.get('/ops/metrics')
+    assert blocked.status_code == 401
+
+    allowed = client.get('/ops/metrics', headers={'X-Metrics-Token': 'token-123'})
+    assert allowed.status_code == 200
+
+    monkeypatch.setattr(main_mod, 'METRICS_AUTH_TOKEN', '')
+
+
 def test_smoke_endpoints_work():
     token = register_and_get_token('t1@example.com')
     headers = {'Authorization': f'Bearer {token}'}
@@ -77,6 +188,111 @@ def test_smoke_endpoints_work():
         assert 'response' in r.json()
     else:
         assert 'detail' in r.json()
+
+
+def test_import_institutional_and_update_existing():
+    token = register_and_get_token('institutional@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'InstitutionalWS'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    first_import = client.post(
+        '/papers/import-institutional',
+        json={
+            'workspace_id': ws['id'],
+            'source_name': 'vtu_portal',
+            'entries': [
+                {
+                    'title': 'Institutional Graph Security Paper',
+                    'authors': ['Author One'],
+                    'url': 'https://library.example.org/papers/graph-security',
+                    'pdf_url': 'https://library.example.org/papers/graph-security.pdf',
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert first_import.status_code == 200
+    first_data = first_import.json()
+    assert first_data['imported'] == 1
+    assert first_data['updated'] == 0
+
+    second_import = client.post(
+        '/papers/import-institutional',
+        json={
+            'workspace_id': ws['id'],
+            'source_name': 'vtu_portal',
+            'entries': [
+                {
+                    'title': 'Institutional Graph Security Paper',
+                    'authors': ['Author One', 'Author Two'],
+                    'abstract': 'Updated abstract from institutional source.',
+                    'url': 'https://library.example.org/papers/graph-security',
+                    'pdf_url': 'https://library.example.org/papers/graph-security.pdf',
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert second_import.status_code == 200
+    second_data = second_import.json()
+    assert second_data['imported'] == 0
+    assert second_data['updated'] == 1
+
+    ws_detail = client.get(f"/workspaces/{ws['id']}", headers=headers)
+    assert ws_detail.status_code == 200
+    papers = ws_detail.json()['papers']
+    assert len(papers) == 1
+    paper = papers[0]
+    assert paper['full_text_available'] is True
+    assert paper['access_type'] in ('open_access', 'institutional', 'full_text_link')
+    assert paper['pdf_url'] == 'https://library.example.org/papers/graph-security.pdf'
+
+
+def test_resolve_access_persists_full_text_for_workspace_paper():
+    token = register_and_get_token('resolve-access@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'ResolveAccessWS'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    import_resp = client.post(
+        '/papers/import',
+        json={
+            'title': 'Metadata Only Paper',
+            'authors': ['A'],
+            'abstract': 'Test',
+            'workspace_id': ws['id'],
+        },
+        headers=headers,
+    )
+    assert import_resp.status_code == 200
+    paper_id = import_resp.json()['paper_id']
+
+    resolve_resp = client.post(
+        '/papers/resolve-access',
+        json={
+            'workspace_id': ws['id'],
+            'paper_id': paper_id,
+            'pdf_url': 'https://example.org/fulltext.pdf',
+        },
+        headers=headers,
+    )
+    assert resolve_resp.status_code == 200
+    resolved = resolve_resp.json()['resolved']
+    assert resolved['full_text_available'] is True
+    assert resolved['full_text_url'] == 'https://example.org/fulltext.pdf'
+    assert resolved['access_type'] in ('open_access', 'full_text_link')
+
+    ws_detail = client.get(f"/workspaces/{ws['id']}", headers=headers)
+    assert ws_detail.status_code == 200
+    papers = ws_detail.json()['papers']
+    assert len(papers) == 1
+    assert papers[0]['full_text_available'] is True
+    assert papers[0]['pdf_url'] == 'https://example.org/fulltext.pdf'
 
 
 def test_export_workspace():
@@ -284,6 +500,317 @@ def test_search_biorxiv_and_medrxiv_with_httpx_mock(monkeypatch):
     assert rm.json()['papers'][0]['source'] == 'medrxiv'
 
 
+def test_search_dblp_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "result": {
+                    "hits": {
+                        "@total": "1",
+                        "hit": [
+                            {
+                                "info": {
+                                    "title": "DBLP test paper",
+                                    "authors": {"author": ["Alice", "Bob"]},
+                                    "venue": "Test Conference",
+                                    "year": "2024",
+                                    "doi": "10.1000/dblp.test",
+                                    "ee": "https://doi.org/10.1000/dblp.test",
+                                }
+                            }
+                        ],
+                    }
+                }
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('dblp@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-dblp', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'dblp'
+
+
+def test_search_zenodo_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "hits": {
+                    "total": {"value": 1},
+                    "hits": [
+                        {
+                            "id": 12345,
+                            "doi": "10.5281/zenodo.12345",
+                            "links": {"html": "https://zenodo.org/records/12345"},
+                            "metadata": {
+                                "title": "Zenodo publication test",
+                                "description": "<p>Open publication abstract</p>",
+                                "publication_date": "2025-03-10",
+                                "creators": [{"name": "Jane Doe"}],
+                                "resource_type": {"type": "publication", "title": "Publication"},
+                            },
+                            "files": [
+                                {
+                                    "key": "paper.pdf",
+                                    "links": {"self": "https://zenodo.org/api/files/abc/paper.pdf"},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('zenodo@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-zenodo', params={'query': 'open science', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'zenodo'
+    assert data['papers'][0].get('full_text_available') is True
+
+
+def test_search_openaire_with_httpx_mock(monkeypatch):
+    xml_payload = """<?xml version="1.0" encoding="UTF-8"?>
+<response>
+  <header><total>1</total></header>
+  <results>
+    <result>
+      <metadata>
+        <entity>
+          <title>OpenAIRE sample paper</title>
+          <creator>Alice Author</creator>
+          <description>OpenAIRE description text</description>
+          <subject>AI</subject>
+          <pid>10.1000/openaire.test</pid>
+          <fulltext>https://example.org/openaire.pdf</fulltext>
+          <dateofacceptance>2025-02-01</dateofacceptance>
+        </entity>
+      </metadata>
+    </result>
+  </results>
+</response>"""
+
+    class DummyResp:
+        status_code = 200
+        text = xml_payload
+        def raise_for_status(self):
+            return None
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('openaire@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-openaire', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'openaire'
+
+
+def test_search_figshare_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return [
+                {
+                    "id": 1,
+                    "title": "Figshare test paper",
+                    "doi": "10.1000/figshare.test",
+                    "url_public_html": "https://figshare.com/articles/test",
+                    "published_date": "2025-01-20T10:00:00Z",
+                    "defined_type_name": "journal contribution",
+                }
+            ]
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('figshare@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-figshare', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'figshare'
+
+
+def test_search_osf_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "abc123",
+                        "attributes": {
+                            "title": "OSF preprint sample",
+                            "description": "OSF abstract sample",
+                            "doi": "10.1000/osf.test",
+                            "date_published": "2025-01-10T10:00:00Z",
+                            "subjects": [[{"text": "Computer Science"}]],
+                        },
+                        "links": {
+                            "html": "https://osf.io/preprints/osf/abc123/",
+                            "preprint_doi": "https://doi.org/10.1000/osf.test",
+                        },
+                    }
+                ],
+                "links": {"next": None},
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('osf@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-osf', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'osf'
+
+
+def test_search_dryad_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "total": 1,
+                "_embedded": {
+                    "stash:datasets": [
+                        {
+                            "title": "Dryad sample dataset",
+                            "identifier": "doi:10.5061/dryad.test",
+                            "abstract": "Dryad abstract",
+                            "publicationDate": "2025-02-02",
+                            "authors": [{"firstName": "Jane", "lastName": "Doe"}],
+                            "keywords": ["dataset", "ml"],
+                            "_links": {"self": {"href": "/api/v2/datasets/10"}},
+                        }
+                    ]
+                },
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('dryad@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-dryad', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'dryad'
+
+
+def test_search_inspire_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "hits": {
+                    "total": {"value": 1},
+                    "hits": [
+                        {
+                            "id": 55,
+                            "metadata": {
+                                "titles": [{"title": "INSPIRE sample paper"}],
+                                "abstracts": [{"value": "INSPIRE abstract"}],
+                                "authors": [{"full_name": "Ada Lovelace"}],
+                                "dois": [{"value": "10.1000/inspire.test"}],
+                                "earliest_date": "2024-05-15",
+                                "inspire_categories": [{"term": "Theory-HEP"}],
+                                "control_number": 55,
+                            },
+                        }
+                    ],
+                }
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('inspire@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-inspire', params={'query': 'graph', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'inspire'
+
+
 def test_global_search_cache_and_metrics(monkeypatch):
     import routers.papers as papers_mod
 
@@ -311,6 +838,13 @@ def test_global_search_cache_and_metrics(monkeypatch):
     monkeypatch.setattr(papers_mod, 'search_europepmc', mk_source('europe_pmc'))
     monkeypatch.setattr(papers_mod, 'search_pubmed', mk_source('pubmed'))
     monkeypatch.setattr(papers_mod, 'search_doaj', mk_source('doaj'))
+    monkeypatch.setattr(papers_mod, 'search_openaire', mk_source('openaire'))
+    monkeypatch.setattr(papers_mod, 'search_figshare', mk_source('figshare'))
+    monkeypatch.setattr(papers_mod, 'search_osf', mk_source('osf'))
+    monkeypatch.setattr(papers_mod, 'search_dryad', mk_source('dryad'))
+    monkeypatch.setattr(papers_mod, 'search_inspire', mk_source('inspire'))
+    monkeypatch.setattr(papers_mod, 'search_dblp', mk_source('dblp'))
+    monkeypatch.setattr(papers_mod, 'search_zenodo', mk_source('zenodo'))
     monkeypatch.setattr(papers_mod, 'search_datacite', mk_source('datacite'))
     monkeypatch.setattr(papers_mod, 'search_hal', mk_source('hal'))
     monkeypatch.setattr(papers_mod, 'search_biorxiv', mk_source('biorxiv'))
@@ -339,6 +873,43 @@ def test_global_search_cache_and_metrics(monkeypatch):
     assert m.status_code == 200
     metrics = m.json().get('global_search', {})
     assert int(metrics.get('cache_hits_total', 0)) >= 1
+
+
+def test_global_search_cache_reused_across_users(monkeypatch):
+    import routers.papers as papers_mod
+
+    async def openalex_only(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": "shared cache paper",
+                    "authors": ["Author"],
+                    "abstract": "A",
+                    "url": "https://example.org/shared",
+                    "published": "2025-01-01",
+                    "categories": ["openalex"],
+                    "source": "openalex",
+                }
+            ],
+            "notice": None,
+        }
+
+    monkeypatch.setitem(papers_mod.GLOBAL_SEARCH_SOURCE_PRESETS, 'balanced', ['openalex'])
+    monkeypatch.setattr(papers_mod, 'search_openalex', openalex_only)
+    papers_mod._GLOBAL_SEARCH_CACHE.clear()
+
+    token_a = register_and_get_token('cache-user-a@example.com')
+    token_b = register_and_get_token('cache-user-b@example.com')
+    headers_a = {'Authorization': f'Bearer {token_a}'}
+    headers_b = {'Authorization': f'Bearer {token_b}'}
+
+    r1 = client.get('/papers/search-global', params={'query': 'shared gcn', 'max_results': 10}, headers=headers_a)
+    assert r1.status_code == 200
+    assert r1.json().get('cache_hit') is False
+
+    r2 = client.get('/papers/search-global', params={'query': 'shared gcn', 'max_results': 10}, headers=headers_b)
+    assert r2.status_code == 200
+    assert r2.json().get('cache_hit') is True
 
 
 def test_workspace_research_report_exports_pdf_and_docx():

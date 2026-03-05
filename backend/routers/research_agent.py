@@ -807,6 +807,54 @@ def _rank_candidates(
     return ranked
 
 
+def _diversify_candidates(candidates: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit <= 0 or not candidates:
+        return []
+
+    buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for candidate in candidates:
+        source = str(candidate.get('source') or 'unknown').strip().lower() or 'unknown'
+        buckets[source].append(candidate)
+
+    ordered_sources = sorted(
+        buckets.keys(),
+        key=lambda source: _SOURCE_QUALITY.get(source, 1.0),
+        reverse=True,
+    )
+    if not ordered_sources:
+        return candidates[:limit]
+
+    unique_sources = max(1, len(ordered_sources))
+    per_source_cap = max(1, math.ceil(limit / unique_sources) + 1)
+    source_counts: Counter[str] = Counter()
+
+    selected: List[Dict[str, Any]] = []
+    rounds_without_pick = 0
+
+    while len(selected) < limit and rounds_without_pick < len(ordered_sources):
+        picked_any = False
+        for source in ordered_sources:
+            if len(selected) >= limit:
+                break
+            bucket = buckets.get(source) or []
+            if not bucket:
+                continue
+            if source_counts[source] >= per_source_cap:
+                continue
+            selected.append(bucket.pop(0))
+            source_counts[source] += 1
+            picked_any = True
+        rounds_without_pick = 0 if picked_any else rounds_without_pick + 1
+
+    if len(selected) < limit:
+        remaining: List[Dict[str, Any]] = []
+        for source in ordered_sources:
+            remaining.extend(buckets.get(source) or [])
+        selected.extend(remaining[: max(0, limit - len(selected))])
+
+    return selected[:limit]
+
+
 def _candidate_context(candidates: List[Dict[str, Any]], limit: int = 16) -> str:
     rows = []
     for candidate in candidates[:limit]:
@@ -3182,7 +3230,11 @@ async def personalized_feed(
         rotate_by = (refresh_turn * 3) % len(merged_ranked)
         merged_ranked = [*merged_ranked[rotate_by:], *merged_ranked[:rotate_by]]
 
-    trending_papers = merged_ranked[: request.max_suggestions]
+    trending_papers = _diversify_candidates(merged_ranked, request.max_suggestions)
+    source_mix = Counter(
+        str(candidate.get('source') or 'unknown').strip().lower()
+        for candidate in trending_papers
+    )
 
     direction_candidates: List[str] = []
     for keyword in [*realtime_keywords[:6], *workspace_keywords[:6]]:
@@ -3251,6 +3303,8 @@ async def personalized_feed(
             'refresh_turn': refresh_turn,
             'fresh_candidates': len(fresh_candidates),
             'stale_candidates': len(stale_candidates),
+            'source_mix': dict(source_mix),
+            'candidate_pool': len(merged_ranked),
         },
         'weekly_digest': llm_text or 'Personalized feed generated from workspace topics and fresh source scans.',
     }

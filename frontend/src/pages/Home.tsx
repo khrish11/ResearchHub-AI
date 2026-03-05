@@ -34,6 +34,7 @@ interface PersonalizedFeedResponse {
   relevance_context?: {
     realtime_keywords?: string[];
     history_queries?: string[];
+    source_mix?: Record<string, number>;
   };
 }
 
@@ -51,6 +52,8 @@ interface SearchGlobalFallbackResponse {
   }>;
 }
 
+const HOME_RECENT_RECOMMENDATIONS_KEY = 'researchhub.home_recent_recommendations.v1';
+
 const parseYearFromPublished = (value?: string): number | undefined => {
   const match = String(value || '').match(/(19|20)\d{2}/);
   return match ? Number(match[0]) : undefined;
@@ -64,6 +67,61 @@ const normalizeRecKey = (item: RecommendationPaper): string => {
   return `title:${String(item.title || '').trim().toLowerCase()}`;
 };
 
+const loadRecentRecommendationKeys = (): string[] => {
+  try {
+    const raw = localStorage.getItem(HOME_RECENT_RECOMMENDATIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item).trim()).filter(Boolean).slice(-80);
+  } catch {
+    return [];
+  }
+};
+
+const saveRecentRecommendationKeys = (keys: string[]) => {
+  localStorage.setItem(HOME_RECENT_RECOMMENDATIONS_KEY, JSON.stringify(keys.slice(-80)));
+};
+
+const diversifyRecommendations = (
+  input: RecommendationPaper[],
+  maxItems: number,
+  refreshSeed: number
+): RecommendationPaper[] => {
+  if (!Array.isArray(input) || input.length === 0 || maxItems <= 0) return [];
+
+  const groups = new Map<string, RecommendationPaper[]>();
+  input.forEach((paper) => {
+    const source = String(paper.source || 'multi-source').trim().toLowerCase() || 'multi-source';
+    const bucket = groups.get(source) || [];
+    bucket.push(paper);
+    groups.set(source, bucket);
+  });
+
+  let sources = Array.from(groups.keys());
+  if (sources.length > 1) {
+    const shift = Math.abs(Math.floor(refreshSeed || 0)) % sources.length;
+    if (shift > 0) {
+      sources = [...sources.slice(shift), ...sources.slice(0, shift)];
+    }
+  }
+
+  const output: RecommendationPaper[] = [];
+  while (output.length < maxItems) {
+    let addedThisRound = 0;
+    for (const source of sources) {
+      const bucket = groups.get(source) || [];
+      if (bucket.length === 0) continue;
+      output.push(bucket.shift() as RecommendationPaper);
+      addedThisRound += 1;
+      if (output.length >= maxItems) break;
+    }
+    if (addedThisRound === 0) break;
+  }
+
+  return output.slice(0, maxItems);
+};
+
 const Home = () => {
   const [resumeState, setResumeState] = useState<SessionState | null>(null);
   const [recommendations, setRecommendations] = useState<RecommendationPaper[]>([]);
@@ -72,11 +130,13 @@ const Home = () => {
   const [seedKeywords, setSeedKeywords] = useState<string[]>([]);
   const [realtimeKeywords, setRealtimeKeywords] = useState<string[]>([]);
   const [historySeeds, setHistorySeeds] = useState<string[]>([]);
+  const [sourceMix, setSourceMix] = useState<Array<{ source: string; count: number }>>([]);
   const [recommendationUpdatedAt, setRecommendationUpdatedAt] = useState<string | null>(null);
 
   const loadHomeData = useCallback(async (forceLive = false) => {
     setRecommendationLoading(true);
     setRecommendationError(null);
+    setSourceMix([]);
     try {
       const [sessionRes, workspaceRes, historyRes] = await Promise.all([
         api.get<SessionState>('/workspaces/session-state').catch(() => ({ data: { page_path: '/home' } as SessionState })),
@@ -96,6 +156,7 @@ const Home = () => {
 
       let recs: RecommendationPaper[] = [];
       let recKeywords: string[] = [];
+      let recSourceMix: Array<{ source: string; count: number }> = [];
 
       if (workspaces.length > 0) {
         const preferredWorkspaceId =
@@ -116,6 +177,16 @@ const Home = () => {
           const history = Array.isArray(feedRes.data?.relevance_context?.history_queries)
             ? (feedRes.data?.relevance_context?.history_queries as string[])
             : [];
+          const sourceMixMap =
+            feedRes.data?.relevance_context?.source_mix &&
+            typeof feedRes.data.relevance_context.source_mix === 'object'
+              ? (feedRes.data.relevance_context.source_mix as Record<string, number>)
+              : {};
+          recSourceMix = Object.entries(sourceMixMap)
+            .map(([source, count]) => ({ source, count: Number(count || 0) }))
+            .filter((item) => item.count > 0)
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 5);
           recKeywords = Array.isArray(feedRes.data?.seed_keywords) ? feedRes.data.seed_keywords.slice(0, 8) : [];
           setRealtimeKeywords(realtime.slice(0, 8));
           setHistorySeeds(history.slice(0, 4));
@@ -161,13 +232,44 @@ const Home = () => {
         }
       }
 
-      setRecommendations(recs.slice(0, 8));
+      const recentKeys = loadRecentRecommendationKeys();
+      const unseenRecs = recs.filter((paper) => !recentKeys.includes(normalizeRecKey(paper)));
+      const basePool = unseenRecs.length >= Math.min(4, recs.length) ? unseenRecs : recs;
+      const diversified = diversifyRecommendations(
+        basePool,
+        8,
+        forceLive ? Date.now() : Date.now() / 60000
+      );
+      const nextRecommendations = diversified.slice(0, 8);
+      if (recSourceMix.length === 0 && nextRecommendations.length > 0) {
+        const localMix = new Map<string, number>();
+        nextRecommendations.forEach((paper) => {
+          const source = String(paper.source || 'multi-source').trim().toLowerCase();
+          localMix.set(source, (localMix.get(source) || 0) + 1);
+        });
+        recSourceMix = Array.from(localMix.entries())
+          .map(([source, count]) => ({ source, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+      }
+
+      if (nextRecommendations.length > 0) {
+        const nextKeys = [
+          ...recentKeys,
+          ...nextRecommendations.map((paper) => normalizeRecKey(paper)),
+        ];
+        saveRecentRecommendationKeys(nextKeys);
+      }
+
+      setRecommendations(nextRecommendations);
+      setSourceMix(recSourceMix);
       setSeedKeywords(recKeywords);
-      if (recs.length === 0) {
+      if (nextRecommendations.length === 0) {
         setRealtimeKeywords([]);
+        setSourceMix([]);
       }
       setRecommendationUpdatedAt(new Date().toISOString());
-      if (recs.length === 0) {
+      if (nextRecommendations.length === 0) {
         setRecommendationError('No recommendations available yet. Add papers or run a few searches.');
       }
     } catch {
@@ -305,6 +407,15 @@ const Home = () => {
             {realtimeKeywords.map((keyword) => (
               <span key={`rt-${keyword}`} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700">
                 realtime: {keyword}
+              </span>
+            ))}
+          </div>
+        )}
+        {sourceMix.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {sourceMix.map((item) => (
+              <span key={`src-${item.source}`} className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-xs text-cyan-700">
+                {item.source}: {item.count}
               </span>
             ))}
           </div>

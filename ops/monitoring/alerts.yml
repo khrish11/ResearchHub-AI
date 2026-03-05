@@ -1,0 +1,26 @@
+groups:
+  - name: researchhub-api-alerts
+    rules:
+      - alert: ResearchHubApiHigh5xxRate
+        expr: |
+          sum(rate(researchhub_http_status_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(researchhub_http_requests_total[5m])), 0.001)
+          > 0.01
+        for: 10m
+        labels:
+          severity: critical
+          service: researchhub-api
+        annotations:
+          summary: "ResearchHub API 5xx rate above 1%"
+          description: "Investigate backend errors and upstream dependency health."
+
+      - alert: ResearchHubApiRateLimitingSpike
+        expr: sum(rate(researchhub_http_rate_limited_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: researchhub-api
+        annotations:
+          summary: "ResearchHub API rate limiting spike detected"
+          description: "Possible abuse burst or under-provisioned API capacity."

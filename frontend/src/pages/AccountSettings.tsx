@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
@@ -82,11 +82,7 @@ const AccountSettings: React.FC = () => {
   const [deletePassword, setDeletePassword] = useState('');
   const [confirmEmail, setConfirmEmail] = useState('');
 
-  useEffect(() => {
-    fetchProfile();
-  }, []);
-
-  const fetchProfile = async () => {
+  const fetchProfile = useCallback(async () => {
     try {
       const [profileRes, overviewRes] = await Promise.all([
         api.get<UserProfile>('/auth/me'),
@@ -109,7 +105,11 @@ const AccountSettings: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [navigate]);
+
+  useEffect(() => {
+    void fetchProfile();
+  }, [fetchProfile]);
 
   const handleSaveProfile = async () => {
     if (!profile) {

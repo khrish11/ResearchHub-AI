@@ -27,6 +27,11 @@ interface Paper {
   abstract: string;
   url: string;
   pdf_url?: string;
+  institutional_url?: string;
+  full_text_url?: string;
+  full_text_available?: boolean;
+  access_type?: string;
+  access_label?: string;
   published: string;
   categories: string[];
   source?: string;
@@ -46,6 +51,11 @@ interface SearchResponse {
   returned?: number;
   next_offset?: number;
   has_more?: boolean;
+  cache_hit?: boolean;
+  duration_ms?: number;
+  search_mode?: string;
+  source_counts?: Record<string, number>;
+  source_status?: Record<string, { status?: string; count?: number; detail?: string }>;
 }
 
 interface SavedQuery {
@@ -63,15 +73,25 @@ interface SearchHistoryItem {
   filters?: Record<string, unknown>;
 }
 
+interface SessionStatePayload {
+  workspace_id?: number | null;
+  last_query?: string | null;
+  extra?: Record<string, unknown> | null;
+}
+
 type YearFilter = 'any' | '2026' | '2024' | '2020' | '2015' | '2010';
 type SortMode = 'relevance' | 'newest' | 'oldest' | 'title';
 type CitationStyle = 'apa' | 'mla' | 'ieee';
+type SearchMode = 'fast' | 'balanced' | 'deep';
 
 const GLOBAL_SEARCH_ENDPOINT = '/papers/search-global';
 const SEARCH_MIN_RESULTS = 20;
-const SEARCH_MAX_RESULTS = 120;
-const SEARCH_DEFAULT_RESULTS = 60;
+const SEARCH_MAX_RESULTS = 200;
+const SEARCH_DEFAULT_RESULTS = 80;
 const SAVED_QUERIES_KEY = 'researchhub.saved_queries.v2';
+const LOAD_MORE_MAX_RESULTS = 60;
+const INITIAL_RENDER_BATCH = 40;
+const RENDER_BATCH_SIZE = 40;
 
 const QUICK_QUERIES = [
   'graph neural networks for molecules',
@@ -90,6 +110,13 @@ const SOURCE_LABELS: Record<string, string> = {
   semantic_scholar: 'Semantic Scholar',
   semantic_scholar_fallback_arxiv: 'Semantic Scholar',
   openalex: 'OpenAlex',
+  openaire: 'OpenAIRE',
+  figshare: 'Figshare',
+  osf: 'OSF Preprints',
+  dryad: 'Dryad',
+  inspire: 'INSPIRE-HEP',
+  dblp: 'DBLP',
+  zenodo: 'Zenodo',
   europepmc: 'Europe PMC',
   europe_pmc: 'Europe PMC',
   doaj: 'DOAJ',
@@ -100,6 +127,7 @@ const SOURCE_LABELS: Record<string, string> = {
   elife: 'eLife',
   pubmed: 'PubMed',
   springer: 'Springer',
+  crossref: 'Crossref',
   nasa: 'NASA ADS',
   nasa_ads: 'NASA ADS',
   datacite: 'DataCite',
@@ -115,7 +143,26 @@ const OPEN_ACCESS_SOURCES = new Set([
   'medrxiv',
   'plos',
   'elife',
+  'openalex',
+  'pubmed',
+  'openaire',
+  'figshare',
+  'osf',
+  'dryad',
+  'zenodo',
 ]);
+
+const SOURCE_ALIASES: Record<string, string> = {
+  semantic_scholar: 'semantic',
+  semantic_scholar_fallback_arxiv: 'semantic',
+  europe_pmc: 'europepmc',
+  nasa_ads: 'nasa',
+};
+
+const canonicalSourceKey = (value: string): string => {
+  const key = String(value || '').trim().toLowerCase();
+  return SOURCE_ALIASES[key] || key;
+};
 
 const normalizeKey = (paper: Paper): string => {
   const doi = (paper.doi || '').trim().toLowerCase();
@@ -141,6 +188,9 @@ const hasPdfLink = (paper: Paper): boolean => {
 };
 
 const isLikelyOpenAccess = (paper: Paper): boolean => {
+  if (String(paper.access_type || '').toLowerCase() === 'open_access') {
+    return true;
+  }
   const source = String(paper.source || '').toLowerCase();
   if (OPEN_ACCESS_SOURCES.has(source)) {
     return true;
@@ -215,14 +265,23 @@ const SearchPapers: React.FC = () => {
   const [importedSet, setImportedSet] = useState<Set<string>>(new Set());
 
   const [maxResults, setMaxResults] = useState(SEARCH_DEFAULT_RESULTS);
+  const [searchMode, setSearchMode] = useState<SearchMode>('balanced');
   const [oaOnly, setOaOnly] = useState(false);
   const [pdfOnly, setPdfOnly] = useState(false);
+  const [fullTextOnly, setFullTextOnly] = useState(false);
   const [yearFilter, setYearFilter] = useState<YearFilter>('any');
   const [sortMode, setSortMode] = useState<SortMode>('relevance');
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
+  const [bulkImporting, setBulkImporting] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_RENDER_BATCH);
 
   const [nextOffset, setNextOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  const [sourceStatus, setSourceStatus] = useState<Record<string, { status?: string; count?: number; detail?: string }>>({});
+  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  const [lastDurationMs, setLastDurationMs] = useState<number | null>(null);
+  const [lastCacheHit, setLastCacheHit] = useState(false);
 
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>(() => loadSavedQueries());
   const [showSavedQueries, setShowSavedQueries] = useState(false);
@@ -230,10 +289,20 @@ const SearchPapers: React.FC = () => {
   const [showSearchHistory, setShowSearchHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [loadingImported, setLoadingImported] = useState(false);
+  const [resumeQuery, setResumeQuery] = useState<string | null>(null);
+  const [institutionalRaw, setInstitutionalRaw] = useState('');
+  const [institutionalImporting, setInstitutionalImporting] = useState(false);
+  const [showInstitutionalImport, setShowInstitutionalImport] = useState(false);
+  const [resolvingAccess, setResolvingAccess] = useState<Record<string, boolean>>({});
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const activeControllerRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
+  const resultsRef = useRef<Paper[]>([]);
+
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
 
   useEffect(() => {
     let mounted = true;
@@ -244,8 +313,45 @@ const SearchPapers: React.FC = () => {
           api.get('/workspaces/session-state').catch(() => ({ data: null })),
         ]);
         const list = workspaceRes.data || [];
-        const preferredWorkspaceId = Number(sessionRes?.data?.workspace_id || 0);
-        const preferredQuery = String(sessionRes?.data?.last_query || '').trim();
+        const session = (sessionRes?.data || null) as SessionStatePayload | null;
+        const preferredWorkspaceId = Number(session?.workspace_id || 0);
+        const preferredQuery = String(session?.last_query || '').trim();
+        const extra = session?.extra && typeof session.extra === 'object' ? session.extra : {};
+
+        const restoredMax = Number((extra as Record<string, unknown>).maxResults);
+        if (Number.isFinite(restoredMax)) {
+          setMaxResults(
+            Math.min(SEARCH_MAX_RESULTS, Math.max(SEARCH_MIN_RESULTS, Math.round(restoredMax / 10) * 10))
+          );
+        }
+        const restoredMode = String((extra as Record<string, unknown>).searchMode || '').toLowerCase();
+        if (restoredMode === 'fast' || restoredMode === 'balanced' || restoredMode === 'deep') {
+          setSearchMode(restoredMode);
+        }
+        const restoredOaOnly = (extra as Record<string, unknown>).oaOnly;
+        if (typeof restoredOaOnly === 'boolean') {
+          setOaOnly(restoredOaOnly);
+        }
+        const restoredPdfOnly = (extra as Record<string, unknown>).pdfOnly;
+        if (typeof restoredPdfOnly === 'boolean') {
+          setPdfOnly(restoredPdfOnly);
+        }
+        const restoredFullTextOnly = (extra as Record<string, unknown>).fullTextOnly;
+        if (typeof restoredFullTextOnly === 'boolean') {
+          setFullTextOnly(restoredFullTextOnly);
+        }
+        const restoredYear = String((extra as Record<string, unknown>).yearFilter || '');
+        if (['any', '2026', '2024', '2020', '2015', '2010'].includes(restoredYear)) {
+          setYearFilter(restoredYear as YearFilter);
+        }
+        const restoredSort = String((extra as Record<string, unknown>).sortMode || '');
+        if (['relevance', 'newest', 'oldest', 'title'].includes(restoredSort)) {
+          setSortMode(restoredSort as SortMode);
+        }
+        const restoredSourceFilter = canonicalSourceKey(
+          String((extra as Record<string, unknown>).sourceFilter || 'all')
+        );
+        setSourceFilter(restoredSourceFilter || 'all');
 
         if (list.length > 0) {
           if (!mounted) return;
@@ -254,6 +360,7 @@ const SearchPapers: React.FC = () => {
           setActiveWorkspaceId(validPreferred ? preferredWorkspaceId : list[0].id);
           if (preferredQuery) {
             setQuery(preferredQuery);
+            setResumeQuery(preferredQuery);
           }
           return;
         }
@@ -264,6 +371,7 @@ const SearchPapers: React.FC = () => {
         setActiveWorkspaceId(created.data.id);
         if (preferredQuery) {
           setQuery(preferredQuery);
+          setResumeQuery(preferredQuery);
         }
       } catch {
         if (!mounted) return;
@@ -408,14 +516,17 @@ const SearchPapers: React.FC = () => {
         last_query: finalQuery.slice(0, 300),
         extra: {
           maxResults,
+          searchMode,
           oaOnly,
           pdfOnly,
+          fullTextOnly,
           yearFilter,
           sortMode,
+          sourceFilter,
         },
       });
     },
-    [activeWorkspaceId, maxResults, oaOnly, pdfOnly, sortMode, yearFilter],
+    [activeWorkspaceId, fullTextOnly, maxResults, oaOnly, pdfOnly, searchMode, sortMode, sourceFilter, yearFilter],
   );
 
   useEffect(() => {
@@ -447,8 +558,14 @@ const SearchPapers: React.FC = () => {
       } else {
         setLoading(true);
         setResults([]);
+        resultsRef.current = [];
+        setVisibleCount(INITIAL_RENDER_BATCH);
         setNextOffset(0);
         setHasMore(false);
+        setSourceStatus({});
+        setSourceCounts({});
+        setLastDurationMs(null);
+        setLastCacheHit(false);
       }
       setError(null);
       setStatusText(append ? 'Loading more papers...' : 'Searching all connected sources...');
@@ -458,8 +575,10 @@ const SearchPapers: React.FC = () => {
         const response = await api.get<SearchResponse>(GLOBAL_SEARCH_ENDPOINT, {
           params: {
             query: finalQuery,
-            max_results: maxResults,
+            max_results: append ? Math.min(maxResults, LOAD_MORE_MAX_RESULTS) : maxResults,
             offset,
+            search_mode: searchMode,
+            track_history: append ? false : true,
           },
           signal: controller.signal,
         });
@@ -470,19 +589,41 @@ const SearchPapers: React.FC = () => {
 
         const payload = response.data;
         const incoming = payload.papers || [];
+        const incomingStatus = payload.source_status || {};
+        const incomingCounts = payload.source_counts || {};
+        const statusValues = Object.values(incomingStatus);
+        const healthySources = statusValues.filter((item) => {
+          const status = String(item?.status || '');
+          return status === 'ok' || status === 'warning';
+        }).length;
+        const totalSources = statusValues.length || Object.keys(incomingCounts).length;
 
         setHasMore(Boolean(payload.has_more));
+        setSourceStatus(incomingStatus);
+        setSourceCounts(incomingCounts);
+        setLastCacheHit(Boolean(payload.cache_hit));
+        setLastDurationMs(
+          Number.isFinite(Number(payload.duration_ms))
+            ? Number(payload.duration_ms)
+            : null
+        );
 
         const computedNextOffset =
           typeof payload.next_offset === 'number' ? payload.next_offset : offset + incoming.length;
         setNextOffset(computedNextOffset);
 
-        setResults((prev) => (append ? mergeUnique(prev, incoming) : mergeUnique([], incoming)));
+        const base = append ? resultsRef.current : [];
+        const merged = mergeUnique(base, incoming);
+        setResults(merged);
+        resultsRef.current = merged;
 
-        const shownCount = append
-          ? mergeUnique(results, incoming).length
-          : incoming.length;
-        setStatusText(`Showing ${shownCount} merged papers from connected sources.`);
+        const shownCount = merged.length;
+        const cachedTag = payload.cache_hit ? 'cache hit' : 'live';
+        const sourceTag = totalSources > 0 ? ` | ${healthySources}/${totalSources} sources` : '';
+        const durationTag = Number.isFinite(Number(payload.duration_ms))
+          ? ` | ${Number(payload.duration_ms)}ms`
+          : '';
+        setStatusText(`${cachedTag} | ${shownCount} papers${sourceTag}${durationTag}`);
         void fetchSearchHistory();
         void persistSessionState(finalQuery).catch(() => undefined);
       } catch (err: unknown) {
@@ -501,11 +642,28 @@ const SearchPapers: React.FC = () => {
         }
       }
     },
-    [fetchSearchHistory, maxResults, mergeUnique, nextOffset, persistSessionState, query, results],
+    [fetchSearchHistory, maxResults, mergeUnique, nextOffset, persistSessionState, query, searchMode],
   );
+
+  useEffect(() => {
+    if (!resumeQuery || !activeWorkspaceId) {
+      return;
+    }
+    if (loading || loadingMore) {
+      return;
+    }
+    void runSearch(false, resumeQuery);
+    setResumeQuery(null);
+  }, [activeWorkspaceId, loading, loadingMore, resumeQuery, runSearch]);
 
   const filteredResults = useMemo(() => {
     let filtered = [...results];
+
+    if (sourceFilter !== 'all') {
+      filtered = filtered.filter(
+        (paper) => canonicalSourceKey(String(paper.source || '')) === sourceFilter
+      );
+    }
 
     if (oaOnly) {
       filtered = filtered.filter((paper) => isLikelyOpenAccess(paper));
@@ -513,6 +671,15 @@ const SearchPapers: React.FC = () => {
 
     if (pdfOnly) {
       filtered = filtered.filter((paper) => hasPdfLink(paper));
+    }
+
+    if (fullTextOnly) {
+      filtered = filtered.filter(
+        (paper) =>
+          Boolean(paper.full_text_available) ||
+          Boolean(paper.full_text_url) ||
+          hasPdfLink(paper)
+      );
     }
 
     if (yearFilter !== 'any') {
@@ -529,7 +696,65 @@ const SearchPapers: React.FC = () => {
     }
 
     return filtered;
-  }, [oaOnly, pdfOnly, results, sortMode, yearFilter]);
+  }, [fullTextOnly, oaOnly, pdfOnly, results, sortMode, sourceFilter, yearFilter]);
+
+  const sourceStatusEntries = useMemo(() => {
+    const entries = Object.entries(sourceStatus);
+    if (entries.length > 0) {
+      return entries.sort((a, b) => Number(b[1]?.count || 0) - Number(a[1]?.count || 0));
+    }
+    return Object.entries(sourceCounts)
+      .map(([name, count]) => [name, { status: 'ok', count }] as const)
+      .sort((a, b) => Number(b[1]?.count || 0) - Number(a[1]?.count || 0));
+  }, [sourceCounts, sourceStatus]);
+
+  const sourceFilterOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return sourceStatusEntries
+      .map(([name, meta]) => {
+        const canonical = canonicalSourceKey(name);
+        if (!canonical || canonical === 'all' || seen.has(canonical)) {
+          return null;
+        }
+        seen.add(canonical);
+        return {
+          value: canonical,
+          label: SOURCE_LABELS[canonical] || SOURCE_LABELS[name] || name,
+          count: Number(meta?.count || 0),
+        };
+      })
+      .filter((item): item is { value: string; label: string; count: number } => Boolean(item))
+      .sort((a, b) => b.count - a.count);
+  }, [sourceStatusEntries]);
+
+  useEffect(() => {
+    if (sourceFilter === 'all') {
+      return;
+    }
+    if (!sourceFilterOptions.some((item) => item.value === sourceFilter)) {
+      setSourceFilter('all');
+    }
+  }, [sourceFilter, sourceFilterOptions]);
+
+  const renderedResults = useMemo(
+    () => filteredResults.slice(0, Math.max(INITIAL_RENDER_BATCH, visibleCount)),
+    [filteredResults, visibleCount],
+  );
+  const canRenderMore = renderedResults.length < filteredResults.length;
+
+  const maxResultsCap = useMemo(() => {
+    if (searchMode === 'fast') return 100;
+    if (searchMode === 'deep') return 200;
+    return 140;
+  }, [searchMode]);
+
+  useEffect(() => {
+    setMaxResults((prev) => Math.min(prev, maxResultsCap));
+  }, [maxResultsCap]);
+
+  useEffect(() => {
+    setVisibleCount(INITIAL_RENDER_BATCH);
+  }, [oaOnly, pdfOnly, fullTextOnly, yearFilter, sortMode, sourceFilter]);
 
   const saveCurrentQuery = () => {
     const trimmed = query.trim();
@@ -576,6 +801,24 @@ const SearchPapers: React.FC = () => {
     }
   };
 
+  const buildImportPayload = useCallback(
+    (paper: Paper, workspaceId: number) => ({
+      title: paper.title,
+      authors: paper.authors || [],
+      abstract: paper.abstract || '',
+      url: paper.url || '',
+      doi: paper.doi || '',
+      bibcode: paper.bibcode || '',
+      source: paper.source || 'global_merged',
+      pdf_url: paper.pdf_url || paper.full_text_url || '',
+      institutional_url: paper.institutional_url || '',
+      access_type: paper.access_type || '',
+      full_text_available: Boolean(paper.full_text_available || paper.full_text_url || paper.pdf_url),
+      workspace_id: workspaceId,
+    }),
+    []
+  );
+
   const importPaper = async (paper: Paper) => {
     if (!activeWorkspaceId) {
       toastError('Select a workspace before importing papers.');
@@ -584,15 +827,7 @@ const SearchPapers: React.FC = () => {
 
     setImportingTitle(paper.title);
     try {
-      await api.post('/papers/import', {
-        title: paper.title,
-        authors: paper.authors || [],
-        abstract: paper.abstract || '',
-        url: paper.url || '',
-        doi: paper.doi || '',
-        bibcode: paper.bibcode || '',
-        workspace_id: activeWorkspaceId,
-      });
+      await api.post('/papers/import', buildImportPayload(paper, activeWorkspaceId));
       await api.put('/workspaces/session-state', {
         page_path: '/search',
         workspace_id: activeWorkspaceId,
@@ -611,6 +846,70 @@ const SearchPapers: React.FC = () => {
     }
   };
 
+  const importTopVisible = async (limit: number) => {
+    if (!activeWorkspaceId) {
+      toastError('Select a workspace before importing papers.');
+      return;
+    }
+    if (bulkImporting) return;
+
+    const candidates = renderedResults
+      .filter((paper) => !importedSet.has(normalizeKey(paper)))
+      .slice(0, Math.max(1, limit));
+
+    if (candidates.length === 0) {
+      toastError('No new visible papers to import.');
+      return;
+    }
+
+    setBulkImporting(true);
+    const queue = [...candidates];
+    const importedKeys: string[] = [];
+    let created = 0;
+    let updated = 0;
+    let failed = 0;
+    const workerCount = Math.min(5, queue.length);
+
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        try {
+          const response = await api.post('/papers/import', buildImportPayload(next, activeWorkspaceId));
+          const updatedRow = Boolean(response.data?.updated);
+          if (updatedRow) updated += 1;
+          else created += 1;
+          importedKeys.push(normalizeKey(next));
+        } catch {
+          failed += 1;
+        }
+      }
+    });
+
+    await Promise.all(workers);
+    if (importedKeys.length > 0) {
+      setImportedSet((prev) => {
+        const next = new Set(prev);
+        for (const key of importedKeys) next.add(key);
+        return next;
+      });
+      await api
+        .put('/workspaces/session-state', {
+          page_path: '/search',
+          workspace_id: activeWorkspaceId,
+          last_query: query.trim(),
+        })
+        .catch(() => undefined);
+    }
+    setBulkImporting(false);
+
+    if (failed > 0) {
+      toastError(`Imported ${created} new, updated ${updated}, failed ${failed}`);
+      return;
+    }
+    toastSuccess(`Imported ${created} new papers, updated ${updated}`);
+  };
+
   const copyCitation = async (paper: Paper) => {
     const text = buildCitation(paper, citationStyle);
     try {
@@ -618,6 +917,95 @@ const SearchPapers: React.FC = () => {
       toastSuccess('Citation copied');
     } catch {
       toastError('Failed to copy citation');
+    }
+  };
+
+  const resolvePaperAccess = async (paper: Paper) => {
+    const key = normalizeKey(paper);
+    setResolvingAccess((prev) => ({ ...prev, [key]: true }));
+    try {
+      const response = await api.post('/papers/resolve-access', {
+        source: paper.source || 'global_merged',
+        title: paper.title,
+        doi: paper.doi || undefined,
+        url: paper.url || undefined,
+        pdf_url: paper.pdf_url || undefined,
+        institutional_url: paper.institutional_url || undefined,
+      });
+      const resolved = response.data?.resolved || {};
+      setResults((prev) =>
+        prev.map((item) => {
+          if (normalizeKey(item) !== key) return item;
+          return {
+            ...item,
+            doi: resolved.doi || item.doi,
+            pdf_url: resolved.pdf_url || item.pdf_url,
+            institutional_url: resolved.institutional_url || item.institutional_url,
+            full_text_url: resolved.full_text_url || item.full_text_url || resolved.pdf_url || item.pdf_url,
+            full_text_available:
+              typeof resolved.full_text_available === 'boolean'
+                ? resolved.full_text_available
+                : item.full_text_available,
+            access_type: resolved.access_type || item.access_type,
+            access_label: resolved.access_label || item.access_label,
+          };
+        })
+      );
+      toastSuccess('Access status refreshed');
+    } catch (err: unknown) {
+      toastError(apiErrorMessage(err, 'Failed to resolve paper access.'));
+    } finally {
+      setResolvingAccess((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const importInstitutionalList = async () => {
+    if (!activeWorkspaceId) {
+      toastError('Select a workspace first.');
+      return;
+    }
+    if (!institutionalRaw.trim()) {
+      toastError('Paste at least one institutional paper entry.');
+      return;
+    }
+
+    setInstitutionalImporting(true);
+    try {
+      const response = await api.post('/papers/import-institutional', {
+        workspace_id: activeWorkspaceId,
+        source_name: 'institutional_portal',
+        raw_text: institutionalRaw,
+      });
+      const imported = Number(response.data?.imported || 0);
+      const updated = Number(response.data?.updated || 0);
+      toastSuccess(`Institutional import complete: ${imported} new, ${updated} updated`);
+      setInstitutionalRaw('');
+
+      const wsRes = await api.get(`/workspaces/${activeWorkspaceId}`);
+      const existingPapers: Array<{
+        title: string;
+        doi?: string;
+        url?: string;
+        abstract?: string;
+      }> = wsRes.data?.papers || [];
+      const next = new Set<string>();
+      existingPapers.forEach((entry) => {
+        const token = normalizeKey({
+          title: String(entry.title || ''),
+          authors: [],
+          abstract: String(entry.abstract || ''),
+          url: String(entry.url || ''),
+          doi: String(entry.doi || ''),
+          published: '',
+          categories: [],
+        });
+        next.add(token);
+      });
+      setImportedSet(next);
+    } catch (err: unknown) {
+      toastError(apiErrorMessage(err, 'Institutional import failed.'));
+    } finally {
+      setInstitutionalImporting(false);
     }
   };
 
@@ -678,7 +1066,9 @@ const SearchPapers: React.FC = () => {
                 Unified Multi-Source Search
               </p>
               <h2 className="text-2xl font-bold text-slate-900">Search Papers</h2>
-              <p className="text-sm text-slate-500 mt-1">{statusText}</p>
+              <p className="text-sm text-slate-500 mt-1" role="status" aria-live="polite">
+                {statusText}
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -717,6 +1107,7 @@ const SearchPapers: React.FC = () => {
                   }
                 }}
                 placeholder="Search any research topic"
+                aria-label="Search papers by topic"
                 className="w-full h-12 rounded-2xl border border-slate-200 bg-white pl-12 pr-4 text-base text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
               />
             </div>
@@ -757,13 +1148,24 @@ const SearchPapers: React.FC = () => {
             <input
               type="range"
               min={SEARCH_MIN_RESULTS}
-              max={SEARCH_MAX_RESULTS}
+              max={maxResultsCap}
               step={10}
               value={maxResults}
               onChange={(event) => setMaxResults(Number(event.target.value))}
               className="w-44"
             />
             <span className="text-sm font-semibold text-slate-700 w-10">{maxResults}</span>
+
+            <label className="text-sm text-slate-500 ml-2">Mode</label>
+            <select
+              value={searchMode}
+              onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
+            >
+              <option value="fast">Fast</option>
+              <option value="balanced">Balanced</option>
+              <option value="deep">Deep (more papers)</option>
+            </select>
 
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={oaOnly} onChange={(event) => setOaOnly(event.target.checked)} />
@@ -772,6 +1174,10 @@ const SearchPapers: React.FC = () => {
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={pdfOnly} onChange={(event) => setPdfOnly(event.target.checked)} />
               PDF only
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={fullTextOnly} onChange={(event) => setFullTextOnly(event.target.checked)} />
+              Full text only
             </label>
 
             <select
@@ -796,6 +1202,19 @@ const SearchPapers: React.FC = () => {
               <option value="newest">Sort: Newest</option>
               <option value="oldest">Sort: Oldest</option>
               <option value="title">Sort: Title</option>
+            </select>
+
+            <select
+              value={sourceFilter}
+              onChange={(event) => setSourceFilter(canonicalSourceKey(event.target.value) || 'all')}
+              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
+            >
+              <option value="all">Source: All</option>
+              {sourceFilterOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label} ({item.count})
+                </option>
+              ))}
             </select>
 
             <select
@@ -828,6 +1247,43 @@ const SearchPapers: React.FC = () => {
           <div className="border-t border-slate-100 pt-3">
             <button
               type="button"
+              onClick={() => setShowInstitutionalImport((prev) => !prev)}
+              className="text-sm font-medium text-slate-700 inline-flex items-center gap-2"
+            >
+              <Download className="h-4 w-4" />
+              Institutional Import Connector
+            </button>
+
+            {showInstitutionalImport && (
+              <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs text-slate-600 mb-2">
+                  Paste one entry per line in this format: <code>Title | URL | DOI | Author1; Author2</code>
+                </p>
+                <textarea
+                  value={institutionalRaw}
+                  onChange={(event) => setInstitutionalRaw(event.target.value)}
+                  placeholder="Example: Secure IoT Intrusion Detection | https://publisher.com/paper/123 | 10.1000/example.doi"
+                  className="w-full min-h-[120px] rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs text-slate-500">{institutionalRaw.split('\n').filter((line) => line.trim()).length} lines</span>
+                  <button
+                    type="button"
+                    onClick={() => void importInstitutionalList()}
+                    disabled={institutionalImporting || !institutionalRaw.trim()}
+                    className="inline-flex items-center gap-2 rounded-xl bg-slate-700 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-55"
+                  >
+                    {institutionalImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                    Import Institutional Papers
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <button
+              type="button"
               onClick={() => setShowSavedQueries((prev) => !prev)}
               className="text-sm font-medium text-slate-700 inline-flex items-center gap-2"
             >
@@ -853,6 +1309,7 @@ const SearchPapers: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => removeSavedQuery(item.id)}
+                      aria-label={`Remove saved query ${item.query}`}
                       className="text-xs text-slate-400 hover:text-red-500"
                     >
                       x
@@ -908,6 +1365,7 @@ const SearchPapers: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => void removeSearchHistoryItem(item.id)}
+                          aria-label={`Remove history query ${item.query}`}
                           className="text-xs text-slate-400 hover:text-red-500"
                         >
                           Remove
@@ -932,19 +1390,78 @@ const SearchPapers: React.FC = () => {
         </div>
 
         {error && (
-          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 inline-flex items-center gap-2">
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 inline-flex items-center gap-2" role="alert">
             <AlertCircle className="h-4 w-4" />
             {error}
           </div>
         )}
 
-        <div className="text-sm text-slate-600">
-          Showing {filteredResults.length} of {results.length} merged results
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm text-slate-600">
+            Showing {renderedResults.length} of {filteredResults.length} filtered ({results.length} merged)
+            {lastDurationMs !== null && (
+              <span className="ml-2 text-xs text-slate-500">
+                {lastCacheHit ? 'cache' : 'live'} | {lastDurationMs} ms
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void importTopVisible(10)}
+              disabled={bulkImporting || renderedResults.length === 0 || !activeWorkspaceId}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-55"
+            >
+              {bulkImporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              Import Top 10
+            </button>
+            <button
+              type="button"
+              onClick={() => void importTopVisible(30)}
+              disabled={bulkImporting || renderedResults.length === 0 || !activeWorkspaceId}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-55"
+            >
+              {bulkImporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              Import Top 30
+            </button>
+          </div>
         </div>
+
+        {sourceStatusEntries.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {sourceStatusEntries.map(([name, meta]) => {
+              const canonical = canonicalSourceKey(name);
+              const sourceName = SOURCE_LABELS[canonical] || SOURCE_LABELS[name] || name;
+              const status = String(meta?.status || 'ok').toLowerCase();
+              const toneClass =
+                status === 'ok'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : status === 'warning'
+                  ? 'bg-amber-50 text-amber-700 border-amber-200'
+                  : status === 'timeout' || status === 'error'
+                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                  : 'bg-slate-100 text-slate-600 border-slate-200';
+              const isActiveSource = sourceFilter !== 'all' && canonical === sourceFilter;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => setSourceFilter(isActiveSource ? 'all' : canonical)}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] transition ${toneClass} ${
+                    isActiveSource ? 'ring-2 ring-slate-300' : ''
+                  }`}
+                  title={sourceName}
+                >
+                  {sourceName}: {Number(meta?.count || 0)}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         <div className="space-y-4">
           {loading && (
-            <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center text-slate-600">
+            <div className="rounded-3xl border border-slate-200 bg-white p-8 text-center text-slate-600" role="status" aria-live="polite">
               <Loader2 className="h-6 w-6 animate-spin mx-auto mb-3" />
               Searching connected sources...
             </div>
@@ -957,12 +1474,26 @@ const SearchPapers: React.FC = () => {
           )}
 
           {!loading &&
-            filteredResults.map((paper) => {
+            renderedResults.map((paper) => {
               const importKey = normalizeKey(paper);
               const imported = importedSet.has(importKey);
-              const sourceKey = String(paper.source || '').toLowerCase();
+              const sourceKey = canonicalSourceKey(String(paper.source || '').toLowerCase());
               const sourceLabel = SOURCE_LABELS[sourceKey] || paper.source || 'Merged source';
               const citation = buildCitation(paper, citationStyle);
+              const fullTextLink = String(
+                paper.full_text_url || paper.pdf_url || paper.institutional_url || (hasPdfLink(paper) ? paper.url : '')
+              ).trim();
+              const hasFullText = Boolean(paper.full_text_available) || Boolean(fullTextLink);
+              const accessType = String(paper.access_type || '').toLowerCase();
+              const accessLabel =
+                String(paper.access_label || '').trim() ||
+                (hasFullText
+                  ? accessType === 'institutional'
+                    ? 'Institutional Full Text'
+                    : 'Full Text Available'
+                  : paper.doi
+                  ? 'DOI Available'
+                  : 'Metadata Only');
 
               return (
                 <article key={importKey} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -1004,6 +1535,17 @@ const SearchPapers: React.FC = () => {
                     {isLikelyOpenAccess(paper) && (
                       <span className="rounded-full bg-teal-50 px-2.5 py-1 text-teal-700">Open Access</span>
                     )}
+                    <span
+                      className={`rounded-full px-2.5 py-1 ${
+                        hasFullText
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : accessType === 'doi_only'
+                          ? 'bg-amber-50 text-amber-700'
+                          : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {accessLabel}
+                    </span>
                   </div>
 
                   <p className="mt-3 text-xs text-slate-500 line-clamp-2">{citation}</p>
@@ -1035,6 +1577,28 @@ const SearchPapers: React.FC = () => {
                       </a>
                     )}
 
+                    {fullTextLink && (
+                      <a
+                        href={fullTextLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-100"
+                      >
+                        <FileText className="h-4 w-4" />
+                        Open Full Text
+                      </a>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => void resolvePaperAccess(paper)}
+                      disabled={Boolean(resolvingAccess[importKey])}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-55"
+                    >
+                      {resolvingAccess[importKey] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      Resolve Access
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => void importPaper(paper)}
@@ -1059,6 +1623,18 @@ const SearchPapers: React.FC = () => {
               );
             })}
         </div>
+
+        {canRenderMore && !loading && (
+          <div className="flex justify-center pt-1">
+            <button
+              type="button"
+              onClick={() => setVisibleCount((prev) => prev + RENDER_BATCH_SIZE)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-2.5 text-slate-700 hover:bg-slate-50"
+            >
+              Show {Math.min(RENDER_BATCH_SIZE, filteredResults.length - renderedResults.length)} more loaded results
+            </button>
+          </div>
+        )}
 
         {hasMore && !loading && (
           <div className="flex justify-center pt-2">

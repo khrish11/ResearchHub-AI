@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Users, UserPlus, Mail, Trash2, Crown, Eye, Edit, Loader2 } from 'lucide-react';
+import type { AxiosError } from 'axios';
 import api from '../api';
 import { useToast } from '../contexts/ToastContext';
 
@@ -40,20 +41,20 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
   // Check if current user can manage collaborators
   const canManageCollaborators = ['owner', 'admin'].includes(currentUserRole);
 
-  useEffect(() => {
-    loadCollaborators();
-  }, [workspaceId]);
-
-  const loadCollaborators = async () => {
+  const loadCollaborators = useCallback(async () => {
     try {
       const response = await api.get(`/workspaces/${workspaceId}/collaborators`);
       setCollaborators(response.data);
-    } catch (error) {
+    } catch {
       showError('Failed to load collaborators');
     } finally {
       setLoading(false);
     }
-  };
+  }, [showError, workspaceId]);
+
+  useEffect(() => {
+    void loadCollaborators();
+  }, [loadCollaborators]);
 
   const handleInviteUser = async () => {
     if (!inviteEmail.trim()) {
@@ -79,10 +80,12 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
       setInviteEmail('');
       setInviteRole('viewer');
       setShowInviteModal(false);
-      loadCollaborators();
+      void loadCollaborators();
       onCollaborationChange?.();
-    } catch (error: any) {
-      const message = error?.response?.data?.detail || 'Failed to send invitation';
+    } catch (error: unknown) {
+      const message =
+        (error as AxiosError<{ detail?: string }>)?.response?.data?.detail ||
+        'Failed to send invitation';
       showError(message);
     } finally {
       setInviting(false);
@@ -97,9 +100,9 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
       });
 
       showSuccess('User role updated successfully');
-      loadCollaborators();
+      void loadCollaborators();
       onCollaborationChange?.();
-    } catch (error) {
+    } catch {
       showError('Failed to update user role');
     } finally {
       setUpdatingRole(null);
@@ -115,9 +118,9 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
     try {
       await api.delete(`/workspaces/${workspaceId}/collaborators/${userId}`);
       showSuccess('User removed from workspace');
-      loadCollaborators();
+      void loadCollaborators();
       onCollaborationChange?.();
-    } catch (error) {
+    } catch {
       showError('Failed to remove user');
     } finally {
       setRemovingUser(null);

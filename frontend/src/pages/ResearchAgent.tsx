@@ -56,6 +56,18 @@ interface ChatMessage {
   createdAt: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+interface FullPipelineResult {
+  results?: Record<string, unknown>;
+  steps_completed?: unknown[];
+  planned_steps?: unknown[];
+}
+
+interface ChatbotResult {
+  reply?: string;
+}
+
 type AgentPanel = 'overview' | 'analysis' | 'graph' | 'generation' | 'advanced';
 
 const LAST_WORKSPACE_KEY = 'researchhub.last_workspace_id';
@@ -550,7 +562,7 @@ const ResearchAgent: React.FC = () => {
   const [activePanel, setActivePanel] = useState<AgentPanel>('overview');
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [outputs, setOutputs] = useState<Record<string, any>>({});
+  const [outputs, setOutputs] = useState<Record<string, unknown>>({});
   const [aiStatus, setAiStatus] = useState<AiStatusResponse | null>(null);
   const [chatPrompt, setChatPrompt] = useState('What are the strongest contradictions in selected papers?');
   const [chatStyle, setChatStyle] = useState<'concise' | 'balanced' | 'deep'>('balanced');
@@ -621,7 +633,10 @@ const ResearchAgent: React.FC = () => {
     api
       .get(`/workspaces/${selectedWorkspace}`)
       .then((res) => {
-        const list: Paper[] = (res.data?.papers || []).map((paper: any) => ({ id: paper.id, title: paper.title }));
+        const list: Paper[] = (res.data?.papers || []).map((paper: unknown) => {
+          const p = (paper || {}) as JsonRecord;
+          return { id: Number(p.id || 0), title: String(p.title || '') };
+        });
         setPapers(list);
         const selectionMap = getAgentSelections();
         const stored = Array.isArray(selectionMap[String(selectedWorkspace)]) ? selectionMap[String(selectedWorkspace)] : [];
@@ -695,7 +710,7 @@ const ResearchAgent: React.FC = () => {
     setSelectedPaperIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const runAction = async (key: string, request: () => Promise<any>, outputKey?: string) => {
+  const runAction = async (key: string, request: () => Promise<{ data: unknown }>, outputKey?: string) => {
     setError(null);
     setLoadingKey(key);
     try {
@@ -729,7 +744,11 @@ const ResearchAgent: React.FC = () => {
       strict_mode: true,
       include_advanced: includeAdvancedPipeline,
     };
-    const data = await runAction('full_pipeline', () => api.post('/research/full-pipeline', payload), 'full_pipeline');
+    const data = (await runAction(
+      'full_pipeline',
+      () => api.post('/research/full-pipeline', payload),
+      'full_pipeline'
+    )) as FullPipelineResult | null;
     if (data && data.results && typeof data.results === 'object') {
       setOutputs((prev) => ({ ...prev, ...(data.results as Record<string, unknown>) }));
       const completed = Array.isArray(data.steps_completed) ? data.steps_completed.length : 0;
@@ -753,7 +772,7 @@ const ResearchAgent: React.FC = () => {
       setChatPrompt('');
     }
 
-    const data = await runAction(
+    const data = (await runAction(
       'chatbot',
       () =>
         api.post('/research/chatbot', {
@@ -769,7 +788,7 @@ const ResearchAgent: React.FC = () => {
           conversation: conversationSeed.map((turn) => ({ role: turn.role, content: turn.content })),
         }),
       'chatbot'
-    );
+    )) as ChatbotResult | null;
 
     if (data && typeof data.reply === 'string' && data.reply.trim()) {
       const assistantTurn: ChatMessage = {
@@ -782,17 +801,21 @@ const ResearchAgent: React.FC = () => {
   };
 
   const canRunWorkspaceActions = useMemo(() => Boolean(selectedWorkspace), [selectedWorkspace]);
-  const autonomous = outputs.autonomous as Record<string, any> | undefined;
+  const autonomous = outputs.autonomous as JsonRecord | undefined;
   const graph = outputs.graph as GraphResponse | undefined;
-  const fullPipeline = outputs.full_pipeline as Record<string, any> | undefined;
-  const chatbotOutput = outputs.chatbot as Record<string, any> | undefined;
-  const smartReadOutput = outputs.smart_read as Record<string, any> | undefined;
-  const compareOutput = outputs.compare as Record<string, any> | undefined;
-  const feedOutput = outputs.feed as Record<string, any> | undefined;
-  const citationsOutput = outputs.citations as Record<string, any> | undefined;
-  const faultOutput = outputs.fault_detection as Record<string, any> | undefined;
+  const fullPipeline = outputs.full_pipeline as JsonRecord | undefined;
+  const chatbotOutput = outputs.chatbot as JsonRecord | undefined;
+  const smartReadOutput = outputs.smart_read as JsonRecord | undefined;
+  const compareOutput = outputs.compare as JsonRecord | undefined;
+  const feedOutput = outputs.feed as JsonRecord | undefined;
+  const citationsOutput = outputs.citations as JsonRecord | undefined;
+  const faultOutput = outputs.fault_detection as JsonRecord | undefined;
   const trendNarrative = String((outputs.trends as Record<string, unknown> | undefined)?.forecast_narrative || '').trim();
-  const multiAgentGrade = String((outputs.multi_agent as Record<string, any> | undefined)?.overall_quality?.grade || '').trim();
+  const multiAgent = outputs.multi_agent as JsonRecord | undefined;
+  const multiAgentOverall = (multiAgent?.overall_quality as JsonRecord | undefined) || {};
+  const multiAgentPlan = (multiAgent?.orchestrated_plan_quality as JsonRecord | undefined) || {};
+  const multiAgentAgentQuality = (multiAgent?.agent_quality as JsonRecord | undefined) || {};
+  const multiAgentGrade = String(multiAgentOverall.grade || '').trim();
   const faultScore = Number(faultOutput?.quality_score || 0);
   const chatActions = Array.isArray(chatbotOutput?.actions) ? chatbotOutput.actions.map((action: unknown) => String(action)) : [];
   const chatCitations = Array.isArray(chatbotOutput?.citations) ? chatbotOutput.citations as Array<Record<string, unknown>> : [];
@@ -908,11 +931,14 @@ const ResearchAgent: React.FC = () => {
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
                   <p className="font-semibold">Recoverable step errors</p>
                   <ul className="mt-1 list-disc space-y-1 pl-4">
-                    {fullPipeline.errors.slice(0, 5).map((err: any, index: number) => (
-                      <li key={`${err?.step || 'step'}-${index}`}>
-                        {String(err?.step || 'step')}: {String(err?.error || 'unknown error')}
+                    {fullPipeline.errors.slice(0, 5).map((err: unknown, index: number) => {
+                      const e = (err || {}) as JsonRecord;
+                      return (
+                      <li key={`${String(e.step || 'step')}-${index}`}>
+                        {String(e.step || 'step')}: {String(e.error || 'unknown error')}
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 </div>
               )}
@@ -1032,7 +1058,7 @@ const ResearchAgent: React.FC = () => {
             >
               {loadingKey === 'gaps' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Detect Gaps
             </button>
-            {outputs.gaps && (
+            {outputs.gaps ? (
               <div className="mt-3 space-y-3">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Gap Analysis</p>
@@ -1047,7 +1073,7 @@ const ResearchAgent: React.FC = () => {
                   <JsonBlock value={outputs.gaps} />
                 </details>
               </div>
-            )}
+            ) : null}
             </Card>
           )}
 
@@ -1109,20 +1135,20 @@ const ResearchAgent: React.FC = () => {
                 {loadingKey === 'multi_agent_strict' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Regenerate Strict
               </button>
             </div>
-            {outputs.multi_agent && (
+            {outputs.multi_agent ? (
               <div className="mt-3 space-y-3">
                 <div className="flex flex-wrap gap-2">
-                  <Pill tone={qualityTone(String((outputs.multi_agent as Record<string, any>)?.overall_quality?.grade || ''))}>
-                    Quality {(outputs.multi_agent as Record<string, any>)?.overall_quality?.grade || 'unknown'}
+                  <Pill tone={qualityTone(String(multiAgentOverall.grade || ''))}>
+                    Quality {String(multiAgentOverall.grade || 'unknown')}
                   </Pill>
                   <Pill tone="indigo">
-                    Avg agent score {Number((outputs.multi_agent as Record<string, any>)?.overall_quality?.avg_agent_score || 0)}
+                    Avg agent score {Number(multiAgentOverall.avg_agent_score || 0)}
                   </Pill>
                   <Pill tone="slate">
-                    Plan score {Number((outputs.multi_agent as Record<string, any>)?.orchestrated_plan_quality?.score || 0)}
+                    Plan score {Number(multiAgentPlan.score || 0)}
                   </Pill>
                   <Pill tone="slate">
-                    Mode {(outputs.multi_agent as Record<string, any>)?.strict_mode ? 'Strict' : 'Standard'}
+                    Mode {multiAgent?.strict_mode ? 'Strict' : 'Standard'}
                   </Pill>
                 </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -1131,23 +1157,27 @@ const ResearchAgent: React.FC = () => {
                     {String((outputs.multi_agent as Record<string, unknown>)?.orchestrated_plan || '')}
                   </p>
                 </div>
-                {Boolean((outputs.multi_agent as Record<string, any>)?.agent_quality) && (
+                {Boolean(multiAgent?.agent_quality) && (
                   <div className="rounded-xl border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Per-agent Quality</p>
                     <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-                      {Object.entries((outputs.multi_agent as Record<string, any>)?.agent_quality || {}).map(([agent, quality]) => (
+                      {Object.entries(multiAgentAgentQuality).map(([agent, quality]) => {
+                        const qualityRecord = (quality || {}) as JsonRecord;
+                        const stats = (qualityRecord.stats as JsonRecord | undefined) || {};
+                        return (
                         <div key={agent} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-sm font-semibold text-slate-800">{agent.replace(/_/g, ' ')}</p>
-                            <Pill tone={qualityTone(String((quality as any)?.label || ''))}>
-                              {String((quality as any)?.label || 'unknown')} {Number((quality as any)?.score || 0)}
+                            <Pill tone={qualityTone(String(qualityRecord.label || ''))}>
+                              {String(qualityRecord.label || 'unknown')} {Number(qualityRecord.score || 0)}
                             </Pill>
                           </div>
                           <p className="mt-1 text-xs text-slate-500">
-                            refs {Number((quality as any)?.stats?.paper_refs || 0)} | bullets {Number((quality as any)?.stats?.bullets || 0)} | chars {Number((quality as any)?.stats?.chars || 0)}
+                            refs {Number(stats.paper_refs || 0)} | bullets {Number(stats.bullets || 0)} | chars {Number(stats.chars || 0)}
                           </p>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1158,7 +1188,7 @@ const ResearchAgent: React.FC = () => {
                   <JsonBlock value={(outputs.multi_agent as Record<string, unknown>)?.agents || {}} />
                 </details>
               </div>
-            )}
+            ) : null}
             </Card>
           )}
 
@@ -1303,7 +1333,7 @@ const ResearchAgent: React.FC = () => {
             >
               {loadingKey === 'trends' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Predict Trends
             </button>
-            {outputs.trends && (
+            {outputs.trends ? (
               <div className="mt-3 space-y-3">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Forecast Narrative</p>
@@ -1318,7 +1348,7 @@ const ResearchAgent: React.FC = () => {
                   <JsonBlock value={(outputs.trends as Record<string, unknown>)?.trend_data || {}} />
                 </details>
               </div>
-            )}
+            ) : null}
             </Card>
           )}
 
@@ -1339,7 +1369,7 @@ const ResearchAgent: React.FC = () => {
             >
               {loadingKey === 'experiment' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Design Experiment
             </button>
-            {outputs.experiment && (
+            {outputs.experiment ? (
               <div className="mt-3 space-y-2">
                 <p className="max-h-80 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                   {String((outputs.experiment as Record<string, unknown>)?.experiment_design || '')}
@@ -1351,7 +1381,7 @@ const ResearchAgent: React.FC = () => {
                   <JsonBlock value={outputs.experiment} />
                 </details>
               </div>
-            )}
+            ) : null}
             </Card>
           )}
 
@@ -1374,7 +1404,7 @@ const ResearchAgent: React.FC = () => {
             >
               {loadingKey === 'paper_draft' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Draft Paper
             </button>
-            {outputs.paper_draft && (
+            {outputs.paper_draft ? (
               <div className="mt-3 space-y-2">
                 <button
                   type="button"
@@ -1391,7 +1421,7 @@ const ResearchAgent: React.FC = () => {
                   {String((outputs.paper_draft as Record<string, unknown>)?.draft || '')}
                 </p>
               </div>
-            )}
+            ) : null}
             </Card>
           )}
         </div>
@@ -1516,7 +1546,7 @@ const ResearchAgent: React.FC = () => {
                   <Pill tone="indigo">{String(smartReadOutput.source || 'paper')}</Pill>
                   <Pill tone="slate">{String(smartReadOutput.title || 'Untitled')}</Pill>
                 </div>
-                {smartReadOutput.extraction && (
+                {smartReadOutput.extraction ? (
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                     {['contributions', 'claims', 'datasets', 'equations', 'limitations'].map((field) => (
                       <div key={field} className="rounded-lg border border-slate-200 bg-slate-50 p-2">
@@ -1533,7 +1563,7 @@ const ResearchAgent: React.FC = () => {
                       </div>
                     ))}
                   </div>
-                )}
+                ) : null}
                 <p className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                   {String(smartReadOutput.analysis || '')}
                 </p>

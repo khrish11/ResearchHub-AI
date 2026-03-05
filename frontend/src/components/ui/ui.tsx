@@ -210,7 +210,7 @@ export const DebouncedInput: React.FC<{
   useEffect(() => {
     const t = setTimeout(() => { if (inner !== value) onChange(inner); }, delay);
     return () => clearTimeout(t);
-  }, [inner]);
+  }, [delay, inner, onChange, value]);
   return (
     <input
       className={`w-full ${tokens.radius} ${tokens.ring} ${tokens.input} px-3 py-2 text-sm ${className}`}

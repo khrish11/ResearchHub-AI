@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -24,6 +24,11 @@ interface Paper {
   url?: string;
   doi?: string;
   bibcode?: string;
+  source?: string;
+  pdf_url?: string;
+  institutional_url?: string;
+  access_type?: string;
+  full_text_available?: boolean;
 }
 
 interface ChatItem {
@@ -76,45 +81,50 @@ const Workspace: React.FC = () => {
   const [faultPaperId, setFaultPaperId] = useState<number | null>(null);
   const [faultLoading, setFaultLoading] = useState(false);
   const [faultResult, setFaultResult] = useState<FaultResult | null>(null);
+  const [fullTextOnlyPapers, setFullTextOnlyPapers] = useState(false);
+  const [resolvingWorkspaceAccess, setResolvingWorkspaceAccess] = useState(false);
+  const [institutionalRaw, setInstitutionalRaw] = useState('');
+  const [institutionalImporting, setInstitutionalImporting] = useState(false);
+
+  const loadWorkspace = useCallback(async () => {
+    if (!id) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const [workspaceRes, sessionRes] = await Promise.all([
+        api.get(`/workspaces/${id}`),
+        api.get('/workspaces/session-state').catch(() => ({ data: null })),
+      ]);
+      const data = workspaceRes.data;
+      setWorkspace(data);
+      setReportTopic(data?.name ? `${data.name} literature synthesis` : '');
+      const paperIds = (data?.papers || []).map((paper: Paper) => paper.id);
+
+      const extra = sessionRes?.data?.extra && typeof sessionRes.data.extra === 'object' ? sessionRes.data.extra : {};
+      const restoredIds = Array.isArray(extra.selected_chat_paper_ids)
+        ? extra.selected_chat_paper_ids.map((value: unknown) => Number(value)).filter((value: number) => paperIds.includes(value))
+        : [];
+      setChatPaperIds(restoredIds.length > 0 ? restoredIds : paperIds);
+
+      const restoredFault = Number(extra.fault_paper_id || 0);
+      setFaultPaperId(paperIds.includes(restoredFault) ? restoredFault : paperIds[0] ?? null);
+
+      const restoredTab = String(extra.active_tab || '');
+      if (restoredTab === 'papers' || restoredTab === 'chat' || restoredTab === 'review') {
+        setActiveTab(restoredTab);
+      }
+    } catch {
+      setError('Failed to load workspace.');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
   useEffect(() => {
-    const fetchWorkspace = async () => {
-      if (!id) {
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const [workspaceRes, sessionRes] = await Promise.all([
-          api.get(`/workspaces/${id}`),
-          api.get('/workspaces/session-state').catch(() => ({ data: null })),
-        ]);
-        const data = workspaceRes.data;
-        setWorkspace(data);
-        setReportTopic(data?.name ? `${data.name} literature synthesis` : '');
-        const paperIds = (data?.papers || []).map((paper: Paper) => paper.id);
-
-        const extra = sessionRes?.data?.extra && typeof sessionRes.data.extra === 'object' ? sessionRes.data.extra : {};
-        const restoredIds = Array.isArray(extra.selected_chat_paper_ids)
-          ? extra.selected_chat_paper_ids.map((value: unknown) => Number(value)).filter((value: number) => paperIds.includes(value))
-          : [];
-        setChatPaperIds(restoredIds.length > 0 ? restoredIds : paperIds);
-
-        const restoredFault = Number(extra.fault_paper_id || 0);
-        setFaultPaperId(paperIds.includes(restoredFault) ? restoredFault : paperIds[0] ?? null);
-
-        const restoredTab = String(extra.active_tab || '');
-        if (restoredTab === 'papers' || restoredTab === 'chat' || restoredTab === 'review') {
-          setActiveTab(restoredTab);
-        }
-      } catch {
-        setError('Failed to load workspace.');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchWorkspace();
-  }, [id]);
+    void loadWorkspace();
+  }, [loadWorkspace]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -304,6 +314,56 @@ const Workspace: React.FC = () => {
     ];
   }, [workspace]);
 
+  const papersForDisplay = useMemo(() => {
+    if (!workspace) return [];
+    if (!fullTextOnlyPapers) return workspace.papers;
+    return workspace.papers.filter((paper) => {
+      const fullTextUrl = String(paper.pdf_url || paper.institutional_url || (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') || '').trim();
+      return Boolean(paper.full_text_available) || Boolean(fullTextUrl);
+    });
+  }, [fullTextOnlyPapers, workspace]);
+
+  const resolveWorkspacePaperAccess = async () => {
+    if (!workspace) return;
+    setResolvingWorkspaceAccess(true);
+    setError(null);
+    try {
+      await api.post('/papers/resolve-workspace-access', {
+        workspace_id: workspace.id,
+        refresh_all: false,
+        max_unpaywall_lookups: 20,
+      });
+      await loadWorkspace();
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to resolve workspace full-text access.'));
+    } finally {
+      setResolvingWorkspaceAccess(false);
+    }
+  };
+
+  const importInstitutionalPapers = async () => {
+    if (!workspace) return;
+    if (!institutionalRaw.trim()) {
+      setError('Paste institutional entries before importing.');
+      return;
+    }
+    setInstitutionalImporting(true);
+    setError(null);
+    try {
+      await api.post('/papers/import-institutional', {
+        workspace_id: workspace.id,
+        source_name: 'institutional_portal',
+        raw_text: institutionalRaw,
+      });
+      setInstitutionalRaw('');
+      await loadWorkspace();
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to import institutional papers.'));
+    } finally {
+      setInstitutionalImporting(false);
+    }
+  };
+
   return (
     <Layout>
       <div className="page-enter">
@@ -361,6 +421,26 @@ const Workspace: React.FC = () => {
               <button onClick={() => handleExport('csv')} className="hero-btn-primary">
                 <Download className="h-4 w-4" />
                 Export .csv
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void resolveWorkspacePaperAccess();
+                }}
+                disabled={resolvingWorkspaceAccess || workspace.papers.length === 0}
+                className="hero-btn-secondary disabled:opacity-55 disabled:cursor-not-allowed"
+              >
+                {resolvingWorkspaceAccess ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Resolving access...
+                  </>
+                ) : (
+                  <>
+                    <Workflow className="h-4 w-4" />
+                    Resolve Full-Text Access
+                  </>
+                )}
               </button>
               <button
                 type="button"
@@ -438,55 +518,159 @@ const Workspace: React.FC = () => {
             </div>
 
             {activeTab === 'papers' && (
-              <section className="workspace-grid">
-                {workspace.papers.length === 0 ? (
-                  <div className="studio-panel-quiet p-8 text-center">
-                    <p className="text-sm text-slate-600">
-                      No papers in this workspace yet. Import papers from Search to begin.
-                    </p>
+              <section className="space-y-4">
+                <div className="studio-surface p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Institutional Connector</p>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Paste lines in format: <code>Title | URL | DOI | Author1; Author2</code>
+                      </p>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={fullTextOnlyPapers}
+                        onChange={(event) => setFullTextOnlyPapers(event.target.checked)}
+                      />
+                      Show full-text only
+                    </label>
                   </div>
-                ) : (
-                  workspace.papers.map((paper) => (
-                    <article key={paper.id} className="workspace-paper-card">
-                      <h3 className="text-base font-semibold text-slate-900">{paper.title}</h3>
-                      <p className="text-sm text-slate-500 mt-1">{paper.authors}</p>
-                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                        {paper.doi && (
-                          <a
-                            href={`https://doi.org/${paper.doi}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
-                          >
-                            DOI: {paper.doi}
-                          </a>
-                        )}
-                        {paper.bibcode && (
-                          <a
-                            href={`https://ui.adsabs.harvard.edu/abs/${paper.bibcode}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
-                          >
-                            Bibcode: {paper.bibcode}
-                          </a>
-                        )}
-                      </div>
-                      <p className="text-sm text-slate-700 mt-3 line-clamp-3">{paper.abstract}</p>
-                      {paper.url && (
-                        <a
-                          href={paper.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1.5 text-sm text-indigo-600 mt-3 font-semibold"
-                        >
-                          View paper
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
+                  <textarea
+                    value={institutionalRaw}
+                    onChange={(event) => setInstitutionalRaw(event.target.value)}
+                    placeholder="Example: Explainable IoT Detection | https://publisher.com/paper | 10.1000/example.doi"
+                    className="mt-3 w-full min-h-[110px] rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-500">
+                      {institutionalRaw.split('\n').filter((line) => line.trim()).length} lines
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void importInstitutionalPapers();
+                      }}
+                      disabled={institutionalImporting || !institutionalRaw.trim()}
+                      className="hero-btn-primary disabled:opacity-55 disabled:cursor-not-allowed"
+                    >
+                      {institutionalImporting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Importing...
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="h-4 w-4" />
+                          Import Institutional Papers
+                        </>
                       )}
-                    </article>
-                  ))
-                )}
+                    </button>
+                  </div>
+                </div>
+
+                <section className="workspace-grid">
+                  {workspace.papers.length === 0 ? (
+                    <div className="studio-panel-quiet p-8 text-center">
+                      <p className="text-sm text-slate-600">
+                        No papers in this workspace yet. Import papers from Search to begin.
+                      </p>
+                    </div>
+                  ) : papersForDisplay.length === 0 ? (
+                    <div className="studio-panel-quiet p-8 text-center">
+                      <p className="text-sm text-slate-600">
+                        No papers match current filter. Disable "full-text only" to view all papers.
+                      </p>
+                    </div>
+                  ) : (
+                    papersForDisplay.map((paper) => {
+                      const fullTextUrl =
+                        String(
+                          paper.pdf_url ||
+                            paper.institutional_url ||
+                            (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') ||
+                            ''
+                        ).trim();
+                      const hasFullText = Boolean(paper.full_text_available) || Boolean(fullTextUrl);
+                      const accessType = String(paper.access_type || '').toLowerCase();
+                      const accessLabel = hasFullText
+                        ? accessType === 'institutional'
+                          ? 'Institutional Full Text'
+                          : 'Full Text Available'
+                        : paper.doi
+                        ? 'DOI Available'
+                        : 'Metadata Only';
+
+                      return (
+                        <article key={paper.id} className="workspace-paper-card">
+                          <h3 className="text-base font-semibold text-slate-900">{paper.title}</h3>
+                          <p className="text-sm text-slate-500 mt-1">{paper.authors}</p>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                            <span
+                              className={`px-2 py-1 rounded-lg font-medium ${
+                                hasFullText
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                            >
+                              {accessLabel}
+                            </span>
+                            {paper.source && (
+                              <span className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 font-medium">
+                                {paper.source}
+                              </span>
+                            )}
+                            {paper.doi && (
+                              <a
+                                href={`https://doi.org/${paper.doi}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                              >
+                                DOI: {paper.doi}
+                              </a>
+                            )}
+                            {paper.bibcode && (
+                              <a
+                                href={`https://ui.adsabs.harvard.edu/abs/${paper.bibcode}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                              >
+                                Bibcode: {paper.bibcode}
+                              </a>
+                            )}
+                          </div>
+                          <p className="text-sm text-slate-700 mt-3 line-clamp-3">{paper.abstract}</p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {paper.url && (
+                              <a
+                                href={paper.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold"
+                              >
+                                View paper
+                                <ExternalLink className="h-4 w-4" />
+                              </a>
+                            )}
+                            {fullTextUrl && (
+                              <a
+                                href={fullTextUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-sm font-semibold text-emerald-700"
+                              >
+                                Open full text
+                                <ExternalLink className="h-4 w-4" />
+                              </a>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })
+                  )}
+                </section>
               </section>
             )}
 

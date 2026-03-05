@@ -40,6 +40,11 @@ class PaperOut(BaseModel):
     url: Optional[str] = None
     doi: Optional[str] = None
     bibcode: Optional[str] = None
+    source: Optional[str] = None
+    pdf_url: Optional[str] = None
+    institutional_url: Optional[str] = None
+    access_type: Optional[str] = None
+    full_text_available: Optional[bool] = None
 
     model_config = ConfigDict(from_attributes=True)
 

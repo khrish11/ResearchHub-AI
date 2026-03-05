@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { CheckCircle, AlertCircle, Mail, Loader2 } from 'lucide-react';
+import type { AxiosError } from 'axios';
 import api from '../api';
 
 const EmailVerification: React.FC = () => {
@@ -13,16 +14,7 @@ const EmailVerification: React.FC = () => {
   const token = searchParams.get('token');
   const email = searchParams.get('email');
 
-  useEffect(() => {
-    if (token) {
-      verifyEmail(token);
-    } else {
-      setStatus('error');
-      setMessage('No verification token provided');
-    }
-  }, [token]);
-
-  const verifyEmail = async (verificationToken: string) => {
+  const verifyEmail = useCallback(async (verificationToken: string) => {
     try {
       await api.post('/auth/verify-email', { token: verificationToken });
       setStatus('success');
@@ -32,11 +24,23 @@ const EmailVerification: React.FC = () => {
       setTimeout(() => {
         navigate('/login');
       }, 3000);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setStatus('error');
-      setMessage(error?.response?.data?.detail || 'Failed to verify email. The link may be expired or invalid.');
+      setMessage(
+        (error as AxiosError<{ detail?: string }>)?.response?.data?.detail ||
+          'Failed to verify email. The link may be expired or invalid.'
+      );
     }
-  };
+  }, [navigate]);
+
+  useEffect(() => {
+    if (token) {
+      void verifyEmail(token);
+    } else {
+      setStatus('error');
+      setMessage('No verification token provided');
+    }
+  }, [token, verifyEmail]);
 
   const resendVerificationEmail = async () => {
     if (!email) return;
@@ -45,8 +49,11 @@ const EmailVerification: React.FC = () => {
     try {
       await api.post('/auth/resend-verification-email', { email });
       setMessage('Verification email has been resent. Please check your inbox.');
-    } catch (error: any) {
-      setMessage(error?.response?.data?.detail || 'Failed to resend verification email.');
+    } catch (error: unknown) {
+      setMessage(
+        (error as AxiosError<{ detail?: string }>)?.response?.data?.detail ||
+          'Failed to resend verification email.'
+      );
     } finally {
       setResending(false);
     }

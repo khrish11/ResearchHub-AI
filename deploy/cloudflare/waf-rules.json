@@ -1,0 +1,31 @@
+{
+  "description": "Recommended Cloudflare ruleset for ResearchHub AI",
+  "rules": [
+    {
+      "name": "Block obvious bad bots",
+      "expression": "(cf.client.bot and not ip.src in {100.100.100.100})",
+      "action": "managed_challenge"
+    },
+    {
+      "name": "Challenge auth burst",
+      "expression": "(http.request.uri.path contains \"/auth/\" and rate(1m) > 120)",
+      "action": "managed_challenge"
+    },
+    {
+      "name": "Block high-risk countries for admin/developer routes",
+      "expression": "(http.request.uri.path contains \"/developer\" and ip.geoip.country ne \"US\")",
+      "action": "block"
+    },
+    {
+      "name": "Protect API against volumetric bursts",
+      "expression": "(http.request.uri.path matches \"^/(papers|workspaces|research-agent|chat)/\" and rate(10s) > 400)",
+      "action": "managed_challenge"
+    }
+  ],
+  "notes": [
+    "Enable Bot Fight Mode and DDoS Managed Rules.",
+    "Enable Always Use HTTPS and TLS 1.2+ only.",
+    "Enable Automatic Platform Optimization only for public pages.",
+    "Set origin firewall to only allow Cloudflare egress IPs."
+  ]
+}

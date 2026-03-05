@@ -1,7 +1,7 @@
 import React from 'react';
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
-import type { ToastType } from '../contexts/ToastContext';
+import type { Toast, ToastType } from '../contexts/ToastContext';
 
 const getToastIcon = (type: ToastType) => {
   switch (type) {
@@ -33,7 +33,7 @@ const getToastStyles = (type: ToastType) => {
   }
 };
 
-const ToastItem: React.FC<{ toast: any; onRemove: (id: string) => void }> = ({ toast, onRemove }) => {
+const ToastItem: React.FC<{ toast: Toast; onRemove: (id: string) => void }> = ({ toast, onRemove }) => {
   return (
     <div
       className={`flex items-start gap-3 p-4 rounded-lg border shadow-lg max-w-md animate-in slide-in-from-right-2 fade-in duration-300 ${getToastStyles(toast.type)}`}
