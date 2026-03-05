@@ -4,13 +4,13 @@ set -eu
 # Block obvious leaked credential patterns before push.
 PATTERN='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|ghu_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z\-_]{35}'
 
-if git diff --cached --name-only | xargs -r grep -nE "$PATTERN" >/dev/null 2>&1; then
+if git diff --cached --name-only | grep -v "^.githooks/pre-push$" | xargs -r grep -nE "$PATTERN" >/dev/null 2>&1; then
   echo "Push blocked: possible secret/token detected in staged files."
   echo "Remove the secret, rotate if exposed, and try again."
   exit 1
 fi
 
-if git grep -nE "$PATTERN" >/dev/null 2>&1; then
+if git grep -nE "$PATTERN" -- . ":(exclude).githooks/pre-push" >/dev/null 2>&1; then
   echo "Push blocked: possible secret/token pattern exists in working tree."
   echo "Remove the secret before pushing."
   exit 1
