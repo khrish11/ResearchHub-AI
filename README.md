@@ -10,7 +10,7 @@ ResearchHub-AI is an end-to-end research workspace where users can:
 
 ## Key Features
 
-1. Unified paper discovery (`/papers/search-global`) across 14+ providers.
+1. Unified paper discovery (`/papers/search-global`) across 28+ providers.
 2. Account system with email/password and Google OAuth login.
 3. Workspace-centric organization for papers and AI chat history.
 4. AI analysis modes (`summaries`, `insights`, `review`) with long-form output support.
