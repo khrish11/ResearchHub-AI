@@ -190,6 +190,59 @@ GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE: Dict[str, float] = {
     "deep": 1.15,
 }
 
+GLOBAL_SEARCH_SOURCE_FETCH_CAP_OVERRIDES: Dict[str, Dict[str, int]] = {
+    "fast": {
+        "europepmc": 6,
+    },
+    "balanced": {
+        "europepmc": 8,
+    },
+    "deep": {
+        "europepmc": 10,
+    },
+}
+
+GLOBAL_SEARCH_SOURCE_PRIORS: Dict[str, float] = {
+    "semantic": 1.35,
+    "openalex": 1.25,
+    "arxiv": 1.15,
+    "dblp": 1.1,
+    "inspire": 1.1,
+    "orkg": 1.1,
+    "jstage": 1.05,
+    "econbiz": 1.0,
+    "eric": 1.0,
+    "osti": 1.0,
+    "crossref": 0.95,
+    "pubmed": 0.9,
+    "pmc": 0.9,
+    "europepmc": 0.7,
+}
+
+GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE: Dict[str, float] = {
+    "fast": 0.45,
+    "balanced": 0.35,
+    "deep": 0.32,
+}
+
+GLOBAL_SEARCH_SOURCE_SOFT_CAP_MIN_BY_MODE: Dict[str, int] = {
+    "fast": 4,
+    "balanced": 4,
+    "deep": 5,
+}
+
+GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE: Dict[str, float] = {
+    "fast": 2.25,
+    "balanced": 2.0,
+    "deep": 1.8,
+}
+
+GLOBAL_SEARCH_RANK_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "in", "into", "is", "of", "on", "or", "that", "the", "their",
+    "these", "this", "to", "using", "via", "with",
+}
+
 ARXIV_API = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 OPENALEX_API = "https://api.openalex.org/works"
@@ -471,6 +524,177 @@ def _paper_year_sort_value(paper: Dict[str, Any]) -> int:
         return int(match.group(0))
     except ValueError:
         return 0
+
+
+def _canonical_global_source_name(value: Any) -> str:
+    source = str(value or "").strip().lower()
+    aliases = {
+        "semantic_scholar": "semantic",
+        "semantic_scholar_fallback_arxiv": "semantic",
+        "europe_pmc": "europepmc",
+        "nasa_ads": "nasa",
+    }
+    return aliases.get(source, source)
+
+
+def _paper_has_real_abstract(paper: Dict[str, Any]) -> bool:
+    abstract = str(paper.get("abstract") or "").strip().lower()
+    return bool(abstract) and "no abstract available" not in abstract
+
+
+def _search_rank_tokens(text: str) -> List[str]:
+    normalized = _normalize_title(text)
+    tokens = [token for token in normalized.split() if token and token not in GLOBAL_SEARCH_RANK_STOP_WORDS]
+    return tokens[:24]
+
+
+def _query_overlap_count(query_tokens: List[str], text: str) -> int:
+    if not query_tokens:
+        return 0
+    text_tokens = set(_search_rank_tokens(text))
+    return len(set(query_tokens).intersection(text_tokens))
+
+
+def _paper_ranking_score(paper: Dict[str, Any], query: str) -> float:
+    query_tokens = _search_rank_tokens(query)
+    if not query_tokens:
+        return 0.0
+
+    normalized_query = _normalize_title(query)
+    title = str(paper.get("title") or "")
+    abstract = str(paper.get("abstract") or "")
+    categories_text = " ".join(str(item or "") for item in (paper.get("categories") or []))
+    publication_text = str(
+        paper.get("publication_name")
+        or paper.get("publication_title")
+        or ""
+    )
+
+    title_norm = _normalize_title(title)
+    abstract_norm = _normalize_title(abstract)
+    categories_norm = _normalize_title(categories_text)
+    publication_norm = _normalize_title(publication_text)
+
+    title_hits = _query_overlap_count(query_tokens, title)
+    abstract_hits = _query_overlap_count(query_tokens, abstract)
+    category_hits = _query_overlap_count(query_tokens, categories_text)
+    publication_hits = _query_overlap_count(query_tokens, publication_text)
+
+    phrase_bonus = 0.0
+    if normalized_query and normalized_query in title_norm:
+        phrase_bonus += 6.0
+    if normalized_query and normalized_query in categories_norm:
+        phrase_bonus += 2.0
+    if normalized_query and normalized_query in publication_norm:
+        phrase_bonus += 1.5
+    if normalized_query and normalized_query in abstract_norm:
+        phrase_bonus += 1.0
+
+    source_prior = float(
+        GLOBAL_SEARCH_SOURCE_PRIORS.get(
+            _canonical_global_source_name(paper.get("source")),
+            0.85,
+        )
+    )
+    year_bonus = min(2.5, max(0, _paper_year_sort_value(paper) - 2019) * 0.25)
+    access_bonus = 1.0 if _has_pdf(paper) else (0.45 if paper.get("full_text_available") else 0.0)
+    abstract_bonus = 0.35 if _paper_has_real_abstract(paper) else 0.0
+    doi_bonus = 0.15 if paper.get("doi") else 0.0
+
+    return (
+        (title_hits * 4.5)
+        + (abstract_hits * 2.0)
+        + (category_hits * 1.8)
+        + (publication_hits * 1.3)
+        + phrase_bonus
+        + source_prior
+        + year_bonus
+        + access_bonus
+        + abstract_bonus
+        + doi_bonus
+    )
+
+
+def _diversify_ranked_papers(
+    papers: List[Dict[str, Any]],
+    query: str,
+    page_size: int,
+    search_mode: str,
+) -> List[Dict[str, Any]]:
+    if not papers:
+        return []
+
+    soft_cap_ratio = float(GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE.get(search_mode, 0.35))
+    soft_cap_min = int(GLOBAL_SEARCH_SOURCE_SOFT_CAP_MIN_BY_MODE.get(search_mode, 4))
+    soft_cap = max(soft_cap_min, int(page_size * soft_cap_ratio))
+    repeat_penalty = float(GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE.get(search_mode, 2.0))
+
+    source_buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for index, paper in enumerate(papers):
+        paper["_ranking_score"] = _paper_ranking_score(paper, query)
+        paper["_source_key"] = _canonical_global_source_name(paper.get("source"))
+        paper["_ingest_index"] = index
+        source_buckets.setdefault(str(paper["_source_key"]), []).append(paper)
+
+    for bucket in source_buckets.values():
+        bucket.sort(
+            key=lambda p: (
+                float(p.get("_ranking_score") or 0.0),
+                _paper_year_sort_value(p),
+                1 if _has_pdf(p) else 0,
+                1 if _paper_has_real_abstract(p) else 0,
+                -int(p.get("_ingest_index") or 0),
+            ),
+            reverse=True,
+        )
+
+    source_positions: Dict[str, int] = {key: 0 for key in source_buckets}
+    selected_counts: Dict[str, int] = {}
+    diversified: List[Dict[str, Any]] = []
+    total_items = len(papers)
+
+    while len(diversified) < total_items:
+        best_source: Optional[str] = None
+        best_tuple: Optional[Tuple[float, float, int, int, int, int]] = None
+
+        for source_key, bucket in source_buckets.items():
+            position = source_positions.get(source_key, 0)
+            if position >= len(bucket):
+                continue
+            paper = bucket[position]
+            selected_for_source = int(selected_counts.get(source_key, 0))
+            effective_score = float(paper.get("_ranking_score") or 0.0) - (selected_for_source * repeat_penalty)
+            if selected_for_source >= soft_cap:
+                effective_score -= 4.0 + ((selected_for_source - soft_cap) * 1.25)
+            if selected_for_source == 0:
+                effective_score += 0.35
+            candidate_tuple = (
+                effective_score,
+                float(paper.get("_ranking_score") or 0.0),
+                _paper_year_sort_value(paper),
+                1 if _has_pdf(paper) else 0,
+                1 if _paper_has_real_abstract(paper) else 0,
+                -int(paper.get("_ingest_index") or 0),
+            )
+            if best_tuple is None or candidate_tuple > best_tuple:
+                best_source = source_key
+                best_tuple = candidate_tuple
+
+        if best_source is None:
+            break
+
+        source_index = source_positions.get(best_source, 0)
+        chosen = source_buckets[best_source][source_index]
+        source_positions[best_source] = source_index + 1
+        selected_counts[best_source] = int(selected_counts.get(best_source, 0)) + 1
+        diversified.append(chosen)
+
+    for paper in diversified:
+        paper.pop("_ranking_score", None)
+        paper.pop("_source_key", None)
+        paper.pop("_ingest_index", None)
+
+    return diversified
 
 
 def _strip_xml_html_tags(text: str) -> str:
@@ -4038,12 +4262,19 @@ async def search_global(
     source_concurrency = int(GLOBAL_SOURCE_CONCURRENCY_BY_MODE.get(resolved_mode, GLOBAL_SOURCE_CONCURRENCY))
     source_semaphore = asyncio.Semaphore(max(3, source_concurrency))
 
+    def _source_limit(name: str) -> int:
+        canonical = _canonical_global_source_name(name)
+        mode_caps = GLOBAL_SEARCH_SOURCE_FETCH_CAP_OVERRIDES.get(resolved_mode, {})
+        cap = int(mode_caps.get(canonical, per_source_limit))
+        return max(3, min(per_source_limit, cap))
+
     async def _run_source(source_name: str):
+        source_limit = _source_limit(source_name)
         try:
             if source_name == "arxiv":
                 data = await search_papers(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     category="all",
                     sort_by="relevance",
@@ -4052,7 +4283,7 @@ async def search_global(
             elif source_name == "semantic":
                 data = await search_semantic(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     allow_fallback_arxiv=False,
                     current_user=current_user,
@@ -4060,182 +4291,182 @@ async def search_global(
             elif source_name == "openalex":
                 data = await search_openalex(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "europepmc":
                 data = await search_europepmc(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "pmc":
                 data = await search_pmc(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "econbiz":
                 data = await search_econbiz(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "jstage":
                 data = await search_jstage(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "orkg":
                 data = await search_orkg(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "pubmed":
                 data = await search_pubmed(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "doaj":
                 data = await search_doaj(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "eric":
                 data = await search_eric(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "openaire":
                 data = await search_openaire(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "figshare":
                 data = await search_figshare(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "osf":
                 data = await search_osf(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "dryad":
                 data = await search_dryad(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "inspire":
                 data = await search_inspire(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "osti":
                 data = await search_osti(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "dblp":
                 data = await search_dblp(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "zenodo":
                 data = await search_zenodo(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "datacite":
                 data = await search_datacite(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "crossref":
                 data = await search_crossref(
                     query=query,
-                    max_results=min(per_source_limit, 50),
+                    max_results=min(source_limit, 50),
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "hal":
                 data = await search_hal(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "biorxiv":
                 data = await search_biorxiv(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "medrxiv":
                 data = await search_medrxiv(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "plos":
                 data = await search_plos(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "elife":
                 data = await search_elife(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "springer":
                 data = await search_springer(
                     query=query,
-                    max_results=min(per_source_limit, 25),
+                    max_results=min(source_limit, 25),
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "nasa":
                 data = await search_nasa_ads(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
@@ -4473,13 +4704,11 @@ async def search_global(
     for paper in merged_papers:
         _annotate_access_metadata(paper)
 
-    merged_papers.sort(
-        key=lambda p: (
-            _paper_year_sort_value(p),
-            1 if _has_pdf(p) else 0,
-            1 if (p.get("abstract") and "no abstract" not in str(p.get("abstract")).lower()) else 0,
-        ),
-        reverse=True,
+    merged_papers = _diversify_ranked_papers(
+        papers=merged_papers,
+        query=query,
+        page_size=page_size,
+        search_mode=resolved_mode,
     )
 
     has_more = len(merged_papers) > page_size

@@ -1271,6 +1271,100 @@ def test_global_search_cache_reused_across_users(monkeypatch):
     assert r2.json().get('cache_hit') is True
 
 
+def test_global_search_diversifies_relevant_sources(monkeypatch):
+    import routers.papers as papers_mod
+
+    async def europepmc_many(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": f"Catalysis screening report {idx}",
+                    "authors": ["Europe PMC Author"],
+                    "abstract": "Catalysis screening dataset with limited machine context.",
+                    "url": f"https://example.org/europepmc/{idx}",
+                    "published": f"2026-01-{idx + 1:02d}",
+                    "categories": ["catalysis"],
+                    "source": "europe_pmc",
+                }
+                for idx in range(8)
+            ],
+            "notice": None,
+        }
+
+    async def orkg_relevant(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": title,
+                    "authors": ["ORKG Author"],
+                    "abstract": "Machine learning catalysis benchmark with strong graph metadata.",
+                    "url": f"https://example.org/orkg/{idx}",
+                    "published": f"2024-0{idx + 1}-01",
+                    "categories": ["machine learning", "catalysis"],
+                    "source": "orkg",
+                }
+                for idx, title in enumerate(
+                    [
+                        "Machine Learning In Catalysis",
+                        "Catalysis benchmark knowledge graph",
+                        "Graph retrieval for catalytic materials",
+                        "Learning-assisted catalyst ranking",
+                    ]
+                )
+            ],
+            "notice": None,
+        }
+
+    async def jstage_relevant(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": title,
+                    "authors": ["J-STAGE Author"],
+                    "abstract": "Machine learning catalysis methods from a specialist journal.",
+                    "url": f"https://example.org/jstage/{idx}",
+                    "published": f"2023-0{idx + 1}-01",
+                    "categories": ["machine learning", "catalysis"],
+                    "source": "jstage",
+                }
+                for idx, title in enumerate(
+                    [
+                        "Machine learning for catalytic reaction design",
+                        "Catalysis journals and machine models",
+                        "Surface chemistry prediction with learning systems",
+                        "Learning pipelines for catalyst discovery",
+                    ]
+                )
+            ],
+            "notice": None,
+        }
+
+    monkeypatch.setitem(papers_mod.GLOBAL_SEARCH_SOURCE_PRESETS, 'balanced', ['europepmc', 'orkg', 'jstage'])
+    monkeypatch.setattr(papers_mod, 'search_europepmc', europepmc_many)
+    monkeypatch.setattr(papers_mod, 'search_orkg', orkg_relevant)
+    monkeypatch.setattr(papers_mod, 'search_jstage', jstage_relevant)
+    papers_mod._GLOBAL_SEARCH_CACHE.clear()
+
+    token = register_and_get_token('global-diversity@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    resp = client.get(
+        '/papers/search-global',
+        params={'query': 'machine learning catalysis', 'max_results': 10, 'search_mode': 'balanced'},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    papers = payload.get('papers', [])
+    sources = [paper.get('source') for paper in papers]
+
+    assert len(papers) == 10
+    assert sources[0] in {'orkg', 'jstage'}
+    assert sources.count('europe_pmc') <= 4
+    assert 'orkg' in sources
+    assert 'jstage' in sources
+
+
 def test_workspace_research_report_exports_pdf_and_docx():
     token = register_and_get_token('report-export@example.com')
     headers = {'Authorization': f'Bearer {token}'}
