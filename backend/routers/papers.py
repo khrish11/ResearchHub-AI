@@ -881,9 +881,11 @@ async def search_papers(
             last_error = f"ArXiv timed out ({timeout_secs}s). Try again or switch to Semantic Scholar."
             continue
         except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"ArXiv API error: {str(e)}")
+            last_error = f"ArXiv request failed: {str(e)[:180]}"
+            continue
         except ET.ParseError as e:
-            raise HTTPException(status_code=502, detail=f"Failed to parse ArXiv response: {str(e)}")
+            last_error = f"ArXiv returned invalid XML: {str(e)[:180]}"
+            continue
 
     # Keep search usable even if ArXiv is temporarily slow/unreachable.
     # This prevents hard failures in local/dev and provides users with an

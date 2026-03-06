@@ -327,12 +327,38 @@ def test_search_nasa_requires_token(monkeypatch):
       (fallback behavior).
     - If neither process env nor `.env` contain a token, the endpoint returns 503.
     """
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {'response': {'docs': [
+                {'title': ['NASA Paper'], 'author': ['A'], 'abstract': 'Abs', 'year': '2020', 'doi': ['10.1'], 'bibcode': '2000X', 'doctype': 'article'}
+            ]}}
+
+    seen_auth = {}
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            seen_auth['value'] = ((kwargs.get('headers') or {}).get('Authorization') or '')
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+
     # Case A: process env missing but backend/.env still has the token -> should work
+    monkeypatch.setattr('routers.papers.dotenv_values', lambda *a, **k: {'NASA_ADS_TOKEN': 'file-token'})
     monkeypatch.delenv('NASA_ADS_TOKEN', raising=False)
     token = register_and_get_token('nasa-missing@example.com')
     headers = {'Authorization': f'Bearer {token}'}
     r = client.get('/papers/search-nasa', params={'query': 'star', 'max_results': 1}, headers=headers)
     assert r.status_code == 200
+    assert seen_auth.get('value') == 'Bearer file-token'
 
     # Case B: simulate BOTH env and .env missing -> return 503
     monkeypatch.setattr('routers.papers.dotenv_values', lambda *a, **k: {})

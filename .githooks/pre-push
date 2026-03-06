@@ -1,6 +1,24 @@
 #!/usr/bin/env sh
 set -eu
 
+# Block direct pushes to protected branches on this machine.
+# Emergency override: ALLOW_PROTECTED_PUSH=1 git push ...
+if [ "${ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then
+  while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+      refs/heads/main|refs/heads/master)
+        if [ "$local_sha" != "0000000000000000000000000000000000000000" ]; then
+          branch_name="${remote_ref#refs/heads/}"
+          echo "Push blocked: direct pushes to $branch_name are disabled."
+          echo "Use a feature branch and open a pull request."
+          echo "Emergency only: ALLOW_PROTECTED_PUSH=1 git push ..."
+          exit 1
+        fi
+        ;;
+    esac
+  done
+fi
+
 # Block obvious leaked credential patterns before push.
 PATTERN='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|ghu_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z\-_]{35}'
 

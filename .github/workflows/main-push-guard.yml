@@ -1,0 +1,34 @@
+name: Main Push Guard
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  require-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if commit on main has no associated pull request
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          pr_count="$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPO}/commits/${SHA}/pulls" \
+            --jq 'length')"
+
+          if [ "${pr_count}" -eq 0 ]; then
+            echo "::error::Direct push to main detected for ${SHA} (no associated PR)."
+            echo "::error::Use feature branches and merge via pull request."
+            exit 1
+          fi
+
+          echo "Commit ${SHA} is associated with ${pr_count} PR(s)."
