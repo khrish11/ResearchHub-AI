@@ -130,6 +130,9 @@ const SOURCE_LABELS: Record<string, string> = {
   semantic_scholar: 'Semantic Scholar',
   semantic_scholar_fallback_arxiv: 'Semantic Scholar',
   openalex: 'OpenAlex',
+  econbiz: 'EconBiz',
+  jstage: 'J-STAGE',
+  orkg: 'ORKG',
   openaire: 'OpenAIRE',
   figshare: 'Figshare',
   osf: 'OSF Preprints',
@@ -139,6 +142,7 @@ const SOURCE_LABELS: Record<string, string> = {
   zenodo: 'Zenodo',
   europepmc: 'Europe PMC',
   europe_pmc: 'Europe PMC',
+  pmc: 'PMC',
   doaj: 'DOAJ',
   hal: 'HAL',
   biorxiv: 'bioRxiv',
@@ -157,6 +161,9 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_CATALOG: SourceCatalogEntry[] = [
   { key: 'openalex', label: 'OpenAlex', family: 'Scholarly graph', setup: 'Optional mailto', note: 'Broad metadata and citation graph coverage.' },
+  { key: 'econbiz', label: 'EconBiz', family: 'Economics', setup: 'Public', note: 'Economics and business literature via official public API.' },
+  { key: 'jstage', label: 'J-STAGE', family: 'Japanese journals', setup: 'Public + attribution', note: 'Japanese journal discovery via official J-STAGE WebAPI.' },
+  { key: 'orkg', label: 'ORKG', family: 'Knowledge graph', setup: 'Public', note: 'Open Research Knowledge Graph paper entries and linked metadata.' },
   { key: 'semantic', label: 'Semantic Scholar', family: 'Scholarly graph', setup: 'Optional API key', note: 'High-signal ranking and metadata enrichment.' },
   { key: 'arxiv', label: 'ArXiv', family: 'Preprints', setup: 'Public', note: 'Fast open preprint search for technical fields.' },
   { key: 'crossref', label: 'Crossref', family: 'DOI registry', setup: 'Optional mailto', note: 'Cross-publisher DOI metadata and venue coverage.' },
@@ -173,6 +180,7 @@ const SOURCE_CATALOG: SourceCatalogEntry[] = [
   { key: 'springer', label: 'Springer', family: 'Publishers', setup: 'Optional API key', note: 'Publisher catalog expansion where keys are available.' },
   { key: 'pubmed', label: 'PubMed', family: 'Biomedical', setup: 'Optional API key', note: 'NCBI biomedical index with strong recall.' },
   { key: 'europepmc', label: 'Europe PMC', family: 'Biomedical', setup: 'Public', note: 'Open biomedical full text and metadata.' },
+  { key: 'pmc', label: 'PMC', family: 'Biomedical', setup: 'Public', note: 'PubMed Central full-text archive.' },
   { key: 'doaj', label: 'DOAJ', family: 'Open access', setup: 'Public', note: 'Directory of open access journal articles.' },
   { key: 'plos', label: 'PLOS', family: 'Open access', setup: 'Public', note: 'Open publisher search for life sciences.' },
   { key: 'elife', label: 'eLife', family: 'Open access', setup: 'Public', note: 'Open life-science journal coverage.' },
@@ -204,6 +212,11 @@ const OPERATOR_CHECKLIST = [
     level: 'Optional',
   },
   {
+    title: 'Add J-STAGE attribution in your deployed source credits',
+    impact: 'Their API terms require visible J-STAGE credit when you display their content.',
+    level: 'Required',
+  },
+  {
     title: 'Run scripts/install-git-hooks.ps1 on every workstation',
     impact: 'Keeps the local main-branch push guard enforced on free private GitHub.',
     level: 'Required',
@@ -214,6 +227,7 @@ const OPEN_ACCESS_SOURCES = new Set([
   'arxiv',
   'europepmc',
   'europe_pmc',
+  'pmc',
   'doaj',
   'hal',
   'biorxiv',
@@ -1215,7 +1229,7 @@ const SearchPapers: React.FC = () => {
                   {SEARCH_MODE_COPY[searchMode]}
                 </span>
                 <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">
-                  New public additions live: ERIC + OSTI
+                  New public additions live: ERIC + OSTI + PMC + EconBiz + J-STAGE + ORKG
                 </span>
               </div>
 
@@ -1659,6 +1673,19 @@ const SearchPapers: React.FC = () => {
                     {item.label} | {item.setup}
                   </span>
                 ))}
+              </div>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+                Includes J-STAGE metadata where available.
+                {' '}
+                <a
+                  href="https://www.jstage.jst.go.jp/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-slate-900 underline underline-offset-2"
+                >
+                  Powered by J-STAGE
+                  <ExternalLink className="h-3 w-3" />
+                </a>
               </div>
             </div>
           </aside>

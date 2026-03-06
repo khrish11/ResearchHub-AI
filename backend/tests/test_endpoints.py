@@ -929,6 +929,241 @@ def test_search_osti_with_httpx_mock(monkeypatch):
     assert data['papers'][0].get('full_text_available') is True
 
 
+def test_search_pmc_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url, *args, **kwargs):
+            params = kwargs.get('params') or {}
+            if params.get('db') == 'pmc' and 'esearch.fcgi' in url:
+                return DummyResp(
+                    {
+                        "esearchresult": {
+                            "count": "1",
+                            "idlist": ["12958609"],
+                        }
+                    }
+                )
+            if params.get('db') == 'pmc' and 'esummary.fcgi' in url:
+                return DummyResp(
+                    {
+                        "result": {
+                            "uids": ["12958609"],
+                            "12958609": {
+                                "uid": "12958609",
+                                "title": "PMC sample paper",
+                                "pubdate": "2026 Mar 3",
+                                "epubdate": "2026-03-03",
+                                "source": "BMC Pharmacol Toxicol",
+                                "authors": [{"name": "Wen W"}],
+                                "articleids": [
+                                    {"idtype": "doi", "value": "10.1186/s40360-026-01100-8"},
+                                    {"idtype": "pmcid", "value": "PMC12958609"},
+                                ],
+                                "fulljournalname": "BMC pharmacology & toxicology",
+                            },
+                        }
+                    }
+                )
+            raise AssertionError(f'unexpected call: {url} params={params}')
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('pmc@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-pmc', params={'query': 'machine learning', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'pmc'
+    assert data['papers'][0].get('full_text_available') is True
+    assert data['papers'][0].get('full_text_url', '').startswith('https://pmc.ncbi.nlm.nih.gov/articles/')
+
+
+def test_search_econbiz_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "hits": {
+                    "total": 1,
+                    "hits": [
+                        {
+                            "id": "10015574698",
+                            "title": "Modeling machine learning : a cognitive economic approach",
+                            "person": ["Caplin, Andrew", "Martin, Daniel"],
+                            "date": ["2025"],
+                            "identifier_url": [
+                                "https://example.org/paper.pdf",
+                                "https://doi.org/10.1016/j.jet.2025.105970",
+                            ],
+                            "isPartOf": ["Journal of economic theory : JET ; 224"],
+                            "subject": ["Machine learning", "Information economics"],
+                            "type": "article",
+                            "type_genre": ["Article in journal"],
+                        }
+                    ],
+                },
+                "status": 200,
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('econbiz@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-econbiz', params={'query': 'machine learning', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'econbiz'
+    assert data['papers'][0].get('full_text_available') is True
+
+
+def test_search_jstage_with_httpx_mock(monkeypatch):
+    xml_payload = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <entry>
+    <article_title>
+      <p>Scientific Machine Learning Seismology</p>
+      <p>Scientific Machine Learning 地震学</p>
+    </article_title>
+    <article_link>
+      <p>https://www.jstage.jst.go.jp/article/example/77/0/77_2024-9/_article</p>
+      <p>https://www.jstage.jst.go.jp/article/example/77/0/77_2024-9/_article/-char/ja/</p>
+    </article_link>
+    <author>
+      <p>Tomohisa OKAZAKI</p>
+      <p>岡﨑 智久</p>
+    </author>
+    <material_title>
+      <p>Zisin (Journal of the Seismological Society of Japan. 2nd ser.)</p>
+      <p>地震 第2輯</p>
+    </material_title>
+    <pubyear>2025</pubyear>
+    <prism:doi>10.4294/zisin.2024-9</prism:doi>
+  </entry>
+</feed>
+"""
+
+    class DummyResp:
+        status_code = 200
+        text = xml_payload
+
+        def raise_for_status(self):
+            return None
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('jstage@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-jstage', params={'query': 'machine learning', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'jstage'
+    assert data['papers'][0]['title'] == 'Scientific Machine Learning Seismology'
+    assert data['papers'][0]['authors'] == ['Tomohisa OKAZAKI']
+    assert data['papers'][0]['doi'] == '10.4294/zisin.2024-9'
+
+
+def test_search_orkg_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "content": [
+                    {
+                        "id": "R748404",
+                        "title": "Machine Learning In Catalysis",
+                        "research_fields": [{"id": "R141823", "label": "Semantic Web"}],
+                        "identifiers": {"doi": ["10.1038/s41929-018-0056-y"]},
+                        "publication_info": {
+                            "published_month": None,
+                            "published_year": 2018,
+                            "published_in": {"id": "R1", "label": "Nature Catalysis"},
+                            "url": "",
+                        },
+                        "authors": [
+                            {"id": None, "name": "Kitchin, John, 0000-0003-2625-9232"},
+                        ],
+                    }
+                ],
+                "page": {"size": 1, "number": 0, "total_elements": 1, "total_pages": 1},
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('orkg@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-orkg', params={'query': 'machine learning', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'orkg'
+    assert data['papers'][0]['title'] == 'Machine Learning In Catalysis'
+    assert data['papers'][0]['authors'] == ['Kitchin, John']
+    assert data['papers'][0]['doi'] == '10.1038/s41929-018-0056-y'
+
+
 def test_global_search_cache_and_metrics(monkeypatch):
     import routers.papers as papers_mod
 
@@ -954,6 +1189,10 @@ def test_global_search_cache_and_metrics(monkeypatch):
     monkeypatch.setattr(papers_mod, 'search_semantic', mk_source('semantic_scholar'))
     monkeypatch.setattr(papers_mod, 'search_openalex', mk_source('openalex'))
     monkeypatch.setattr(papers_mod, 'search_europepmc', mk_source('europe_pmc'))
+    monkeypatch.setattr(papers_mod, 'search_pmc', mk_source('pmc'))
+    monkeypatch.setattr(papers_mod, 'search_econbiz', mk_source('econbiz'))
+    monkeypatch.setattr(papers_mod, 'search_jstage', mk_source('jstage'))
+    monkeypatch.setattr(papers_mod, 'search_orkg', mk_source('orkg'))
     monkeypatch.setattr(papers_mod, 'search_pubmed', mk_source('pubmed'))
     monkeypatch.setattr(papers_mod, 'search_doaj', mk_source('doaj'))
     monkeypatch.setattr(papers_mod, 'search_eric', mk_source('eric'))
