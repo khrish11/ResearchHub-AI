@@ -1070,7 +1070,15 @@ def export_workspace(
         if url:
             bib_fields.append(f"  url = {{{url}}},")
         bib_fields_str = "\n".join(bib_fields)
-        entry = f"@misc{{{key},\n  title = {{{title}}},\n  author = {{{authors}}},{('\n' + bib_fields_str) if bib_fields_str else ''}\n  year = {{{year}}},\n  abstract = {{{abstract}}}\n}}\n"
+        optional_fields = f"\n{bib_fields_str}" if bib_fields_str else ""
+        entry = (
+            f"@misc{{{key},\n"
+            f"  title = {{{title}}},\n"
+            f"  author = {{{authors}}},{optional_fields}\n"
+            f"  year = {{{year}}},\n"
+            f"  abstract = {{{abstract}}}\n"
+            f"}}\n"
+        )
         entries.append(entry)
     content = "\n".join(entries)
     return Response(content=content, media_type="application/x-bibtex", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.bib"})
