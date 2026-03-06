@@ -64,6 +64,12 @@ npm ci
 cd ..
 ```
 
+Development standard:
+
+1. The supported local Python environment for this repo is `.venv` at the repository root.
+2. Do not point your editor at `backend\venv`. If that folder exists on your machine, treat it as legacy local state.
+3. VS Code/Windsurf will use the repo-tracked workspace setting in `.vscode/settings.json` to select `.venv`.
+
 ### 2) Configure environment files
 
 Copy the example file and fill real values:
@@ -110,6 +116,30 @@ npm run dev
 ```
 
 Open the frontend URL printed by Vite (usually `http://localhost:5173`).
+
+### Python interpreter note
+
+If VS Code or Windsurf keeps prompting you to select a Python interpreter:
+
+1. Run `Python: Clear Workspace Interpreter Setting`.
+2. Run `Developer: Reload Window`.
+3. Select `E:\rezsrch\ResearchHub-AI\.venv\Scripts\python.exe` if prompted.
+4. Confirm the status bar shows `.venv`.
+
+Optional cleanup after `.venv` is working:
+
+```powershell
+Remove-Item -Recurse -Force backend\venv
+```
+
+Verification:
+
+```powershell
+python -V
+python -c "import sys; print(sys.executable)"
+```
+
+The executable path should point to `.venv`.
 
 ## Common Commands
 
