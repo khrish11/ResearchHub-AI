@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 import os
 import logging
 import re
+from html import unescape
 from pathlib import Path
 from dotenv import dotenv_values
 from typing import Dict, Any
@@ -56,6 +57,8 @@ GLOBAL_SOURCE_TIMEOUT_OVERRIDES: Dict[str, float] = {
     "openalex": 5.0,
     "arxiv": 5.0,
     "semantic": 5.0,
+    "eric": 4.5,
+    "osti": 4.5,
     "crossref": 5.5,
     "dblp": 4.5,
     "zenodo": 4.5,
@@ -82,6 +85,7 @@ GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
         "openalex",
         "arxiv",
         "semantic",
+        "osti",
         "inspire",
         "dblp",
         "openaire",
@@ -91,6 +95,7 @@ GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
         "biorxiv",
         "medrxiv",
         "doaj",
+        "eric",
     ],
     "balanced": [
         "openalex",
@@ -107,10 +112,12 @@ GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
         "figshare",
         "osf",
         "dryad",
+        "eric",
         "inspire",
         "dblp",
         "zenodo",
         "semantic",
+        "osti",
         "springer",
         "datacite",
         "nasa",
@@ -130,10 +137,12 @@ GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
         "figshare",
         "osf",
         "dryad",
+        "eric",
         "inspire",
         "dblp",
         "zenodo",
         "semantic",
+        "osti",
         "springer",
         "datacite",
         "crossref",
@@ -185,6 +194,8 @@ UNPAYWALL_API = "https://api.unpaywall.org/v2/"
 HAL_API_SEARCH = "https://api.archives-ouvertes.fr/search/"
 BIORXIV_API_BASE = "https://api.biorxiv.org/details"
 PLOS_API = "https://api.plos.org/search"
+ERIC_API = "https://api.ies.ed.gov/eric/"
+OSTI_API = "https://www.osti.gov/api/v1/records"
 
 SPRINGER_META_API = "https://api.springernature.com/meta/v2/json"
 
@@ -444,12 +455,42 @@ def _paper_year_sort_value(paper: Dict[str, Any]) -> int:
 
 def _strip_xml_html_tags(text: str) -> str:
     """Remove simple XML/HTML tags from API-provided abstract strings."""
-    raw = str(text or "").strip()
+    raw = unescape(str(text or "").strip())
     if not raw:
         return ""
     clean = re.sub(r"<[^>]+>", " ", raw)
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean
+
+
+def _clean_author_name(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    raw = re.sub(r"\s*\(ORCID:[^)]+\)", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*\[[^\]]+\]\s*$", "", raw)
+    raw = re.sub(r"\s+", " ", raw).strip(" ;,")
+    return raw
+
+
+def _link_href_by_rel(links: Any, allowed_rels: set[str]) -> str:
+    for item in links or []:
+        rel = str((item or {}).get("rel") or "").strip().lower()
+        href = str((item or {}).get("href") or "").strip()
+        if rel in allowed_rels and href:
+            return href
+    return ""
+
+
+def _osti_is_publication(product_type: Any) -> bool:
+    label = str(product_type or "").strip().lower()
+    if not label:
+        return True
+    blocked_terms = ("software", "dataset", "data package", "patent", "code")
+    if any(term in label for term in blocked_terms):
+        return False
+    allowed_terms = ("article", "conference", "report", "thesis", "dissertation", "preprint", "manuscript", "paper")
+    return any(term in label for term in allowed_terms)
 
 
 def _xml_local_name(tag: str) -> str:
@@ -1660,6 +1701,305 @@ async def search_doaj(
         "next_offset": next_offset,
         "has_more": has_more,
         "source": "doaj",
+    }
+
+
+@router.get("/search-eric")
+async def search_eric(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search ERIC education research index."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    params = {
+        "search": query,
+        "rows": page_size,
+        "start": start_offset,
+        "format": "json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=18) as client:
+            response = await client.get(
+                ERIC_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        data = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="ERIC timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="ERIC rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="ERIC API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="ERIC API error.")
+
+    response_block = data.get("response") if isinstance(data, dict) else {}
+    if not isinstance(response_block, dict):
+        response_block = {}
+    rows = response_block.get("docs")
+    if not isinstance(rows, list):
+        rows = []
+
+    papers: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or "").strip()
+        if not title:
+            continue
+
+        raw_authors = row.get("author") or row.get("authors") or []
+        if isinstance(raw_authors, str):
+            author_items = [segment.strip() for segment in raw_authors.split(";") if segment.strip()]
+        elif isinstance(raw_authors, list):
+            author_items = raw_authors
+        else:
+            author_items = []
+
+        authors: List[str] = []
+        for author in author_items:
+            clean = _clean_author_name(author)
+            if clean and clean not in authors:
+                authors.append(clean)
+            if len(authors) >= 12:
+                break
+
+        abstract = _strip_xml_html_tags(
+            row.get("description")
+            or row.get("abstractor")
+            or row.get("summary")
+            or ""
+        )
+        if not abstract:
+            abstract = "No abstract available."
+
+        doi = _normalize_doi(str(row.get("doi") or ""))
+        if not doi:
+            doi = _looks_like_doi(" ".join(str(row.get(key) or "") for key in ("identifier", "notes")))
+
+        record_id = str(
+            row.get("id")
+            or row.get("eric_number")
+            or row.get("accessionnumber")
+            or ""
+        ).strip()
+        url = f"https://eric.ed.gov/?id={record_id}" if record_id else ""
+
+        full_text_url = ""
+        for key in ("fulltext_url", "pdf", "url", "fulltext"):
+            candidate = str(row.get(key) or "").strip()
+            if candidate.startswith("http"):
+                full_text_url = candidate
+                break
+
+        published_raw = str(
+            row.get("publicationdateyear")
+            or row.get("publicationdate")
+            or row.get("year")
+            or ""
+        ).strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        categories: List[str] = []
+        for bucket in (row.get("publicationtype"), row.get("subject")):
+            if isinstance(bucket, str):
+                items = [bucket]
+            elif isinstance(bucket, list):
+                items = bucket
+            else:
+                items = []
+            for item in items:
+                label = str(item or "").strip()
+                if not label or label in categories:
+                    continue
+                categories.append(label)
+                if len(categories) >= 3:
+                    break
+            if len(categories) >= 3:
+                break
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": authors,
+            "abstract": abstract,
+            "url": full_text_url or url,
+            "published": published,
+            "categories": categories,
+            "doi": doi,
+            "pdf_url": full_text_url if _is_pdf_url(full_text_url) else None,
+            "full_text_url": full_text_url or None,
+            "source": "eric",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    total = response_block.get("numFound")
+    try:
+        total = int(total) if total is not None else None
+    except (TypeError, ValueError):
+        total = None
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    return {
+        "papers": papers,
+        "total": total,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "eric",
+    }
+
+
+@router.get("/search-osti")
+async def search_osti(
+    query: str,
+    max_results: int = 30,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+):
+    """Search OSTI.gov publications."""
+    page_size = max(1, min(max_results, 100))
+    start_offset = max(0, offset)
+    page = (start_offset // page_size) + 1
+    params = {
+        "q": query,
+        "rows": page_size,
+        "page": page,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=18) as client:
+            response = await client.get(
+                OSTI_API,
+                params=params,
+                headers={"User-Agent": "ResearchHub-AI/1.0"},
+            )
+            response.raise_for_status()
+        rows = response.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="OSTI timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="OSTI rate limit reached. Please retry shortly.")
+        raise HTTPException(status_code=502, detail="OSTI API upstream error.")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="OSTI API error.")
+
+    if not isinstance(rows, list):
+        rows = []
+
+    papers: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        product_type = row.get("product_type")
+        if not _osti_is_publication(product_type):
+            continue
+
+        raw_title = row.get("title") or ""
+        if isinstance(raw_title, list):
+            title = str(raw_title[0] or "").strip() if raw_title else ""
+        else:
+            title = str(raw_title).strip()
+        if not title:
+            continue
+
+        authors: List[str] = []
+        for author in row.get("authors") or []:
+            if isinstance(author, dict):
+                full_name = (
+                    str(author.get("author") or "").strip()
+                    or str(author.get("full_name") or "").strip()
+                    or str(author.get("name") or "").strip()
+                )
+                if not full_name:
+                    first = str(author.get("first_name") or "").strip()
+                    last = str(author.get("last_name") or "").strip()
+                    full_name = f"{first} {last}".strip()
+            else:
+                full_name = str(author or "").strip()
+            clean = _clean_author_name(full_name)
+            if clean and clean not in authors:
+                authors.append(clean)
+            if len(authors) >= 12:
+                break
+
+        description = _strip_xml_html_tags(row.get("description") or row.get("abstract") or "")
+        if not description:
+            description = "No abstract available."
+
+        doi_value = row.get("doi") or ""
+        if isinstance(doi_value, list):
+            doi_value = doi_value[0] if doi_value else ""
+        doi = _normalize_doi(str(doi_value or ""))
+
+        links = row.get("links") or []
+        full_text_url = _link_href_by_rel(
+            links,
+            {"fulltext", "full_text", "fulltext-pdf", "pdf", "download"},
+        )
+        citation_url = _link_href_by_rel(
+            links,
+            {"citation", "citation_doe_pages", "alternate", "self"},
+        )
+        url = full_text_url or citation_url
+        if not url and doi:
+            url = f"https://doi.org/{doi}"
+
+        categories: List[str] = []
+        for item in (product_type, row.get("journal_name"), row.get("publisher")):
+            label = str(item or "").strip()
+            if not label or label in categories:
+                continue
+            categories.append(label)
+            if len(categories) >= 3:
+                break
+
+        published_raw = str(
+            row.get("publication_date")
+            or row.get("date")
+            or row.get("date_issued")
+            or ""
+        ).strip()
+        published = published_raw[:10] if len(published_raw) >= 10 else published_raw
+
+        paper_row: Dict[str, Any] = {
+            "title": title,
+            "authors": authors,
+            "abstract": description,
+            "url": url,
+            "published": published,
+            "categories": categories,
+            "doi": doi,
+            "pdf_url": full_text_url if _is_pdf_url(full_text_url) else None,
+            "full_text_url": full_text_url or None,
+            "publication_name": str(row.get("journal_name") or row.get("publisher") or "").strip(),
+            "source": "osti",
+        }
+        _annotate_access_metadata(paper_row)
+        papers.append(paper_row)
+
+    returned = len(papers)
+    next_offset = start_offset + returned
+    has_more = returned == page_size
+    return {
+        "papers": papers,
+        "total": None,
+        "returned": returned,
+        "offset": start_offset,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "source": "osti",
     }
 
 
@@ -3134,6 +3474,13 @@ async def search_global(
                     offset=start_offset,
                     current_user=current_user,
                 )
+            elif source_name == "eric":
+                data = await search_eric(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
             elif source_name == "openaire":
                 data = await search_openaire(
                     query=query,
@@ -3164,6 +3511,13 @@ async def search_global(
                 )
             elif source_name == "inspire":
                 data = await search_inspire(
+                    query=query,
+                    max_results=per_source_limit,
+                    offset=start_offset,
+                    current_user=current_user,
+                )
+            elif source_name == "osti":
+                data = await search_osti(
                     query=query,
                     max_results=per_source_limit,
                     offset=start_offset,

@@ -837,6 +837,98 @@ def test_search_inspire_with_httpx_mock(monkeypatch):
     assert data['papers'] and data['papers'][0]['source'] == 'inspire'
 
 
+def test_search_eric_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {
+                "response": {
+                    "numFound": 1,
+                    "docs": [
+                        {
+                            "id": "EJ123456",
+                            "title": "ERIC sample paper",
+                            "author": ["Jane Doe", "John Roe"],
+                            "description": "<p>ERIC abstract for testing.</p>",
+                            "publicationdateyear": "2024",
+                            "subject": ["AI", "Education"],
+                            "publicationtype": ["Journal Articles"],
+                            "fulltext_url": "https://files.eric.ed.gov/fulltext/EJ123456.pdf",
+                        }
+                    ],
+                }
+            }
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('eric@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-eric', params={'query': 'education ai', 'max_results': 1}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert data['papers'] and data['papers'][0]['source'] == 'eric'
+    assert data['papers'][0].get('full_text_available') is True
+
+
+def test_search_osti_with_httpx_mock(monkeypatch):
+    class DummyResp:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return [
+                {
+                    "title": "OSTI sample paper",
+                    "description": "OSTI abstract for testing.",
+                    "publication_date": "2025-01-15T00:00:00Z",
+                    "product_type": "Journal Article",
+                    "doi": "10.1000/osti.test",
+                    "authors": [{"first_name": "Ada", "last_name": "Lovelace"}],
+                    "journal_name": "OSTI Journal",
+                    "links": [
+                        {"rel": "fulltext", "href": "https://www.osti.gov/servlets/purl/1234567.pdf"},
+                        {"rel": "citation", "href": "https://www.osti.gov/biblio/1234567"},
+                    ],
+                },
+                {
+                    "title": "OSTI software artifact",
+                    "product_type": "Software",
+                    "links": [{"rel": "citation", "href": "https://www.osti.gov/biblio/ignore"}],
+                },
+            ]
+
+    class DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+        async def get(self, *args, **kwargs):
+            return DummyResp()
+
+    monkeypatch.setattr('routers.papers.httpx.AsyncClient', DummyClient)
+    token = register_and_get_token('osti@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+    r = client.get('/papers/search-osti', params={'query': 'energy storage', 'max_results': 2}, headers=headers)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data['papers']) == 1
+    assert data['papers'][0]['source'] == 'osti'
+    assert data['papers'][0].get('full_text_available') is True
+
+
 def test_global_search_cache_and_metrics(monkeypatch):
     import routers.papers as papers_mod
 
@@ -864,11 +956,13 @@ def test_global_search_cache_and_metrics(monkeypatch):
     monkeypatch.setattr(papers_mod, 'search_europepmc', mk_source('europe_pmc'))
     monkeypatch.setattr(papers_mod, 'search_pubmed', mk_source('pubmed'))
     monkeypatch.setattr(papers_mod, 'search_doaj', mk_source('doaj'))
+    monkeypatch.setattr(papers_mod, 'search_eric', mk_source('eric'))
     monkeypatch.setattr(papers_mod, 'search_openaire', mk_source('openaire'))
     monkeypatch.setattr(papers_mod, 'search_figshare', mk_source('figshare'))
     monkeypatch.setattr(papers_mod, 'search_osf', mk_source('osf'))
     monkeypatch.setattr(papers_mod, 'search_dryad', mk_source('dryad'))
     monkeypatch.setattr(papers_mod, 'search_inspire', mk_source('inspire'))
+    monkeypatch.setattr(papers_mod, 'search_osti', mk_source('osti'))
     monkeypatch.setattr(papers_mod, 'search_dblp', mk_source('dblp'))
     monkeypatch.setattr(papers_mod, 'search_zenodo', mk_source('zenodo'))
     monkeypatch.setattr(papers_mod, 'search_datacite', mk_source('datacite'))
