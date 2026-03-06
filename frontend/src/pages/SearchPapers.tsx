@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
+  ArrowRight,
+  Bot,
   Search,
   ExternalLink,
+  Filter,
   Loader2,
   Plus,
   CheckCircle,
@@ -13,8 +17,10 @@ import {
   FileText,
   RefreshCw,
   Sparkles,
+  Layers3,
   History,
   Trash2,
+  X,
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import api from '../api';
@@ -97,6 +103,7 @@ type YearFilter = 'any' | '2026' | '2024' | '2020' | '2015' | '2010';
 type SortMode = 'relevance' | 'newest' | 'oldest' | 'title';
 type CitationStyle = 'apa' | 'mla' | 'ieee';
 type SearchMode = 'fast' | 'balanced' | 'deep';
+type ResultView = 'comfortable' | 'compact';
 
 const GLOBAL_SEARCH_ENDPOINT = '/papers/search-global';
 const SEARCH_MIN_RESULTS = 20;
@@ -364,6 +371,7 @@ const SearchPapers: React.FC = () => {
   const [sortMode, setSortMode] = useState<SortMode>('relevance');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
+  const [resultView, setResultView] = useState<ResultView>('comfortable');
   const [bulkImporting, setBulkImporting] = useState(false);
   const [visibleCount, setVisibleCount] = useState(INITIAL_RENDER_BATCH);
 
@@ -443,6 +451,10 @@ const SearchPapers: React.FC = () => {
           String((extra as Record<string, unknown>).sourceFilter || 'all')
         );
         setSourceFilter(restoredSourceFilter || 'all');
+        const restoredResultView = String((extra as Record<string, unknown>).resultView || '');
+        if (restoredResultView === 'comfortable' || restoredResultView === 'compact') {
+          setResultView(restoredResultView as ResultView);
+        }
 
         if (list.length > 0) {
           if (!mounted) return;
@@ -614,10 +626,11 @@ const SearchPapers: React.FC = () => {
           yearFilter,
           sortMode,
           sourceFilter,
+          resultView,
         },
       });
     },
-    [activeWorkspaceId, fullTextOnly, maxResults, oaOnly, pdfOnly, searchMode, sortMode, sourceFilter, yearFilter],
+    [activeWorkspaceId, fullTextOnly, maxResults, oaOnly, pdfOnly, resultView, searchMode, sortMode, sourceFilter, yearFilter],
   );
 
   useEffect(() => {
@@ -888,6 +901,29 @@ const SearchPapers: React.FC = () => {
   const recentResultCount = filteredResults.filter((paper) => parseYear(paper.published) >= 2024).length;
   const importReadyCount = renderedResults.filter((paper) => !importedSet.has(normalizeKey(paper))).length;
   const highlightedAtlasCards = sourceAtlasCards.filter((item) => item.count > 0).slice(0, 6);
+  const activeWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null,
+    [activeWorkspaceId, workspaces],
+  );
+  const activeSourceFilterLabel = sourceFilter === 'all'
+    ? null
+    : sourceFilterOptions.find((item) => item.value === sourceFilter)?.label || SOURCE_LABELS[sourceFilter] || sourceFilter;
+  const activeFilterChips = useMemo(() => {
+    const chips: Array<{ key: string; label: string; onRemove: () => void }> = [];
+    if (oaOnly) chips.push({ key: 'oaOnly', label: 'Open access only', onRemove: () => setOaOnly(false) });
+    if (pdfOnly) chips.push({ key: 'pdfOnly', label: 'PDF only', onRemove: () => setPdfOnly(false) });
+    if (fullTextOnly) chips.push({ key: 'fullTextOnly', label: 'Full text only', onRemove: () => setFullTextOnly(false) });
+    if (yearFilter !== 'any') chips.push({ key: 'yearFilter', label: `Year ${yearFilter}+`, onRemove: () => setYearFilter('any') });
+    if (sortMode !== 'relevance') chips.push({ key: 'sortMode', label: `Sort ${sortMode}`, onRemove: () => setSortMode('relevance') });
+    if (sourceFilter !== 'all') {
+      chips.push({
+        key: 'sourceFilter',
+        label: `Source ${activeSourceFilterLabel || sourceFilter}`,
+        onRemove: () => setSourceFilter('all'),
+      });
+    }
+    return chips;
+  }, [activeSourceFilterLabel, fullTextOnly, oaOnly, pdfOnly, sortMode, sourceFilter, yearFilter]);
 
   const maxResultsCap = useMemo(() => {
     if (searchMode === 'fast') return 100;
@@ -902,6 +938,15 @@ const SearchPapers: React.FC = () => {
   useEffect(() => {
     setVisibleCount(INITIAL_RENDER_BATCH);
   }, [oaOnly, pdfOnly, fullTextOnly, yearFilter, sortMode, sourceFilter]);
+
+  const clearFilters = () => {
+    setOaOnly(false);
+    setPdfOnly(false);
+    setFullTextOnly(false);
+    setYearFilter('any');
+    setSortMode('relevance');
+    setSourceFilter('all');
+  };
 
   const saveCurrentQuery = () => {
     const trimmed = query.trim();
@@ -1326,103 +1371,171 @@ const SearchPapers: React.FC = () => {
               <span className="font-semibold text-slate-900">Deep</span> when you want wider recall across the long tail.
             </div>
 
-          <div className="flex flex-wrap gap-3 items-center">
-            <label className="text-sm text-slate-500">Import to</label>
-            <select
-              value={activeWorkspaceId ?? ''}
-              onChange={(event) => setActiveWorkspaceId(event.target.value ? Number(event.target.value) : null)}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              {workspaces.map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-            </select>
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+              <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <Layers3 className="h-3.5 w-3.5 text-indigo-500" />
+                Search controls
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block text-sm text-slate-500">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Import target</span>
+                  <select
+                    value={activeWorkspaceId ?? ''}
+                    onChange={(event) => setActiveWorkspaceId(event.target.value ? Number(event.target.value) : null)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                  >
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-            <label className="text-sm text-slate-500 ml-2">Results per page</label>
-            <input
-              type="range"
-              min={SEARCH_MIN_RESULTS}
-              max={maxResultsCap}
-              step={10}
-              value={maxResults}
-              onChange={(event) => setMaxResults(Number(event.target.value))}
-              className="w-44"
-            />
-            <span className="text-sm font-semibold text-slate-700 w-10">{maxResults}</span>
+                <label className="block text-sm text-slate-500">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Search mode</span>
+                  <select
+                    value={searchMode}
+                    onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                  >
+                    <option value="fast">Fast</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="deep">Deep (more papers)</option>
+                  </select>
+                </label>
+              </div>
 
-            <label className="text-sm text-slate-500 ml-2">Mode</label>
-            <select
-              value={searchMode}
-              onChange={(event) => setSearchMode(event.target.value as SearchMode)}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              <option value="fast">Fast</option>
-              <option value="balanced">Balanced</option>
-              <option value="deep">Deep (more papers)</option>
-            </select>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Results per search</p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Pull up to <span className="font-semibold text-slate-900">{maxResults}</span> results in {searchMode} mode.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                    {activeWorkspace ? activeWorkspace.name : 'Select workspace'}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={SEARCH_MIN_RESULTS}
+                  max={maxResultsCap}
+                  step={10}
+                  value={maxResults}
+                  onChange={(event) => setMaxResults(Number(event.target.value))}
+                  className="mt-3 w-full"
+                />
+              </div>
+            </div>
 
-            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={oaOnly} onChange={(event) => setOaOnly(event.target.checked)} />
-              OA only
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={pdfOnly} onChange={(event) => setPdfOnly(event.target.checked)} />
-              PDF only
-            </label>
-            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={fullTextOnly} onChange={(event) => setFullTextOnly(event.target.checked)} />
-              Full text only
-            </label>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  <Filter className="h-3.5 w-3.5 text-indigo-500" />
+                  Filter matrix
+                </p>
+                {activeFilterChips.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Clear filters
+                  </button>
+                )}
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700">
+                  <input type="checkbox" checked={oaOnly} onChange={(event) => setOaOnly(event.target.checked)} />
+                  OA only
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700">
+                  <input type="checkbox" checked={pdfOnly} onChange={(event) => setPdfOnly(event.target.checked)} />
+                  PDF only
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700">
+                  <input type="checkbox" checked={fullTextOnly} onChange={(event) => setFullTextOnly(event.target.checked)} />
+                  Full text only
+                </label>
 
-            <select
-              value={yearFilter}
-              onChange={(event) => setYearFilter(event.target.value as YearFilter)}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              <option value="any">Any year</option>
-              <option value="2026">2026+</option>
-              <option value="2024">2024+</option>
-              <option value="2020">2020+</option>
-              <option value="2015">2015+</option>
-              <option value="2010">2010+</option>
-            </select>
+                <select
+                  value={yearFilter}
+                  onChange={(event) => setYearFilter(event.target.value as YearFilter)}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                >
+                  <option value="any">Any year</option>
+                  <option value="2026">2026+</option>
+                  <option value="2024">2024+</option>
+                  <option value="2020">2020+</option>
+                  <option value="2015">2015+</option>
+                  <option value="2010">2010+</option>
+                </select>
 
-            <select
-              value={sortMode}
-              onChange={(event) => setSortMode(event.target.value as SortMode)}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              <option value="relevance">Sort: Relevance</option>
-              <option value="newest">Sort: Newest</option>
-              <option value="oldest">Sort: Oldest</option>
-              <option value="title">Sort: Title</option>
-            </select>
+                <select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as SortMode)}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                >
+                  <option value="relevance">Sort: Relevance</option>
+                  <option value="newest">Sort: Newest</option>
+                  <option value="oldest">Sort: Oldest</option>
+                  <option value="title">Sort: Title</option>
+                </select>
 
-            <select
-              value={sourceFilter}
-              onChange={(event) => setSourceFilter(canonicalSourceKey(event.target.value) || 'all')}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              <option value="all">Source: All</option>
-              {sourceFilterOptions.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label} ({item.count})
-                </option>
-              ))}
-            </select>
+                <select
+                  value={sourceFilter}
+                  onChange={(event) => setSourceFilter(canonicalSourceKey(event.target.value) || 'all')}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                >
+                  <option value="all">Source: All</option>
+                  {sourceFilterOptions.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label} ({item.count})
+                    </option>
+                  ))}
+                </select>
 
-            <select
-              value={citationStyle}
-              onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
-              className="h-10 rounded-xl border border-slate-200 px-3 text-sm text-slate-700"
-            >
-              <option value="apa">Cite: APA</option>
-              <option value="mla">Cite: MLA</option>
-              <option value="ieee">Cite: IEEE</option>
-            </select>
+                <select
+                  value={citationStyle}
+                  onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                >
+                  <option value="apa">Cite: APA</option>
+                  <option value="mla">Cite: MLA</option>
+                  <option value="ieee">Cite: IEEE</option>
+                </select>
+
+                <select
+                  value={resultView}
+                  onChange={(event) => setResultView(event.target.value as ResultView)}
+                  className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
+                >
+                  <option value="comfortable">View: Comfortable</option>
+                  <option value="compact">View: Compact</option>
+                </select>
+              </div>
+            </div>
           </div>
+
+          {activeFilterChips.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {activeFilterChips.map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={chip.onRemove}
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  {chip.label}
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2">
             {QUICK_QUERIES.map((item) => (
@@ -1703,6 +1816,11 @@ const SearchPapers: React.FC = () => {
             <span>
               Showing {renderedResults.length} of {filteredResults.length} filtered ({results.length} merged)
             </span>
+            {activeWorkspace && (
+              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+                Target workspace: {activeWorkspace.name}
+              </span>
+            )}
             {lastDurationMs !== null && (
               <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
                 {lastCacheHit ? 'cache' : 'live'} | {lastDurationMs} ms
@@ -1714,8 +1832,16 @@ const SearchPapers: React.FC = () => {
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
               Ready to import: {importReadyCount}
             </span>
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
+              View: {resultView}
+            </span>
           </div>
           <div className="flex items-center gap-2">
+            <Link to="/research-agent" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+              <Bot className="h-3.5 w-3.5" />
+              Move to agent
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
             <button
               type="button"
               onClick={() => void importTopVisible(10)}
@@ -1808,18 +1934,22 @@ const SearchPapers: React.FC = () => {
               return (
                 <article
                   key={importKey}
-                  className="rounded-[28px] border border-slate-200 bg-white/95 p-6 shadow-[0_22px_70px_-48px_rgba(15,23,42,0.45)] transition hover:-translate-y-0.5"
+                  className={`rounded-[28px] border border-slate-200 bg-white/95 shadow-[0_22px_70px_-48px_rgba(15,23,42,0.45)] transition hover:-translate-y-0.5 ${
+                    resultView === 'compact' ? 'p-4' : 'p-6'
+                  }`}
                 >
-                  <div className="flex items-start justify-between gap-4">
+                  <div className={`flex items-start justify-between gap-4 ${resultView === 'compact' ? 'flex-col lg:flex-row' : ''}`}>
                     <div className="min-w-0">
-                      <h3 className="text-2xl font-semibold text-slate-900 leading-tight mb-2">
+                      <h3 className={`${resultView === 'compact' ? 'text-xl' : 'text-2xl'} mb-2 font-semibold leading-tight text-slate-900`}>
                         {paper.title || 'Untitled'}
                       </h3>
                       <p className="text-sm text-slate-600 mb-2">{(paper.authors || []).join(', ') || 'Unknown authors'}</p>
-                      <p className="text-slate-700 leading-relaxed line-clamp-4">{paper.abstract || 'No abstract available.'}</p>
+                      <p className={`leading-relaxed text-slate-700 ${resultView === 'compact' ? 'line-clamp-2 text-sm' : 'line-clamp-4'}`}>
+                        {paper.abstract || 'No abstract available.'}
+                      </p>
                     </div>
 
-                    <div className="flex flex-col items-end gap-2 shrink-0">
+                    <div className={`flex shrink-0 flex-col gap-2 ${resultView === 'compact' ? 'items-start lg:items-end' : 'items-end'}`}>
                       <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700">
                         {sourceLabel}
                       </span>
@@ -1863,9 +1993,9 @@ const SearchPapers: React.FC = () => {
                     </span>
                   </div>
 
-                  <p className="mt-3 text-xs text-slate-500 line-clamp-2">{citation}</p>
+                  <p className={`text-xs text-slate-500 ${resultView === 'compact' ? 'mt-2 line-clamp-1' : 'mt-3 line-clamp-2'}`}>{citation}</p>
 
-                  <div className="mt-5 flex flex-wrap gap-2">
+                  <div className={`flex flex-wrap gap-2 ${resultView === 'compact' ? 'mt-4' : 'mt-5'}`}>
                     <a
                       href={paper.url || '#'}
                       target="_blank"

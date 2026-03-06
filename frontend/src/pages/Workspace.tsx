@@ -9,10 +9,12 @@ import {
   Loader2,
   MessageSquare,
   Rocket,
+  Search,
   Sparkles,
   Workflow,
 } from 'lucide-react';
 import Layout from '../components/Layout';
+import DataExportImport from '../components/DataExportImport';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
 
@@ -65,7 +67,7 @@ interface FaultResult {
   analysis: string;
 }
 
-type WorkspaceTab = 'papers' | 'chat' | 'review';
+type WorkspaceTab = 'papers' | 'chat' | 'review' | 'ops';
 
 const Workspace: React.FC = () => {
   const { id } = useParams();
@@ -79,6 +81,8 @@ const Workspace: React.FC = () => {
   const [reportGenerating, setReportGenerating] = useState<'pdf' | 'docx' | null>(null);
   const [chatPaperIds, setChatPaperIds] = useState<number[]>([]);
   const [faultPaperId, setFaultPaperId] = useState<number | null>(null);
+  const [selectedPaperId, setSelectedPaperId] = useState<number | null>(null);
+  const [paperQuery, setPaperQuery] = useState('');
   const [faultLoading, setFaultLoading] = useState(false);
   const [faultResult, setFaultResult] = useState<FaultResult | null>(null);
   const [fullTextOnlyPapers, setFullTextOnlyPapers] = useState(false);
@@ -110,9 +114,11 @@ const Workspace: React.FC = () => {
 
       const restoredFault = Number(extra.fault_paper_id || 0);
       setFaultPaperId(paperIds.includes(restoredFault) ? restoredFault : paperIds[0] ?? null);
+      const restoredSelectedPaper = Number(extra.selected_paper_id || 0);
+      setSelectedPaperId(paperIds.includes(restoredSelectedPaper) ? restoredSelectedPaper : paperIds[0] ?? null);
 
       const restoredTab = String(extra.active_tab || '');
-      if (restoredTab === 'papers' || restoredTab === 'chat' || restoredTab === 'review') {
+      if (restoredTab === 'papers' || restoredTab === 'chat' || restoredTab === 'review' || restoredTab === 'ops') {
         setActiveTab(restoredTab);
       }
     } catch {
@@ -138,12 +144,13 @@ const Workspace: React.FC = () => {
             active_tab: activeTab,
             selected_chat_paper_ids: chatPaperIds,
             fault_paper_id: faultPaperId,
+            selected_paper_id: selectedPaperId,
           },
         })
         .catch(() => undefined);
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [activeTab, chatInput, chatPaperIds, faultPaperId, workspace]);
+  }, [activeTab, chatInput, chatPaperIds, faultPaperId, selectedPaperId, workspace]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -316,12 +323,52 @@ const Workspace: React.FC = () => {
 
   const papersForDisplay = useMemo(() => {
     if (!workspace) return [];
-    if (!fullTextOnlyPapers) return workspace.papers;
-    return workspace.papers.filter((paper) => {
+    let papers = workspace.papers;
+    if (paperQuery.trim()) {
+      const needle = paperQuery.trim().toLowerCase();
+      papers = papers.filter((paper) =>
+        [paper.title, paper.authors, paper.abstract, paper.source, paper.doi]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(needle)
+      );
+    }
+    if (!fullTextOnlyPapers) return papers;
+    return papers.filter((paper) => {
       const fullTextUrl = String(paper.pdf_url || paper.institutional_url || (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') || '').trim();
       return Boolean(paper.full_text_available) || Boolean(fullTextUrl);
     });
-  }, [fullTextOnlyPapers, workspace]);
+  }, [fullTextOnlyPapers, paperQuery, workspace]);
+
+  const selectedPaper = useMemo(
+    () => papersForDisplay.find((paper) => paper.id === selectedPaperId) || papersForDisplay[0] || null,
+    [papersForDisplay, selectedPaperId],
+  );
+
+  const fullTextReadyCount = useMemo(
+    () =>
+      workspace?.papers.filter((paper) => {
+        const fullTextUrl = String(
+          paper.pdf_url ||
+            paper.institutional_url ||
+            (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') ||
+            ''
+        ).trim();
+        return Boolean(paper.full_text_available) || Boolean(fullTextUrl);
+      }).length || 0,
+    [workspace],
+  );
+
+  useEffect(() => {
+    if (!papersForDisplay.length) {
+      setSelectedPaperId(null);
+      return;
+    }
+    if (!papersForDisplay.some((paper) => paper.id === selectedPaperId)) {
+      setSelectedPaperId(papersForDisplay[0].id);
+    }
+  }, [papersForDisplay, selectedPaperId]);
 
   const resolveWorkspacePaperAccess = async () => {
     if (!workspace) return;
@@ -494,6 +541,80 @@ const Workspace: React.FC = () => {
               })}
             </section>
 
+            <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.05fr,0.95fr]">
+              <div className="studio-panel p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Workspace flow</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-900">Move from evidence intake to synthesis without leaving this page.</h3>
+                <div className="mt-4 grid gap-3">
+                  {[
+                    'Filter the paper list, inspect one paper in detail, then add it to the chat context only when it is actually relevant.',
+                    'Resolve full-text access before asking AI questions so the workspace keeps the strongest evidence possible.',
+                    'Use the operations tab for exports and imports instead of mixing those tasks into every reading step.',
+                  ].map((item, index) => (
+                    <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600">Step {index + 1}</p>
+                      <p className="mt-1 text-sm leading-relaxed text-slate-600">{item}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('papers')}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+                >
+                  <div className="inline-flex rounded-2xl bg-gradient-to-br from-indigo-500 to-cyan-500 p-2.5 text-white shadow-md">
+                    <FileText className="h-5 w-5" />
+                  </div>
+                  <h4 className="mt-4 text-base font-semibold text-slate-900">Reading lane</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                    {workspace.papers.length} papers loaded, {fullTextReadyCount} ready for full-text review.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('chat')}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+                >
+                  <div className="inline-flex rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 p-2.5 text-white shadow-md">
+                    <MessageSquare className="h-5 w-5" />
+                  </div>
+                  <h4 className="mt-4 text-base font-semibold text-slate-900">Chat lane</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                    {chatPaperIds.length} paper{chatPaperIds.length === 1 ? '' : 's'} currently in AI context.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('review')}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+                >
+                  <div className="inline-flex rounded-2xl bg-gradient-to-br from-fuchsia-500 to-violet-600 p-2.5 text-white shadow-md">
+                    <Sparkles className="h-5 w-5" />
+                  </div>
+                  <h4 className="mt-4 text-base font-semibold text-slate-900">Review lane</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                    Build a report and fault scan once the workspace evidence is stable.
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('ops')}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+                >
+                  <div className="inline-flex rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 p-2.5 text-white shadow-md">
+                    <Download className="h-5 w-5" />
+                  </div>
+                  <h4 className="mt-4 text-base font-semibold text-slate-900">Operations lane</h4>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                    Export, batch import, and keep workspace data portable.
+                  </p>
+                </button>
+              </div>
+            </section>
+
             <div className="mb-4">
               <div className="studio-tabs">
                 <button
@@ -514,163 +635,262 @@ const Workspace: React.FC = () => {
                 >
                   Review Draft
                 </button>
+                <button
+                  onClick={() => setActiveTab('ops')}
+                  className={`studio-tab ${activeTab === 'ops' ? 'studio-tab-active' : ''}`}
+                >
+                  Operations
+                </button>
               </div>
             </div>
 
             {activeTab === 'papers' && (
               <section className="space-y-4">
-                <div className="studio-surface p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">Institutional Connector</p>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Paste lines in format: <code>Title | URL | DOI | Author1; Author2</code>
-                      </p>
+                <div className="grid gap-4 xl:grid-cols-[0.9fr,1.1fr]">
+                  <div className="studio-surface p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Workspace papers</p>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {papersForDisplay.length} of {workspace.papers.length} papers visible
+                        </p>
+                      </div>
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={fullTextOnlyPapers}
+                          onChange={(event) => setFullTextOnlyPapers(event.target.checked)}
+                        />
+                        Show full-text only
+                      </label>
                     </div>
-                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+
+                    <div className="relative mt-3">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                       <input
-                        type="checkbox"
-                        checked={fullTextOnlyPapers}
-                        onChange={(event) => setFullTextOnlyPapers(event.target.checked)}
+                        type="text"
+                        value={paperQuery}
+                        onChange={(event) => setPaperQuery(event.target.value)}
+                        placeholder="Filter by title, author, DOI, or source"
+                        className="w-full rounded-xl border border-slate-300 py-2.5 pl-10 pr-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       />
-                      Show full-text only
-                    </label>
-                  </div>
-                  <textarea
-                    value={institutionalRaw}
-                    onChange={(event) => setInstitutionalRaw(event.target.value)}
-                    placeholder="Example: Explainable IoT Detection | https://publisher.com/paper | 10.1000/example.doi"
-                    className="mt-3 w-full min-h-[110px] rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <span className="text-xs text-slate-500">
-                      {institutionalRaw.split('\n').filter((line) => line.trim()).length} lines
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void importInstitutionalPapers();
-                      }}
-                      disabled={institutionalImporting || !institutionalRaw.trim()}
-                      className="hero-btn-primary disabled:opacity-55 disabled:cursor-not-allowed"
-                    >
-                      {institutionalImporting ? (
-                        <>
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Importing...
-                        </>
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                      {workspace.papers.length === 0 ? (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">
+                            No papers in this workspace yet. Import papers from Search to begin.
+                          </p>
+                          <Link to="/search" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-indigo-600">
+                            Open search
+                            <ExternalLink className="h-4 w-4" />
+                          </Link>
+                        </div>
+                      ) : papersForDisplay.length === 0 ? (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">
+                            No papers match the current paper filter. Clear the query or disable full-text only.
+                          </p>
+                        </div>
                       ) : (
-                        <>
-                          <FileText className="h-4 w-4" />
-                          Import Institutional Papers
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
+                        papersForDisplay.map((paper) => {
+                          const fullTextUrl = String(
+                            paper.pdf_url ||
+                              paper.institutional_url ||
+                              (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') ||
+                              ''
+                          ).trim();
+                          const hasFullText = Boolean(paper.full_text_available) || Boolean(fullTextUrl);
+                          const active = selectedPaper?.id === paper.id;
 
-                <section className="workspace-grid">
-                  {workspace.papers.length === 0 ? (
-                    <div className="studio-panel-quiet p-8 text-center">
-                      <p className="text-sm text-slate-600">
-                        No papers in this workspace yet. Import papers from Search to begin.
-                      </p>
-                    </div>
-                  ) : papersForDisplay.length === 0 ? (
-                    <div className="studio-panel-quiet p-8 text-center">
-                      <p className="text-sm text-slate-600">
-                        No papers match current filter. Disable "full-text only" to view all papers.
-                      </p>
-                    </div>
-                  ) : (
-                    papersForDisplay.map((paper) => {
-                      const fullTextUrl =
-                        String(
-                          paper.pdf_url ||
-                            paper.institutional_url ||
-                            (String(paper.url || '').toLowerCase().endsWith('.pdf') ? paper.url : '') ||
-                            ''
-                        ).trim();
-                      const hasFullText = Boolean(paper.full_text_available) || Boolean(fullTextUrl);
-                      const accessType = String(paper.access_type || '').toLowerCase();
-                      const accessLabel = hasFullText
-                        ? accessType === 'institutional'
-                          ? 'Institutional Full Text'
-                          : 'Full Text Available'
-                        : paper.doi
-                        ? 'DOI Available'
-                        : 'Metadata Only';
-
-                      return (
-                        <article key={paper.id} className="workspace-paper-card">
-                          <h3 className="text-base font-semibold text-slate-900">{paper.title}</h3>
-                          <p className="text-sm text-slate-500 mt-1">{paper.authors}</p>
-                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                            <span
-                              className={`px-2 py-1 rounded-lg font-medium ${
-                                hasFullText
-                                  ? 'bg-emerald-50 text-emerald-700'
-                                  : 'bg-slate-100 text-slate-600'
+                          return (
+                            <button
+                              key={paper.id}
+                              type="button"
+                              onClick={() => setSelectedPaperId(paper.id)}
+                              className={`w-full rounded-2xl border p-4 text-left transition ${
+                                active
+                                  ? 'border-indigo-300 bg-indigo-50/70 shadow-sm'
+                                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                               }`}
                             >
-                              {accessLabel}
-                            </span>
-                            {paper.source && (
-                              <span className="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-700 font-medium">
-                                {paper.source}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${hasFullText ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                  {hasFullText ? 'Full text ready' : 'Metadata / DOI'}
+                                </span>
+                                {paper.source && (
+                                  <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">
+                                    {paper.source}
+                                  </span>
+                                )}
+                              </div>
+                              <h3 className="mt-3 text-base font-semibold text-slate-900 line-clamp-2">{paper.title}</h3>
+                              <p className="mt-1 text-sm text-slate-500 line-clamp-1">{paper.authors}</p>
+                              <p className="mt-2 line-clamp-2 text-sm text-slate-600">{paper.abstract || 'No abstract available.'}</p>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="studio-surface p-5">
+                      {selectedPaper ? (() => {
+                        const fullTextUrl = String(
+                          selectedPaper.pdf_url ||
+                            selectedPaper.institutional_url ||
+                            (String(selectedPaper.url || '').toLowerCase().endsWith('.pdf') ? selectedPaper.url : '') ||
+                            ''
+                        ).trim();
+                        const hasFullText = Boolean(selectedPaper.full_text_available) || Boolean(fullTextUrl);
+                        const accessType = String(selectedPaper.access_type || '').toLowerCase();
+                        const accessLabel = hasFullText
+                          ? accessType === 'institutional'
+                            ? 'Institutional Full Text'
+                            : 'Full Text Available'
+                          : selectedPaper.doi
+                          ? 'DOI Available'
+                          : 'Metadata Only';
+
+                        return (
+                          <>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${hasFullText ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                                {accessLabel}
                               </span>
-                            )}
-                            {paper.doi && (
-                              <a
-                                href={`https://doi.org/${paper.doi}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                              {selectedPaper.source && (
+                                <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
+                                  {selectedPaper.source}
+                                </span>
+                              )}
+                            </div>
+
+                            <h3 className="mt-3 text-2xl font-semibold leading-tight text-slate-900">{selectedPaper.title}</h3>
+                            <p className="mt-2 text-sm text-slate-500">{selectedPaper.authors}</p>
+                            <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                              {selectedPaper.abstract || 'No abstract available for this paper yet.'}
+                            </p>
+
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {selectedPaper.url && (
+                                <a
+                                  href={selectedPaper.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1.5 rounded-xl bg-slate-700 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                                >
+                                  View paper
+                                  <ExternalLink className="h-4 w-4" />
+                                </a>
+                              )}
+                              {fullTextUrl && (
+                                <a
+                                  href={fullTextUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700"
+                                >
+                                  Open full text
+                                  <ExternalLink className="h-4 w-4" />
+                                </a>
+                              )}
+                              {selectedPaper.doi && (
+                                <a
+                                  href={`https://doi.org/${selectedPaper.doi}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700"
+                                >
+                                  DOI
+                                  <ExternalLink className="h-4 w-4" />
+                                </a>
+                              )}
+                            </div>
+
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!chatPaperIds.includes(selectedPaper.id)) {
+                                    setChatPaperIds((prev) => [...prev, selectedPaper.id]);
+                                  }
+                                  setActiveTab('chat');
+                                }}
+                                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition hover:bg-slate-100"
                               >
-                                DOI: {paper.doi}
-                              </a>
-                            )}
-                            {paper.bibcode && (
-                              <a
-                                href={`https://ui.adsabs.harvard.edu/abs/${paper.bibcode}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-medium"
+                                <p className="text-sm font-semibold text-slate-900">Use in chat context</p>
+                                <p className="mt-1 text-xs leading-5 text-slate-500">
+                                  Add this paper to the AI context set and switch to the chat lane.
+                                </p>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFaultPaperId(selectedPaper.id);
+                                  setActiveTab('review');
+                                }}
+                                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition hover:bg-slate-100"
                               >
-                                Bibcode: {paper.bibcode}
-                              </a>
-                            )}
-                          </div>
-                          <p className="text-sm text-slate-700 mt-3 line-clamp-3">{paper.abstract}</p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {paper.url && (
-                              <a
-                                href={paper.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold"
-                              >
-                                View paper
-                                <ExternalLink className="h-4 w-4" />
-                              </a>
-                            )}
-                            {fullTextUrl && (
-                              <a
-                                href={fullTextUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-sm font-semibold text-emerald-700"
-                              >
-                                Open full text
-                                <ExternalLink className="h-4 w-4" />
-                              </a>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })
-                  )}
-                </section>
+                                <p className="text-sm font-semibold text-slate-900">Send to review lane</p>
+                                <p className="mt-1 text-xs leading-5 text-slate-500">
+                                  Use this paper for fault detection and research brief generation.
+                                </p>
+                              </button>
+                            </div>
+                          </>
+                        );
+                      })() : (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">Select a paper to inspect details and take the next action.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="studio-surface p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">Institutional connector</p>
+                          <p className="mt-0.5 text-xs text-slate-500">
+                            Paste lines in format: <code>Title | URL | DOI | Author1; Author2</code>
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
+                          {institutionalRaw.split('\n').filter((line) => line.trim()).length} lines
+                        </span>
+                      </div>
+                      <textarea
+                        value={institutionalRaw}
+                        onChange={(event) => setInstitutionalRaw(event.target.value)}
+                        placeholder="Example: Explainable IoT Detection | https://publisher.com/paper | 10.1000/example.doi"
+                        className="mt-3 min-h-[110px] w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void importInstitutionalPapers();
+                          }}
+                          disabled={institutionalImporting || !institutionalRaw.trim()}
+                          className="hero-btn-primary disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          {institutionalImporting ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Importing...
+                            </>
+                          ) : (
+                            <>
+                              <FileText className="h-4 w-4" />
+                              Import Institutional Papers
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </section>
             )}
 
@@ -943,6 +1163,44 @@ const Workspace: React.FC = () => {
                     )}
                   </button>
                 </div>
+              </section>
+            )}
+
+            {activeTab === 'ops' && (
+              <section className="space-y-4">
+                <div className="studio-surface p-5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Operations lane</p>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-900">Keep the workspace portable and auditable.</h3>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    {[
+                      {
+                        title: 'Export often',
+                        copy: 'Use structured exports before major synthesis changes so you always have a stable checkpoint.',
+                      },
+                      {
+                        title: 'Batch import carefully',
+                        copy: 'Bring in external lists through import flows instead of pasting references manually into chat or notes.',
+                      },
+                      {
+                        title: 'Resolve access first',
+                        copy: 'Refresh paper access after imports so downstream reading and AI steps work from the strongest version.',
+                      },
+                    ].map((item) => (
+                      <div key={item.title} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">{item.copy}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <DataExportImport
+                  workspaceId={workspace.id}
+                  workspaceName={workspace.name}
+                  onImportComplete={() => {
+                    void loadWorkspace();
+                  }}
+                />
               </section>
             )}
           </>

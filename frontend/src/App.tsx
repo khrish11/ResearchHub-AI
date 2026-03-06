@@ -5,6 +5,7 @@ import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import ToastContainer from './components/ToastContainer';
 import CookieConsentBanner from './components/CookieConsentBanner';
+import CommandPalette from './components/CommandPalette';
 import { getAppBasePath } from './utils/routing';
 
 const Landing = lazy(() => import('./pages/Landing'));
@@ -163,6 +164,7 @@ function App() {
               </footer>
               <CookieConsentBanner />
               <ToastContainer />
+              {token && <CommandPalette />}
             </div>
           </Router>
         </ToastProvider>

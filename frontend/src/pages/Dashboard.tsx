@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  ArrowRight,
   Folder,
   FileText,
   Plus,
@@ -13,6 +14,10 @@ import {
   Download,
   ArrowUpRight,
   Sparkles,
+  Bot,
+  Search,
+  Upload,
+  Workflow,
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import api from '../api';
@@ -29,6 +34,11 @@ interface WorkspacePaper {
   abstract?: string;
 }
 
+interface WorkspaceTemplate {
+  name: string;
+  description: string;
+}
+
 const Dashboard = () => {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,6 +50,52 @@ const Dashboard = () => {
   const [newDesc, setNewDesc] = useState('');
   const [creating, setCreating] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+
+  const workspaceTemplates: WorkspaceTemplate[] = [
+    {
+      name: 'Literature Review Sprint',
+      description: 'Track papers, notes, and synthesis for a structured literature review.',
+    },
+    {
+      name: 'Model Benchmarking',
+      description: 'Collect papers, datasets, and evaluation notes for comparing approaches.',
+    },
+    {
+      name: 'Grant Discovery',
+      description: 'Capture prior work, evidence gaps, and promising angles for proposal building.',
+    },
+  ];
+
+  const quickLaunches = [
+    {
+      title: 'Search papers',
+      desc: 'Probe the search fabric and start a fresh evidence trail.',
+      to: '/search',
+      icon: Search,
+      tone: 'from-indigo-500 to-cyan-500',
+    },
+    {
+      title: 'Research agent',
+      desc: 'Use AI when you already know the question but need synthesis fast.',
+      to: '/research-agent',
+      icon: Bot,
+      tone: 'from-sky-500 to-blue-600',
+    },
+    {
+      title: 'Upload PDF',
+      desc: 'Bring private documents into the same project context.',
+      to: '/upload',
+      icon: Upload,
+      tone: 'from-emerald-500 to-teal-600',
+    },
+    {
+      title: 'Mindmap review',
+      desc: 'Convert imported evidence into a navigable review structure.',
+      to: '/mindmap',
+      icon: Workflow,
+      tone: 'from-fuchsia-500 to-violet-600',
+    },
+  ];
 
   const fetchWorkspaces = async () => {
     try {
@@ -204,6 +260,47 @@ const Dashboard = () => {
         })}
       </section>
 
+      <section className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-[0.95fr,1.05fr]">
+        <div className="feature-surface">
+          <p className="mb-1 text-xs uppercase tracking-[0.2em] text-slate-500">Workspace operating model</p>
+          <h3 className="text-xl font-bold text-slate-900">Keep each project as a contained evidence loop</h3>
+          <div className="mt-4 grid gap-3">
+            {[
+              'Start with one workspace per real research question, not one workspace per paper.',
+              'Import only the sources you are willing to cite or synthesize in downstream AI steps.',
+              'Use exports and mindmaps after the workspace has enough high-signal material to justify synthesis.',
+            ].map((item, index) => (
+              <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-600">Rule {index + 1}</p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{item}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {quickLaunches.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.title}
+                to={item.to}
+                className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+              >
+                <div className={`inline-flex rounded-2xl bg-gradient-to-br ${item.tone} p-2.5 text-white shadow-md`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+                <h4 className="mt-4 text-base font-semibold text-slate-900">{item.title}</h4>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{item.desc}</p>
+                <span className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-slate-700">
+                  Open <ArrowRight className="h-3.5 w-3.5 transition-transform duration-150 group-hover:translate-x-0.5" />
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      </section>
+
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <h3 className="text-lg md:text-xl font-bold text-slate-900">Your Workspaces</h3>
         <Link
@@ -226,6 +323,24 @@ const Dashboard = () => {
               </button>
             </div>
             <div className="space-y-4">
+              <div>
+                <p className="mb-2 text-sm font-medium text-slate-700">Start from a template</p>
+                <div className="flex flex-wrap gap-2">
+                  {workspaceTemplates.map((template) => (
+                    <button
+                      key={template.name}
+                      type="button"
+                      onClick={() => {
+                        setNewName(template.name);
+                        setNewDesc(template.description);
+                      }}
+                      className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700"
+                    >
+                      {template.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Name *</label>
                 <input
@@ -322,6 +437,15 @@ const Dashboard = () => {
               <h4 className="font-semibold text-slate-900 mb-1 truncate">{ws.name}</h4>
               <p className="text-sm text-slate-500 mb-4 line-clamp-2">{ws.description || 'No description provided.'}</p>
 
+              <div className="mb-4 flex flex-wrap gap-2">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+                  {ws.paperCount ?? 0} curated papers
+                </span>
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                  AI ready
+                </span>
+              </div>
+
               <div className="flex items-center justify-between gap-3">
                 <span className="text-xs text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
                   {ws.paperCount ?? 0} paper{ws.paperCount !== 1 ? 's' : ''} - {formatDate(ws.created_at)}
@@ -347,4 +471,3 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
-
