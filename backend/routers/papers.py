@@ -1085,7 +1085,7 @@ async def _fetch_unpaywall_pdf(doi: str) -> Optional[str]:
     url = f"{UNPAYWALL_API}{doi_clean}"
     try:
         async with httpx.AsyncClient(timeout=4) as client:
-            resp = await client.get(url, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(url, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
@@ -1217,7 +1217,7 @@ async def search_papers(
     # actionable response while upstream recovers.
     fallback_paper = {
         "title": f"ArXiv temporarily unavailable for: {query}",
-        "authors": ["ResearchHub AI"],
+        "authors": ["Soyog AI"],
         "abstract": (
             "ArXiv did not respond in time. Retry in a moment, or use the global "
             "search endpoint for merged results across other sources."
@@ -1261,7 +1261,7 @@ async def search_semantic(
         "offset": start_offset,
         "fields": "title,authors,abstract,year,externalIds,publicationTypes,openAccessPdf,url",
     }
-    headers = {"User-Agent": "ResearchHub-AI/1.0"}
+    headers = {"User-Agent": "Soyog-AI/1.0"}
     if semantic_key:
         headers["x-api-key"] = semantic_key
     try:
@@ -1402,7 +1402,7 @@ async def search_openalex(
             response = await client.get(
                 OPENALEX_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -1514,7 +1514,7 @@ async def search_europepmc(
             response = await client.get(
                 EUROPE_PMC_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -1636,9 +1636,9 @@ async def search_crossref(
     if mailto:
         params["mailto"] = mailto
 
-    user_agent = "ResearchHub-AI/1.0"
+    user_agent = "Soyog-AI/1.0"
     if mailto:
-        user_agent = f"ResearchHub-AI/1.0 (mailto:{mailto})"
+        user_agent = f"Soyog-AI/1.0 (mailto:{mailto})"
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -2043,7 +2043,7 @@ async def search_doaj(
             response = await client.get(
                 url,
                 params={"page": page, "pageSize": page_size},
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2157,7 +2157,7 @@ async def search_eric(
             response = await client.get(
                 ERIC_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2312,7 +2312,7 @@ async def search_osti(
             response = await client.get(
                 OSTI_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         rows = response.json()
@@ -2455,7 +2455,7 @@ async def search_econbiz(
             response = await client.get(
                 ECONBIZ_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2605,7 +2605,7 @@ async def search_jstage(
             response = await client.get(
                 JSTAGE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         root = ET.fromstring(response.text)
@@ -2725,7 +2725,7 @@ async def search_orkg(
             response = await client.get(
                 ORKG_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2863,7 +2863,7 @@ async def search_hal(
     }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(HAL_API_SEARCH, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(HAL_API_SEARCH, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -2967,7 +2967,7 @@ async def _search_rxiv(server: str, query: str, max_results: int, lookback_days:
         url = f"{BIORXIV_API_BASE}/{server}/{start_date}/{end_date}/{cursor}"
         try:
             async with httpx.AsyncClient(timeout=6) as client:
-                resp = await client.get(url, headers={"User-Agent": "ResearchHub-AI/1.0"})
+                resp = await client.get(url, headers={"User-Agent": "Soyog-AI/1.0"})
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPError:
@@ -3072,7 +3072,7 @@ async def search_plos(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(PLOS_API, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(PLOS_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -3162,7 +3162,7 @@ async def search_elife(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(EUROPE_PMC_API, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(EUROPE_PMC_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -3260,7 +3260,7 @@ async def search_datacite(
             response = await client.get(
                 DATACITE_WORKS_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3393,7 +3393,7 @@ async def search_dblp(
             response = await client.get(
                 DBLP_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3500,7 +3500,7 @@ async def search_zenodo(
             response = await client.get(
                 ZENODO_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3651,7 +3651,7 @@ async def search_openaire(
             response = await client.get(
                 OPENAIRE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         root = ET.fromstring(response.text)
@@ -3777,7 +3777,7 @@ async def search_figshare(
             response = await client.get(
                 FIGSHARE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         rows = response.json()
@@ -3862,7 +3862,7 @@ async def search_osf(
             response = await client.get(
                 OSF_PREPRINT_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3967,7 +3967,7 @@ async def search_dryad(
             response = await client.get(
                 DRYAD_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -4087,7 +4087,7 @@ async def search_inspire(
             response = await client.get(
                 INSPIRE_HEP_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -5365,7 +5365,7 @@ async def source_health(current_user: User = Depends(get_current_user)):
                     "pageSize": 1,
                     "page": 1,
                 },
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
         elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         if response.status_code == 200:

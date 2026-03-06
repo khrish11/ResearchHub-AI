@@ -1,6 +1,6 @@
-# ResearchHub-AI
+# Soyog AI
 
-ResearchHub-AI is an end-to-end research workspace where users can:
+Soyog AI is an end-to-end research workspace where users can:
 
 1. Search papers across multiple scholarly sources.
 2. Import selected papers into personal workspaces.
@@ -28,7 +28,7 @@ ResearchHub-AI is an end-to-end research workspace where users can:
 ## Project Structure
 
 ```text
-ResearchHub-AI/
+<repo-root>/
   backend/
     main.py
     database.py
@@ -55,7 +55,7 @@ ResearchHub-AI/
 
 ```powershell
 git clone <your-repo-url>
-cd ResearchHub-AI
+cd <repo-folder>
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r backend/requirements.txt
@@ -123,7 +123,7 @@ If VS Code or Windsurf keeps prompting you to select a Python interpreter:
 
 1. Run `Python: Clear Workspace Interpreter Setting`.
 2. Run `Developer: Reload Window`.
-3. Select `E:\rezsrch\ResearchHub-AI\.venv\Scripts\python.exe` if prompted.
+3. Select `${workspaceFolder}\\.venv\\Scripts\\python.exe` if prompted.
 4. Confirm the status bar shows `.venv`.
 
 Optional cleanup after `.venv` is working:

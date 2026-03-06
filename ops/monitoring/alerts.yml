@@ -1,7 +1,7 @@
 groups:
-  - name: researchhub-api-alerts
+  - name: soyog-api-alerts
     rules:
-      - alert: ResearchHubApiHigh5xxRate
+      - alert: SoyogApiHigh5xxRate
         expr: |
           sum(rate(researchhub_http_status_total{status=~"5.."}[5m]))
             /
@@ -10,17 +10,17 @@ groups:
         for: 10m
         labels:
           severity: critical
-          service: researchhub-api
+          service: soyog-api
         annotations:
-          summary: "ResearchHub API 5xx rate above 1%"
+          summary: "Soyog AI API 5xx rate above 1%"
           description: "Investigate backend errors and upstream dependency health."
 
-      - alert: ResearchHubApiRateLimitingSpike
+      - alert: SoyogApiRateLimitingSpike
         expr: sum(rate(researchhub_http_rate_limited_total[5m])) > 5
         for: 5m
         labels:
           severity: warning
-          service: researchhub-api
+          service: soyog-api
         annotations:
-          summary: "ResearchHub API rate limiting spike detected"
+          summary: "Soyog AI API rate limiting spike detected"
           description: "Possible abuse burst or under-provisioned API capacity."

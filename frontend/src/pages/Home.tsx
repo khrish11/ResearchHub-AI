@@ -378,7 +378,7 @@ const Home = () => {
             Design Breakthrough Research Pipelines, Not Just Paper Lists
           </h2>
           <p className="text-cyan-100/90 mt-4 max-w-2xl text-sm md:text-base">
-            ResearchHub AI now blends deep search, live source verification, and AI-native writing flow in one command surface.
+            Soyog AI now blends deep search, live source verification, and AI-native writing flow in one command surface.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link to="/search" className="hero-btn-primary">

@@ -90,7 +90,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
               <Microscope className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h1>ResearchHub AI</h1>
+              <h1>Soyog AI</h1>
               <p>Intelligence for research workflows</p>
             </div>
           </div>
@@ -111,7 +111,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
 
           <div className="auth-metric-grid">
             <div className="auth-metric">
-              <h4>14+</h4>
+              <h4>28+</h4>
               <p>Paper sources</p>
             </div>
             <div className="auth-metric">

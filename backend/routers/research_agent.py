@@ -310,7 +310,7 @@ async def _fetch_openalex_recent_titles(seed: str, max_items: int = 18) -> List[
         'per-page': min(max_items, 30),
         'filter': f'from_publication_date:{since}',
     }
-    headers = {'User-Agent': 'ResearchHub-AI/1.0'}
+    headers = {'User-Agent': 'Soyog-AI/1.0'}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.0)) as client:
             response = await client.get('https://api.openalex.org/works', params=params, headers=headers)
@@ -335,7 +335,7 @@ async def _fetch_arxiv_recent_titles(seed: str, max_items: int = 16) -> List[str
         'sortBy': 'submittedDate',
         'sortOrder': 'descending',
     }
-    headers = {'User-Agent': 'ResearchHub-AI/1.0'}
+    headers = {'User-Agent': 'Soyog-AI/1.0'}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.0), headers=headers) as client:
             response = await client.get('https://export.arxiv.org/api/query', params=params)
@@ -706,7 +706,7 @@ async def _fetch_openalex_citation_count(doi: str) -> int:
     url = f'https://api.openalex.org/works/https://doi.org/{clean}'
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.5, connect=2.0)) as client:
-            response = await client.get(url, headers={'User-Agent': 'ResearchHub-AI/1.0'})
+            response = await client.get(url, headers={'User-Agent': 'Soyog-AI/1.0'})
             if response.status_code >= 400:
                 return 0
             data = response.json()
@@ -2525,7 +2525,7 @@ def research_chatbot(
 
     llm_text = _llm_generate(
         system_prompt=(
-            'You are ResearchHub Chatbot, a full-spectrum research assistant. '
+            'You are Soyog AI Chatbot, a full-spectrum research assistant. '
             'Behave like a conversational AI for any research question, while staying evidence-first.'
         ),
         user_prompt=(

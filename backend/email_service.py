@@ -70,7 +70,7 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Verify Your Email - ResearchHub AI</title>
+        <title>Verify Your Email - Soyog AI</title>
         <style>
             body { font-family: 'Space Grotesk', sans-serif; margin: 0; padding: 0; background-color: #f6f8ff; }
             .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
@@ -85,11 +85,11 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
         <div class="container">
             <div class="header">
                 <h1>Verify Your Email</h1>
-                <p>Welcome to ResearchHub AI</p>
+                <p>Welcome to Soyog AI</p>
             </div>
             <div class="content">
                 <h2>Hello{{ name and ' ' + name or '' }}!</h2>
-                <p>Thank you for signing up for ResearchHub AI. To complete your registration and start building your research workflow, please verify your email address.</p>
+                <p>Thank you for signing up for Soyog AI. To complete your registration and start building your research workflow, please verify your email address.</p>
 
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{{ verification_url }}" class="button">Verify Email Address</a>
@@ -100,13 +100,13 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
 
                 <p><strong>This verification link will expire in 24 hours.</strong></p>
 
-                <p>If you didn't create an account with ResearchHub AI, you can safely ignore this email.</p>
+                <p>If you didn't create an account with Soyog AI, you can safely ignore this email.</p>
 
-                <p>Best regards,<br>The ResearchHub AI Team</p>
+                <p>Best regards,<br>The Soyog AI Team</p>
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 ResearchHub AI. All rights reserved.</p>
+                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -120,7 +120,7 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
     )
 
     message = MessageSchema(
-        subject="Verify Your Email - ResearchHub AI",
+        subject="Verify Your Email - Soyog AI",
         recipients=[email],
         body=html_content,
         subtype="html"
@@ -142,7 +142,7 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Reset Your Password - ResearchHub AI</title>
+        <title>Reset Your Password - Soyog AI</title>
         <style>
             body { font-family: 'Space Grotesk', sans-serif; margin: 0; padding: 0; background-color: #f6f8ff; }
             .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
@@ -156,11 +156,11 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
         <div class="container">
             <div class="header">
                 <h1>Reset Your Password</h1>
-                <p>Secure your ResearchHub AI account</p>
+                <p>Secure your Soyog AI account</p>
             </div>
             <div class="content">
                 <h2>Hello{{ name and ' ' + name or '' }}!</h2>
-                <p>We received a request to reset your password for your ResearchHub AI account. Click the button below to create a new password.</p>
+                <p>We received a request to reset your password for your Soyog AI account. Click the button below to create a new password.</p>
 
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{{ reset_url }}" class="button">Reset Password</a>
@@ -170,11 +170,11 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
 
                 <p><strong>This reset link will expire in 1 hour.</strong></p>
 
-                <p>Best regards,<br>The ResearchHub AI Team</p>
+                <p>Best regards,<br>The Soyog AI Team</p>
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 ResearchHub AI. All rights reserved.</p>
+                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -188,7 +188,7 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
     )
 
     message = MessageSchema(
-        subject="Reset Your Password - ResearchHub AI",
+        subject="Reset Your Password - Soyog AI",
         recipients=[email],
         body=html_content,
         subtype="html"

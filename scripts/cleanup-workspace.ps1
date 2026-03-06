@@ -1,4 +1,4 @@
-# Cleanup generated and temporary files for ResearchHub-AI (Windows PowerShell)
+# Cleanup generated and temporary files for Soyog AI (Windows PowerShell)
 # Safe: removes __pycache__, .pytest_cache, frontend/dist, and test_temp DBs
 # Run from repository root:  .\scripts\cleanup-workspace.ps1
 

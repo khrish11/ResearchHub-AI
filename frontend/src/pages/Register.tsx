@@ -73,7 +73,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <Microscope className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h1>ResearchHub AI</h1>
+              <h1>Soyog AI</h1>
               <p>Intelligence for research workflows</p>
             </div>
           </div>
@@ -98,7 +98,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <p>1-minute onboarding</p>
             </div>
             <div className="auth-metric">
-              <h4>14+</h4>
+              <h4>28+</h4>
               <p>Search indices</p>
             </div>
             <div className="auth-metric">

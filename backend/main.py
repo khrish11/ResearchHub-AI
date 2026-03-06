@@ -131,7 +131,7 @@ if engine.dialect.name == "sqlite":
             else:
                 raise RuntimeError(f"Papers schema sync failed: {exc}") from exc
 
-app = FastAPI(title="ResearchHub AI API", version="1.0.0")
+app = FastAPI(title="Soyog AI API", version="1.0.0")
 
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 allowed_origins = {
@@ -500,4 +500,4 @@ async def ops_metrics(request: Request):
 
 @app.get("/")
 async def root():
-    return {"message": "ResearchHub AI API is running"}
+    return {"message": "Soyog AI API is running"}

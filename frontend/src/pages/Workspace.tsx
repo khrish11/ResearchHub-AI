@@ -956,7 +956,7 @@ const Workspace: React.FC = () => {
                           </div>
                           <div className="chat-bubble-ai">
                             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
-                              ResearchHub AI
+                              Soyog AI
                             </p>
                             <p className="whitespace-pre-wrap">{chat.response}</p>
                           </div>

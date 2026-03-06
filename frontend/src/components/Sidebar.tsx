@@ -48,7 +48,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile
               <Microscope className="h-5 w-5 text-white" />
             </div>
             <div>
-              <p className="sidebar-brand">ResearchHub AI</p>
+              <p className="sidebar-brand">Soyog AI</p>
               <p className="text-[11px] text-indigo-200/70 tracking-wide uppercase">Neural Workspace</p>
             </div>
           </div>

@@ -55,7 +55,7 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
                 Research shell
               </p>
               <h1 className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
-                ResearchHub AI
+                Soyog AI
               </h1>
             </div>
           </div>

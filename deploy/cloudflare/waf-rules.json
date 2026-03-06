@@ -1,5 +1,5 @@
 {
-  "description": "Recommended Cloudflare ruleset for ResearchHub AI",
+  "description": "Recommended Cloudflare ruleset for Soyog AI",
   "rules": [
     {
       "name": "Block obvious bad bots",
