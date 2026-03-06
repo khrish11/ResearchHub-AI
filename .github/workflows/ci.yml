@@ -30,6 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
+      - name: Seed backend test env
+        run: |
+          printf "NASA_ADS_TOKEN=ci-test-nasa-token\n" > backend/.env
+
       - name: Run backend tests
         working-directory: backend
         run: |
