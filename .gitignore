@@ -5,6 +5,8 @@ node_modules/
 # Environment files
 .env
 backend/.env
+frontend/.env
+frontend/.env.*
 
 # Python
 __pycache__/
@@ -15,6 +17,7 @@ __pycache__/
 *.db
 venv/
 .venv/
+.pytest_cache/
 
 # Tests / temp files
 backend/tests/test_temp*.db
@@ -22,3 +25,6 @@ backend/test_temp.db
 
 # Build
 dist/
+frontend/playwright-report/
+frontend/test-results/
+frontend/.playwright/
