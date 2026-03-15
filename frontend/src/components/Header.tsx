@@ -18,6 +18,7 @@ import type { LucideIcon } from 'lucide-react';
 import api from '../api';
 import { toAppPath } from '../utils/routing';
 import { openCommandPalette } from '../utils/commandPalette';
+import { clearAuthSession } from '../utils/authSession';
 
 interface HeaderProps {
   userEmail?: string;
@@ -253,8 +254,9 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
                   type="button"
                   aria-label="Log out"
                   onClick={() => {
-                    localStorage.removeItem('token');
-                    window.location.href = toAppPath('/login');
+                    void clearAuthSession().finally(() => {
+                      window.location.href = toAppPath('/login');
+                    });
                   }}
                   className="ml-1 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
                 >

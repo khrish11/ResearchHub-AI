@@ -17,6 +17,7 @@ import Layout from '../components/Layout';
 import DataExportImport from '../components/DataExportImport';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
+import { openFileUrl } from '../utils/openFile';
 
 interface Paper {
   id: number;
@@ -411,6 +412,14 @@ const Workspace: React.FC = () => {
     }
   };
 
+  const handleOpenFile = async (url: string, fallbackFilename: string) => {
+    try {
+      await openFileUrl(url, fallbackFilename);
+    } catch (err: unknown) {
+      setError(apiErrorMessage(err, 'Failed to open file.'));
+    }
+  };
+
   return (
     <Layout>
       <div className="page-enter">
@@ -786,15 +795,16 @@ const Workspace: React.FC = () => {
                                 </a>
                               )}
                               {fullTextUrl && (
-                                <a
-                                  href={fullTextUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    void handleOpenFile(fullTextUrl, `${selectedPaper.title || 'paper'}-full-text.pdf`);
+                                  }}
                                   className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700"
                                 >
                                   Open full text
                                   <ExternalLink className="h-4 w-4" />
-                                </a>
+                                </button>
                               )}
                               {selectedPaper.doi && (
                                 <a

@@ -4,11 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Chat, Paper, User, Workspace
+from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user, is_developer_email
 
 router = APIRouter(prefix="/developer", tags=["developer"])
@@ -17,7 +14,17 @@ router = APIRouter(prefix="/developer", tags=["developer"])
 def _to_iso(value: Optional[datetime]) -> Optional[str]:
     if not value:
         return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
+
+
+def _sort_dt(value: Optional[datetime]) -> datetime:
+    if not value:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _is_truthy(value: str) -> bool:
@@ -26,8 +33,8 @@ def _is_truthy(value: str) -> bool:
 
 def require_developer_access(
     request: Request,
-    current_user: User = Depends(get_current_user),
-) -> User:
+    current_user: Any = Depends(get_current_user),
+) -> Any:
     if is_developer_email(current_user.email):
         return current_user
 
@@ -50,32 +57,20 @@ def require_developer_access(
     )
 
 
-def _user_count_maps(db: Session) -> Dict[str, Dict[int, int]]:
-    workspace_counts = {
-        int(user_id): int(count)
-        for user_id, count in db.query(Workspace.user_id, func.count(Workspace.id)).group_by(Workspace.user_id).all()
-        if user_id is not None
-    }
-    paper_counts = {
-        int(user_id): int(count)
-        for user_id, count in (
-            db.query(Workspace.user_id, func.count(Paper.id))
-            .join(Paper, Paper.workspace_id == Workspace.id)
-            .group_by(Workspace.user_id)
-            .all()
-        )
-        if user_id is not None
-    }
-    chat_counts = {
-        int(user_id): int(count)
-        for user_id, count in (
-            db.query(Workspace.user_id, func.count(Chat.id))
-            .join(Chat, Chat.workspace_id == Workspace.id)
-            .group_by(Workspace.user_id)
-            .all()
-        )
-        if user_id is not None
-    }
+def _user_count_maps(repo: ResearchRepository) -> Dict[str, Dict[int, int]]:
+    workspace_counts: Dict[int, int] = {}
+    paper_counts: Dict[int, int] = {}
+    chat_counts: Dict[int, int] = {}
+    for user in repo.list_users():
+        workspaces = repo.list_workspaces_for_user(user.id)
+        workspace_counts[int(user.id)] = len(workspaces)
+        paper_total = 0
+        chat_total = 0
+        for workspace in workspaces:
+            paper_total += len(repo.list_papers_for_workspace(workspace.id))
+            chat_total += len(repo.list_chats_for_workspace(workspace.id))
+        paper_counts[int(user.id)] = paper_total
+        chat_counts[int(user.id)] = chat_total
     return {
         "workspace_counts": workspace_counts,
         "paper_counts": paper_counts,
@@ -83,7 +78,7 @@ def _user_count_maps(db: Session) -> Dict[str, Dict[int, int]]:
     }
 
 
-def _user_row(user: User, counts: Dict[str, Dict[int, int]]) -> Dict[str, Any]:
+def _user_row(user: Any, counts: Dict[str, Dict[int, int]]) -> Dict[str, Any]:
     return {
         "id": int(user.id),
         "email": user.email,
@@ -101,7 +96,7 @@ def _user_row(user: User, counts: Dict[str, Dict[int, int]]) -> Dict[str, Any]:
 @router.get("/access")
 def developer_access_status(
     request: Request,
-    current_user: User = Depends(require_developer_access),
+    current_user: Any = Depends(require_developer_access),
 ):
     _ = request
     return {
@@ -115,18 +110,18 @@ def developer_access_status(
 @router.get("/overview")
 def developer_overview(
     recent_limit: int = Query(default=20, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_developer_access),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(require_developer_access),
 ):
     _ = current_user
-    counts = _user_count_maps(db)
-    recent_users = db.query(User).order_by(User.created_at.desc()).limit(recent_limit).all()
+    counts = _user_count_maps(repo)
+    recent_users = repo.list_users(limit=recent_limit)
     return {
         "summary": {
-            "users": int(db.query(func.count(User.id)).scalar() or 0),
-            "workspaces": int(db.query(func.count(Workspace.id)).scalar() or 0),
-            "papers": int(db.query(func.count(Paper.id)).scalar() or 0),
-            "chats": int(db.query(func.count(Chat.id)).scalar() or 0),
+            "users": int(repo.count_users()),
+            "workspaces": int(repo.count_workspaces()),
+            "papers": int(repo.count_papers()),
+            "chats": int(repo.count_chats()),
         },
         "recent_users": [_user_row(user, counts) for user in recent_users],
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -138,17 +133,13 @@ def developer_users(
     q: Optional[str] = Query(default=None, min_length=1, max_length=120),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_developer_access),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(require_developer_access),
 ):
     _ = current_user
-    query = db.query(User)
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(or_(User.email.ilike(like), User.name.ilike(like)))
-    total = int(query.count())
-    users = query.order_by(User.created_at.desc()).offset(offset).limit(limit).all()
-    counts = _user_count_maps(db)
+    total = len(repo.list_users(query=q))
+    users = repo.list_users(query=q, limit=limit, offset=offset)
+    counts = _user_count_maps(repo)
     return {
         "total": total,
         "offset": offset,
@@ -162,68 +153,34 @@ def developer_user_detail(
     user_id: int,
     workspace_limit: int = Query(default=20, ge=1, le=100),
     papers_per_workspace: int = Query(default=10, ge=1, le=50),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_developer_access),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(require_developer_access),
 ):
     _ = current_user
-    user = db.query(User).filter(User.id == user_id).first()
+    user = repo.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    workspaces = (
-        db.query(Workspace)
-        .filter(Workspace.user_id == user.id)
-        .order_by(Workspace.created_at.desc())
-        .limit(workspace_limit)
-        .all()
-    )
-    ws_ids = [int(ws.id) for ws in workspaces]
-
-    if ws_ids:
-        paper_rows = (
-            db.query(Paper.workspace_id, func.count(Paper.id))
-            .filter(Paper.workspace_id.in_(ws_ids))
-            .group_by(Paper.workspace_id)
-            .all()
-        )
-        chat_rows = (
-            db.query(Chat.workspace_id, func.count(Chat.id))
-            .filter(Chat.workspace_id.in_(ws_ids))
-            .group_by(Chat.workspace_id)
-            .all()
-        )
-    else:
-        paper_rows = []
-        chat_rows = []
-
-    paper_count_map = {
-        int(workspace_id): int(count)
-        for workspace_id, count in paper_rows
-        if workspace_id is not None
-    }
-    chat_count_map = {
-        int(workspace_id): int(count)
-        for workspace_id, count in chat_rows
-        if workspace_id is not None
-    }
+    workspaces = sorted(
+        repo.list_workspaces_for_user(user.id),
+        key=lambda row: _sort_dt(row.created_at),
+        reverse=True,
+    )[:workspace_limit]
 
     workspace_payload: List[Dict[str, Any]] = []
     for ws in workspaces:
-        papers = (
-            db.query(Paper)
-            .filter(Paper.workspace_id == ws.id)
-            .order_by(Paper.id.desc())
-            .limit(papers_per_workspace)
-            .all()
-        )
+        papers = sorted(repo.list_papers_for_workspace(ws.id), key=lambda paper: int(paper.id), reverse=True)[
+            :papers_per_workspace
+        ]
+        chat_count = len(repo.list_chats_for_workspace(ws.id))
         workspace_payload.append(
             {
                 "id": int(ws.id),
                 "name": ws.name,
                 "description": ws.description,
                 "created_at": _to_iso(ws.created_at),
-                "paper_count": int(paper_count_map.get(int(ws.id), 0)),
-                "chat_count": int(chat_count_map.get(int(ws.id), 0)),
+                "paper_count": len(repo.list_papers_for_workspace(ws.id)),
+                "chat_count": chat_count,
                 "papers": [
                     {
                         "id": int(paper.id),
@@ -237,7 +194,7 @@ def developer_user_detail(
             }
         )
 
-    counts = _user_count_maps(db)
+    counts = _user_count_maps(repo)
     return {
         "user": _user_row(user, counts),
         "workspaces": workspace_payload,

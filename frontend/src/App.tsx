@@ -1,12 +1,15 @@
-import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
+import { useState, useEffect, lazy, Suspense, type ReactElement } from 'react';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import ToastContainer from './components/ToastContainer';
 import CookieConsentBanner from './components/CookieConsentBanner';
 import CommandPalette from './components/CommandPalette';
-import { getAppBasePath } from './utils/routing';
+import api from './api';
+import { getAppBasePath, toAppPath } from './utils/routing';
+import { bootstrapGoogleServices, trackRouteView } from './utils/firebaseClient';
+import { notifyAuthLogin } from './utils/authSession';
 
 const Landing = lazy(() => import('./pages/Landing'));
 const Login = lazy(() => import('./pages/Login'));
@@ -39,27 +42,101 @@ const RouteLoader = () => (
   </div>
 );
 
+function RouteTelemetry() {
+  const location = useLocation();
+
+  useEffect(() => {
+    void trackRouteView(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+
+  return null;
+}
+
 function App() {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
   const routerBasename = getAppBasePath();
 
-  const setAuthToken = (newToken: string | null) => {
-    if (newToken) {
-      localStorage.setItem('token', newToken);
-    } else {
-      localStorage.removeItem('token');
+  const refreshAuthState = async () => {
+    try {
+      await api.get('/auth/me');
+      setIsAuthenticated(true);
+    } catch {
+      setIsAuthenticated(false);
+    } finally {
+      setAuthChecked(true);
     }
-    setToken(newToken);
+  };
+
+  const onAuthSuccess = (token: string) => {
+    if (!token) {
+      return;
+    }
+    notifyAuthLogin();
+    void refreshAuthState();
   };
 
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get('token');
-    if (token) {
-      setAuthToken(token);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
+    void bootstrapGoogleServices();
   }, []);
+
+  useEffect(() => {
+    const currentUrl = new URL(window.location.href);
+    const hashParams = new URLSearchParams(currentUrl.hash.startsWith('#') ? currentUrl.hash.slice(1) : currentUrl.hash);
+    const oauthCode = (hashParams.get('oauth_code') || currentUrl.searchParams.get('oauth_code') || '').trim();
+    const legacyToken = (currentUrl.searchParams.get('token') || '').trim();
+
+    const clearAuthArtifacts = () => {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete('token');
+      nextUrl.searchParams.delete('oauth_code');
+      nextUrl.hash = '';
+      const nextPath = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+      window.history.replaceState({}, document.title, nextPath);
+    };
+
+    if (oauthCode) {
+      clearAuthArtifacts();
+      void api
+        .post('/auth/oauth/exchange', { code: oauthCode })
+        .then((response) => {
+          const nextToken = String(response.data?.access_token || '');
+          if (!nextToken) {
+            throw new Error('Missing OAuth access token');
+          }
+          notifyAuthLogin();
+          void refreshAuthState();
+        })
+        .catch(() => {
+          setIsAuthenticated(false);
+          setAuthChecked(true);
+          const error = encodeURIComponent('Google sign-in session expired. Please try again.');
+          window.location.replace(toAppPath(`/login?error=${error}`));
+        });
+      return;
+    }
+
+    if (legacyToken) {
+      clearAuthArtifacts();
+    }
+
+    void refreshAuthState();
+  }, []);
+
+  useEffect(() => {
+    const onSessionChange = () => {
+      void refreshAuthState();
+    };
+    window.addEventListener('auth-session-changed', onSessionChange);
+    return () => window.removeEventListener('auth-session-changed', onSessionChange);
+  }, []);
+
+  const protectedRoute = (element: ReactElement) => {
+    if (!authChecked) {
+      return <RouteLoader />;
+    }
+    return isAuthenticated ? element : <Navigate to="/login" replace />;
+  };
 
   return (
     <ErrorBoundary>
@@ -67,6 +144,7 @@ function App() {
         <ToastProvider>
           <Router basename={routerBasename || undefined}>
             <div className="min-h-screen bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100 transition-colors duration-200">
+              <RouteTelemetry />
               <a
                 href="#main-content"
                 className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-slate-900"
@@ -78,71 +156,71 @@ function App() {
                   <Routes>
                     <Route
                       path="/login"
-                      element={token ? <Navigate to="/home" replace /> : <Login setToken={setAuthToken} />}
+                      element={authChecked && isAuthenticated ? <Navigate to="/home" replace /> : <Login setToken={onAuthSuccess} />}
                     />
                     <Route
                       path="/register"
-                      element={token ? <Navigate to="/home" replace /> : <Register setToken={setAuthToken} />}
+                      element={authChecked && isAuthenticated ? <Navigate to="/home" replace /> : <Register setToken={onAuthSuccess} />}
                     />
                     <Route
                       path="/home"
-                      element={token ? <Home /> : <Navigate to="/login" />}
+                      element={protectedRoute(<Home />)}
                     />
                     <Route
                       path="/dashboard"
-                      element={token ? <Dashboard /> : <Navigate to="/login" />}
+                      element={protectedRoute(<Dashboard />)}
                     />
                     <Route
                       path="/search"
-                      element={token ? <SearchPapers /> : <Navigate to="/login" />}
+                      element={protectedRoute(<SearchPapers />)}
                     />
                     <Route
                       path="/workspace/:id"
-                      element={token ? <Workspace /> : <Navigate to="/login" />}
+                      element={protectedRoute(<Workspace />)}
                     />
                     <Route
                       path="/mindmap"
-                      element={token ? <Mindmap /> : <Navigate to="/login" />}
+                      element={protectedRoute(<Mindmap />)}
                     />
                     <Route
                       path="/ai-tools"
-                      element={token ? <AITools /> : <Navigate to="/login" />}
+                      element={protectedRoute(<AITools />)}
                     />
                     <Route
                       path="/research-agent"
-                      element={token ? <ResearchAgent /> : <Navigate to="/login" />}
+                      element={protectedRoute(<ResearchAgent />)}
                     />
                     <Route
                       path="/upload"
-                      element={token ? <UploadPDF /> : <Navigate to="/login" />}
+                      element={protectedRoute(<UploadPDF />)}
                     />
                     <Route
                       path="/docs"
-                      element={token ? <DocSpace /> : <Navigate to="/login" />}
+                      element={protectedRoute(<DocSpace />)}
                     />
                     <Route
                       path="/research-chat"
-                      element={token ? <WritingChat /> : <Navigate to="/login" />}
+                      element={protectedRoute(<WritingChat />)}
                     />
                     <Route path="/writing-chat" element={<Navigate to="/research-chat" replace />} />
                     <Route
                       path="/account"
-                      element={token ? <AccountSettings /> : <Navigate to="/login" />}
+                      element={protectedRoute(<AccountSettings />)}
                     />
                     <Route
                       path="/settings"
-                      element={token ? <Settings /> : <Navigate to="/login" />}
+                      element={protectedRoute(<Settings />)}
                     />
                     <Route
                       path="/developer"
-                      element={token ? <DeveloperConsole /> : <Navigate to="/login" />}
+                      element={protectedRoute(<DeveloperConsole />)}
                     />
                     <Route path="/privacy" element={<PrivacyPolicy />} />
                     <Route path="/terms" element={<TermsOfService />} />
                     <Route path="/cookies" element={<CookiePolicy />} />
                     <Route path="/data-rights" element={<DataRights />} />
                     <Route path="/verify-email" element={<EmailVerification />} />
-                    <Route path="/" element={token ? <Navigate to="/home" /> : <Landing />} />
+                    <Route path="/" element={authChecked && isAuthenticated ? <Navigate to="/home" replace /> : <Landing />} />
                   </Routes>
                 </Suspense>
               </main>
@@ -164,7 +242,7 @@ function App() {
               </footer>
               <CookieConsentBanner />
               <ToastContainer />
-              {token && <CommandPalette />}
+              {isAuthenticated && <CommandPalette />}
             </div>
           </Router>
         </ToastProvider>

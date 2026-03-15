@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,13 +6,16 @@ import json
 import io
 import re
 import textwrap
+import os
 from collections import Counter
 from datetime import datetime, timezone
 
 from utils.groq_client import client as groq_client, model_config
+from utils.firebase_storage import download_bytes, storage_is_configured, upload_bytes
 
 from database import get_db
-from models import User, Workspace, Paper, Chat, UserSessionState, WorkspaceDocument
+from models import User, Workspace, Paper, UserSessionState, WorkspaceDocument
+from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -104,6 +106,21 @@ class DocspaceDocumentOut(BaseModel):
     updated_at: Optional[str] = None
 
 
+class WorkspaceFileOut(BaseModel):
+    id: int
+    workspace_id: int
+    user_id: int
+    paper_id: Optional[int] = None
+    kind: str
+    filename: str
+    storage_bucket: str
+    storage_path: str
+    download_url: Optional[str] = None
+    content_type: Optional[str] = None
+    size_bytes: int
+    created_at: Optional[str] = None
+
+
 def _normalize_report_depth(value: Optional[str]) -> str:
     depth = (value or "balanced").strip().lower()
     if depth not in {"quick", "balanced", "deep"}:
@@ -121,6 +138,15 @@ def _normalize_focus_mode(value: Optional[str]) -> str:
 def _safe_filename(text: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", (text or "").strip().lower()).strip("-")
     return slug or "research-report"
+
+
+def _safe_storage_filename(filename: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", (filename or "").strip()).strip("-")
+    return cleaned or fallback
+
+
+def _backend_base_url() -> str:
+    return (os.getenv("BACKEND_URL") or "http://127.0.0.1:8010").rstrip("/")
 
 
 def _normalize_page_path(value: Optional[str]) -> str:
@@ -163,6 +189,46 @@ def _iso_utc(value: Optional[datetime]) -> Optional[str]:
     if not value:
         return None
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _persist_workspace_file_if_configured(
+    *,
+    repo: ResearchRepository,
+    workspace_id: int,
+    user_id: int,
+    kind: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> Optional[object]:
+    if not storage_is_configured():
+        return None
+    safe_name = _safe_storage_filename(filename, fallback="artifact.bin")
+    storage_path = f"workspace-files/{user_id}/{workspace_id}/exports/{kind}/{safe_name}"
+    uploaded = upload_bytes(
+        storage_path=storage_path,
+        data=content,
+        content_type=content_type,
+        metadata={
+            "workspace_id": str(workspace_id),
+            "user_id": str(user_id),
+            "kind": kind,
+            "filename": safe_name,
+        },
+    )
+    record = repo.create_workspace_file(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        kind=kind,
+        filename=safe_name,
+        storage_bucket=uploaded.bucket,
+        storage_path=uploaded.path,
+        content_type=uploaded.content_type,
+        size_bytes=uploaded.size_bytes,
+    )
+    record.download_url = f"{_backend_base_url()}/workspaces/{workspace_id}/files/{record.id}/download"
+    repo.save(record)
+    return record
 
 
 def _extract_keywords(text: str, top_n: int = 12) -> List[str]:
@@ -647,6 +713,7 @@ def _generate_report_markdown(topic: str, papers: List[Paper], depth: str = "bal
                 {"role": "user", "content": prompt[:26000]},
             ],
             **model_config(
+                task="mindmap",
                 longform=True,
                 max_tokens=token_budget,
                 temperature=0.12 if depth == "deep" else 0.15,
@@ -770,114 +837,77 @@ def _build_pdf_bytes(markdown_text: str) -> bytes:
 
 @router.get("/", response_model=List[WorkspaceOut])
 def list_workspaces(
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspaces = (
-        db.query(Workspace)
-        .outerjoin(Paper, Paper.workspace_id == Workspace.id)
-        .filter(Workspace.user_id == current_user.id)
-        .group_by(Workspace.id)
-        .order_by(func.count(Paper.id).desc(), Workspace.created_at.desc())
-        .all()
-    )
-    return workspaces
+    return repo.list_workspaces_for_user(current_user.id)
 
 
 @router.post("/", response_model=WorkspaceOut)
 def create_workspace(
     payload: WorkspaceCreate,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     normalized_name = (payload.name or "").strip()
     if not normalized_name:
         raise HTTPException(status_code=400, detail="Workspace name is required")
 
-    existing = (
-        db.query(Workspace)
-        .filter(Workspace.user_id == current_user.id, func.lower(Workspace.name) == normalized_name.lower())
-        .first()
-    )
+    existing = repo.find_workspace_by_name_for_user(current_user.id, normalized_name)
     if existing:
         return existing
 
-    workspace = Workspace(
-        name=normalized_name,
-        description=payload.description,
-        user_id=current_user.id,
-    )
-    db.add(workspace)
-    db.commit()
-    db.refresh(workspace)
-    return workspace
+    return repo.create_workspace(current_user.id, normalized_name, payload.description)
 
 
-def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int) -> Workspace:
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id, Workspace.user_id == user_id)
-        .first()
-    )
+def _owned_workspace_or_404(repo: ResearchRepository, workspace_id: int, user_id: int) -> Workspace:
+    workspace = repo.find_workspace_for_user(workspace_id, user_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
 
 
-def _get_or_create_docspace_document(db: Session, current_user: User, workspace: Workspace) -> WorkspaceDocument:
-    document = (
-        db.query(WorkspaceDocument)
-        .filter(
-            WorkspaceDocument.workspace_id == workspace.id,
-            WorkspaceDocument.user_id == current_user.id,
-        )
-        .first()
-    )
+def _get_or_create_docspace_document(
+    repo: ResearchRepository,
+    current_user: User,
+    workspace: Workspace,
+) -> WorkspaceDocument:
+    document = repo.get_docspace_document(workspace.id, current_user.id)
     if document:
         return document
 
-    document = WorkspaceDocument(
+    return repo.create_docspace_document(
         workspace_id=workspace.id,
         user_id=current_user.id,
         title=f"{workspace.name} Notes",
         content="",
         version=1,
     )
-    db.add(document)
-    db.commit()
-    db.refresh(document)
-    return document
 
 
 @router.get("/session-state", response_model=SessionStateOut)
 def get_session_state(
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    state = db.query(UserSessionState).filter(UserSessionState.user_id == current_user.id).first()
+    state = repo.get_session_state_for_user(current_user.id)
     return _state_to_out(state)
 
 
 @router.put("/session-state", response_model=SessionStateOut)
 def upsert_session_state(
     payload: SessionStateUpdate,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    state = db.query(UserSessionState).filter(UserSessionState.user_id == current_user.id).first()
+    state = repo.get_session_state_for_user(current_user.id)
     if not state:
-        state = UserSessionState(user_id=current_user.id)
-        db.add(state)
+        state = repo.create_session_state(current_user.id)
 
     if payload.page_path is not None:
         state.page_path = _normalize_page_path(payload.page_path)
     if payload.workspace_id is not None:
-        owns_workspace = (
-            db.query(Workspace.id)
-            .filter(Workspace.id == payload.workspace_id, Workspace.user_id == current_user.id)
-            .first()
-        )
-        state.workspace_id = payload.workspace_id if owns_workspace else None
+        state.workspace_id = payload.workspace_id if repo.workspace_exists_for_user(payload.workspace_id, current_user.id) else None
     if payload.last_query is not None:
         state.last_query = (payload.last_query or "").strip()[:300] or None
     if payload.draft_text is not None:
@@ -886,19 +916,17 @@ def upsert_session_state(
         state.extra_json = json.dumps(payload.extra)
     state.updated_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(state)
-    return _state_to_out(state)
+    return _state_to_out(repo.save(state))
 
 
 @router.get("/{workspace_id}/docspace", response_model=DocspaceDocumentOut)
 def get_docspace_document(
     workspace_id: int,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = _owned_workspace_or_404(db, workspace_id, current_user.id)
-    document = _get_or_create_docspace_document(db, current_user, workspace)
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    document = _get_or_create_docspace_document(repo, current_user, workspace)
     return DocspaceDocumentOut(
         workspace_id=workspace.id,
         title=document.title or f"{workspace.name} Notes",
@@ -912,11 +940,11 @@ def get_docspace_document(
 def upsert_docspace_document(
     workspace_id: int,
     payload: DocspaceDocumentUpdate,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = _owned_workspace_or_404(db, workspace_id, current_user.id)
-    document = _get_or_create_docspace_document(db, current_user, workspace)
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    document = _get_or_create_docspace_document(repo, current_user, workspace)
 
     next_title = (payload.title or "").strip()
     if not next_title:
@@ -926,8 +954,7 @@ def upsert_docspace_document(
     document.version = int(document.version or 1) + 1
     document.updated_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(document)
+    repo.save(document)
     return DocspaceDocumentOut(
         workspace_id=workspace.id,
         title=document.title or f"{workspace.name} Notes",
@@ -940,18 +967,13 @@ def upsert_docspace_document(
 @router.get("/{workspace_id}", response_model=WorkspaceDetail)
 def get_workspace(
     workspace_id: int,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = _owned_workspace_or_404(db, workspace_id, current_user.id)
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
 
-    papers = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
-    chats = (
-        db.query(Chat)
-        .filter(Chat.workspace_id == workspace.id)
-        .order_by(Chat.timestamp.asc())
-        .all()
-    )
+    papers = repo.list_papers_for_workspace(workspace.id)
+    chats = repo.list_chats_for_workspace(workspace.id, ascending=True)
 
     return WorkspaceDetail(
         id=workspace.id,
@@ -964,62 +986,79 @@ def get_workspace(
 
 @router.post("/default", response_model=WorkspaceOut)
 def get_or_create_default_workspace(
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.user_id == current_user.id, Workspace.name == "Default Workspace")
-        .first()
-    )
-    if workspace:
-        return workspace
-
-    workspace = Workspace(
-        name="Default Workspace",
-        description="Automatically created workspace for quick imports.",
-        user_id=current_user.id,
-    )
-    db.add(workspace)
-    db.commit()
-    db.refresh(workspace)
-    return workspace
+    return repo.get_or_create_default_workspace(current_user.id)
 
 
 @router.delete("/{workspace_id}")
 def delete_workspace(
     workspace_id: int,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = _owned_workspace_or_404(db, workspace_id, current_user.id)
-
-    # Cascade delete papers and chats
-    db.query(Paper).filter(Paper.workspace_id == workspace_id).delete()
-    db.query(Chat).filter(Chat.workspace_id == workspace_id).delete()
-    db.query(WorkspaceDocument).filter(WorkspaceDocument.workspace_id == workspace_id).delete()
-    db.delete(workspace)
-    db.commit()
+    _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    repo.delete_workspace_graph(workspace_id)
     return {"message": "Workspace deleted successfully"}
+
+
+@router.get("/{workspace_id}/files", response_model=List[WorkspaceFileOut])
+def list_workspace_files(
+    workspace_id: int,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    rows = repo.list_workspace_files_for_workspace(workspace_id, current_user.id)
+    return [
+        WorkspaceFileOut(
+            id=int(row.id or 0),
+            workspace_id=int(row.workspace_id),
+            user_id=int(row.user_id),
+            paper_id=row.paper_id,
+            kind=row.kind,
+            filename=row.filename,
+            storage_bucket=row.storage_bucket,
+            storage_path=row.storage_path,
+            download_url=row.download_url,
+            content_type=row.content_type,
+            size_bytes=int(row.size_bytes or 0),
+            created_at=_iso_utc(getattr(row, "created_at", None)),
+        )
+        for row in rows
+    ]
+
+
+@router.get("/{workspace_id}/files/{file_id}/download")
+def download_workspace_file(
+    workspace_id: int,
+    file_id: int,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    row = repo.get_workspace_file_for_user(file_id, workspace_id, current_user.id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Workspace file not found.")
+    try:
+        downloaded = download_bytes(storage_path=row.storage_path)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to download file from storage: {str(exc)}")
+    headers = {"Content-Disposition": f'attachment; filename="{row.filename}"'}
+    return Response(content=downloaded.data, media_type=downloaded.content_type, headers=headers)
 
 
 @router.get("/{workspace_id}/export")
 def export_workspace(
     workspace_id: int,
     format: str = "bibtex",
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     """Export papers in a workspace as BibTeX or CSV."""
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id, Workspace.user_id == current_user.id)
-        .first()
-    )
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    papers = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    papers = repo.list_papers_for_workspace(workspace.id)
 
     if format not in ("bibtex", "csv"):
         raise HTTPException(status_code=400, detail="Unsupported export format. Use 'bibtex' or 'csv'.")
@@ -1049,7 +1088,22 @@ def export_workspace(
             ]
             writer.writerow(row)
         content = buf.getvalue()
-        return Response(content=content, media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.csv"})
+        filename = f"workspace-{workspace.id}.csv"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        file_record = _persist_workspace_file_if_configured(
+            repo=repo,
+            workspace_id=workspace.id,
+            user_id=current_user.id,
+            kind="workspace_export_csv",
+            filename=filename,
+            content=content.encode("utf-8"),
+            content_type="text/csv",
+        )
+        if file_record:
+            headers["X-Storage-Path"] = str(file_record.storage_path)
+            headers["X-Storage-File-Id"] = str(file_record.id)
+            headers["X-Storage-Download-Url"] = str(file_record.download_url or "")
+        return Response(content=content, media_type="text/csv", headers=headers)
 
     # BibTeX export
     def _escape(s: str) -> str:
@@ -1081,28 +1135,34 @@ def export_workspace(
         )
         entries.append(entry)
     content = "\n".join(entries)
-    return Response(content=content, media_type="application/x-bibtex", headers={"Content-Disposition": f"attachment; filename=workspace-{workspace.id}.bib"})
+    filename = f"workspace-{workspace.id}.bib"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    file_record = _persist_workspace_file_if_configured(
+        repo=repo,
+        workspace_id=workspace.id,
+        user_id=current_user.id,
+        kind="workspace_export_bibtex",
+        filename=filename,
+        content=content.encode("utf-8"),
+        content_type="application/x-bibtex",
+    )
+    if file_record:
+        headers["X-Storage-Path"] = str(file_record.storage_path)
+        headers["X-Storage-File-Id"] = str(file_record.id)
+        headers["X-Storage-Download-Url"] = str(file_record.download_url or "")
+    return Response(content=content, media_type="application/x-bibtex", headers=headers)
 
 
 def _resolve_research_report_inputs(
     workspace_id: int,
     payload: Optional[ResearchReportRequest],
-    db: Session,
+    repo: ResearchRepository,
     current_user: User,
 ):
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id, Workspace.user_id == current_user.id)
-        .first()
-    )
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
 
     requested_ids = set(payload.paper_ids or []) if payload else set()
-    query = db.query(Paper).filter(Paper.workspace_id == workspace.id)
-    if requested_ids:
-        query = query.filter(Paper.id.in_(requested_ids))
-    papers = query.all()
+    papers = repo.list_papers_for_workspace(workspace.id, list(requested_ids) if requested_ids else None)
 
     if not papers:
         raise HTTPException(status_code=400, detail="No papers available for report generation.")
@@ -1119,14 +1179,14 @@ def _resolve_research_report_inputs(
 def preview_research_report(
     workspace_id: int,
     payload: Optional[ResearchReportRequest] = None,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     """Generate a markdown preview of the research brief + mindmap before export."""
     workspace, papers, topic, depth, focus_mode, selected_ids = _resolve_research_report_inputs(
         workspace_id=workspace_id,
         payload=payload,
-        db=db,
+        repo=repo,
         current_user=current_user,
     )
     selected = _select_ranked_papers(topic=topic, papers=papers, limit=40)
@@ -1164,7 +1224,7 @@ def export_research_report(
     workspace_id: int,
     format: str = "pdf",
     payload: Optional[ResearchReportRequest] = None,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -1177,7 +1237,7 @@ def export_research_report(
     workspace, papers, topic, depth, focus_mode, _selected_ids = _resolve_research_report_inputs(
         workspace_id=workspace_id,
         payload=payload,
-        db=db,
+        repo=repo,
         current_user=current_user,
     )
     report_markdown = _generate_report_markdown(
@@ -1200,4 +1260,17 @@ def export_research_report(
         filename = f"{safe_topic}-mindmap-{timestamp}.pdf"
 
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    file_record = _persist_workspace_file_if_configured(
+        repo=repo,
+        workspace_id=workspace.id,
+        user_id=current_user.id,
+        kind=f"research_report_{format}",
+        filename=filename,
+        content=content,
+        content_type=media_type,
+    )
+    if file_record:
+        headers["X-Storage-Path"] = str(file_record.storage_path)
+        headers["X-Storage-File-Id"] = str(file_record.id)
+        headers["X-Storage-Download-Url"] = str(file_record.download_url or "")
     return Response(content=content, media_type=media_type, headers=headers)

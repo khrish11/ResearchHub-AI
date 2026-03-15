@@ -16,12 +16,49 @@ from fastapi.testclient import TestClient
 import main
 
 client = TestClient(main.app)
+TEST_PASSWORD = "Passw0rd!"
 
 
 def register(email: str):
-    r = client.post('/auth/register', json={'email': email, 'password': 'pw'})
+    r = client.post('/auth/register', json={'email': email, 'password': TEST_PASSWORD})
     assert r.status_code == 200
     return r.json()['access_token']
+
+
+def test_cookie_session_is_set_and_auth_me_works_without_bearer_header():
+    client.cookies.clear()
+    email = f"cookie-auth-{uuid.uuid4().hex[:8]}@example.com"
+    register_resp = client.post('/auth/register', json={'email': email, 'password': TEST_PASSWORD})
+    assert register_resp.status_code == 200
+    assert 'set-cookie' in {k.lower(): v for k, v in register_resp.headers.items()}
+
+    me_resp = client.get('/auth/me')
+    assert me_resp.status_code == 200
+    assert me_resp.json().get('email') == email
+
+
+def test_refresh_and_logout_flow_for_cookie_sessions():
+    client.cookies.clear()
+    email = f"refresh-cookie-{uuid.uuid4().hex[:8]}@example.com"
+    register_resp = client.post('/auth/register', json={'email': email, 'password': TEST_PASSWORD})
+    assert register_resp.status_code == 200
+
+    before_refresh = client.get('/auth/me')
+    assert before_refresh.status_code == 200
+
+    refreshed = client.post('/auth/refresh')
+    assert refreshed.status_code == 200
+    assert refreshed.json().get('access_token')
+
+    after_refresh = client.get('/auth/me')
+    assert after_refresh.status_code == 200
+    assert after_refresh.json().get('email') == email
+
+    logout_resp = client.post('/auth/logout')
+    assert logout_resp.status_code == 200
+
+    after_logout = client.get('/auth/me')
+    assert after_logout.status_code == 401
 
 
 def test_login_with_wrong_password_fails():
@@ -32,6 +69,7 @@ def test_login_with_wrong_password_fails():
 
 
 def test_protected_endpoint_requires_token():
+    client.cookies.clear()
     r = client.get('/workspaces/')
     assert r.status_code == 401
 
@@ -154,7 +192,7 @@ def test_search_springer_handles_subjects_string(monkeypatch):
 
 def test_workspace_papers_persist_after_relogin():
     email = f"persist-{uuid.uuid4().hex[:8]}@example.com"
-    password = "pw"
+    password = TEST_PASSWORD
 
     register_resp = client.post('/auth/register', json={'email': email, 'password': password})
     assert register_resp.status_code == 200
@@ -191,6 +229,20 @@ def test_workspace_papers_persist_after_relogin():
     assert ws_detail_resp.status_code == 200
     papers = ws_detail_resp.json().get('papers', [])
     assert any((paper.get('title') or '').strip() == 'Persistence Test Paper' for paper in papers)
+
+
+def test_change_password_rejects_weak_new_password():
+    email = f"weak-change-{uuid.uuid4().hex[:8]}@example.com"
+    token = register(email)
+    headers = {'Authorization': f'Bearer {token}'}
+
+    resp = client.post(
+        '/auth/change-password',
+        json={'current_password': TEST_PASSWORD, 'new_password': 'short'},
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert 'Password' in resp.json().get('detail', '')
 
 
 def test_auth_me_marks_developer_email(monkeypatch):

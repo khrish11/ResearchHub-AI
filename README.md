@@ -86,6 +86,16 @@ Minimum required backend values:
 3. `FRONTEND_URL`
 4. `DATABASE_URL` (optional if default SQLite is used)
 5. `GROQ_API_KEY` (required for AI features)
+6. `STORAGE_BACKEND=sqlalchemy` (keep this value unless you are intentionally testing the Firebase-backed repository slice)
+7. Keep `BACKEND_URL`, `VITE_API_URL`, and `GOOGLE_REDIRECT_URI` aligned with the actual backend port (`8010` in the commands below).
+8. Leave `TRUST_PROXY_HEADERS=0` unless the app is running behind a reverse proxy you control and `TRUSTED_PROXY_IPS` is set correctly.
+
+Optional AI routing values:
+
+1. `GROQ_CHAT_MODEL`
+2. `GROQ_UPLOAD_SUMMARY_MODEL`
+3. `GROQ_MINDMAP_MODEL`
+4. `GROQ_PIPELINE_MODEL`
 
 Frontend value:
 
@@ -139,6 +149,56 @@ python -V
 python -c "import sys; print(sys.executable)"
 ```
 
+## AI Model Routing
+
+Soyog AI can now route different features to different Groq models:
+
+1. `Chat`
+2. `Upload Summary`
+3. `Mindmap / Report`
+4. `Pipeline / Agent`
+
+Use `Settings -> AI model routing` to keep a lighter model on chat and a stronger model on long-form generation.
+
+## Database Direction
+
+Soyog AI now supports a full request-path Firebase runtime:
+
+1. Firestore for users, workspaces, papers, chats, search history, session state, compliance requests, and developer/admin reads
+2. Firebase Storage for uploaded PDFs and generated export/report files
+3. `STORAGE_BACKEND=firebase` switches the active runtime persistence layer to Firebase
+4. SQLAlchemy remains available as a compatibility fallback and migration source
+
+Required Firebase envs are documented in `.env.example` and the operational details live in `docs/firebase-migration.md`.
+
+### Alembic migrations (SQLAlchemy mode)
+
+When `STORAGE_BACKEND=sqlalchemy`, apply schema changes with Alembic:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+If an existing local database already matches the baseline and you only want to mark it:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic stamp head
+```
+
+### SQL to Firebase migration script
+
+Dry run first:
+
+```powershell
+.\.venv\Scripts\python.exe backend\scripts\migrate_sql_to_firebase.py --dry-run
+```
+
+Real migration after setting `FIREBASE_PROJECT_ID` and `FIREBASE_CREDENTIALS_PATH`:
+
+```powershell
+.\.venv\Scripts\python.exe backend\scripts\migrate_sql_to_firebase.py --drop-target
+```
+
 The executable path should point to `.venv`.
 
 ## Common Commands
@@ -154,6 +214,14 @@ python -m pytest backend/tests -q
 ```powershell
 cd frontend
 npm run build
+```
+
+### Frontend E2E smoke tests
+
+```powershell
+cd frontend
+npx playwright install
+npm run test:e2e
 ```
 
 ### Makefile shortcuts (if using make)
@@ -184,8 +252,12 @@ npm run build
 
 1. Built-in API rate limiting is configurable with:
    `RATE_LIMIT_ENABLED`, `RATE_LIMIT_WINDOW_SECONDS`, `RATE_LIMIT_AUTH_PER_WINDOW`, `RATE_LIMIT_API_PER_WINDOW`.
-2. Security headers can be toggled with `SECURITY_HEADERS_ENABLED`.
-3. Health probes:
+2. Optional Redis-backed limiter:
+   `RATE_LIMIT_STORE=redis` with `REDIS_URL=redis://...`.
+3. Cookie auth controls:
+   `AUTH_COOKIE_SAMESITE`, `AUTH_COOKIE_DOMAIN`, `AUTH_COOKIE_SECURE`.
+4. Security headers can be toggled with `SECURITY_HEADERS_ENABLED`.
+5. Health probes:
    - Liveness: `GET /health/live`
    - Readiness (DB check): `GET /health/ready`
 

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { toAppPath } from '../utils/routing';
 import { OPEN_COMMAND_PALETTE_EVENT } from '../utils/commandPalette';
+import { clearAuthSession } from '../utils/authSession';
 
 const SAVED_QUERIES_STORAGE_KEY = 'researchhub.saved_queries.v1';
 
@@ -199,8 +200,9 @@ const CommandPalette: React.FC = () => {
         icon: <LogOut className="h-4 w-4" />,
         keywords: ['logout', 'sign out'],
         onSelect: () => {
-          localStorage.removeItem('token');
-          window.location.href = toAppPath('/login');
+          void clearAuthSession().finally(() => {
+            window.location.href = toAppPath('/login');
+          });
         },
       },
     ],

@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+try:
+    import firebase_admin
+    from firebase_admin import app_check, auth, credentials
+except Exception:  # pragma: no cover - optional dependency until configured
+    firebase_admin = None
+    app_check = None
+    auth = None
+    credentials = None
+
+from utils.firebase_storage import _normalize_windows_env_path, storage_bucket_name
+
+
+_APP = None
+
+
+def firebase_admin_is_configured() -> bool:
+    return bool(os.getenv("FIREBASE_PROJECT_ID") and (os.getenv("FIREBASE_CREDENTIALS_PATH") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+
+
+def get_firebase_admin_app():
+    global _APP
+    if _APP is not None:
+        return _APP
+    if firebase_admin is None or credentials is None:
+        raise RuntimeError("firebase-admin is not installed.")
+
+    cert_path = (
+        _normalize_windows_env_path(os.getenv("FIREBASE_CREDENTIALS_PATH"))
+        or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    )
+    options: dict[str, Any] = {}
+    project_id = (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    bucket_name = storage_bucket_name()
+    if project_id:
+        options["projectId"] = project_id
+    if bucket_name:
+        options["storageBucket"] = bucket_name
+
+    try:
+        _APP = firebase_admin.get_app()
+        return _APP
+    except ValueError:
+        pass
+
+    cred = credentials.Certificate(cert_path) if cert_path else credentials.ApplicationDefault()
+    _APP = firebase_admin.initialize_app(cred, options=options or None)
+    return _APP
+
+
+def verify_firebase_id_token(id_token: str) -> dict[str, Any]:
+    if auth is None:
+        raise RuntimeError("firebase-admin auth support is unavailable.")
+    app = get_firebase_admin_app()
+    return auth.verify_id_token(id_token, app=app)
+
+
+def revoke_firebase_refresh_tokens(uid: str) -> None:
+    if auth is None:
+        return
+    app = get_firebase_admin_app()
+    auth.revoke_refresh_tokens(uid, app=app)
+
+
+def verify_firebase_app_check_token(token: str) -> dict[str, Any]:
+    if app_check is None:
+        raise RuntimeError("firebase-admin app check support is unavailable.")
+    get_firebase_admin_app()
+    return app_check.verify_token(token)
+
+
+def firebase_sign_in_provider(decoded_token: dict[str, Any]) -> Optional[str]:
+    firebase_meta = decoded_token.get("firebase") or {}
+    provider = firebase_meta.get("sign_in_provider")
+    return str(provider).strip() or None

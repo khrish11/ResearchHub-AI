@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from database import get_db
-from models import User, Workspace, Paper, Chat
+from models import User, Paper
+from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from utils.groq_client import client, model_config
 from pydantic import BaseModel
@@ -81,17 +80,15 @@ def build_context(papers: List[Paper], query: str, max_papers: int = 12, max_cha
 
 
 def _recent_chat_context(
-    db: Session,
+    repo: ResearchRepository,
     workspace_id: int,
     limit: int = 4,
     max_chars: int = 3600,
 ) -> Tuple[str, int]:
-    rows = (
-        db.query(Chat)
-        .filter(Chat.workspace_id == workspace_id)
-        .order_by(Chat.timestamp.desc())
-        .limit(max(0, limit))
-        .all()
+    rows = repo.list_chats_for_workspace(
+        workspace_id,
+        ascending=False,
+        limit=max(0, limit),
     )
     if not rows:
         return "", 0
@@ -108,7 +105,7 @@ def _recent_chat_context(
 @router.post("/")
 async def chat_with_papers(
     chat_msg: ChatMessage,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     if not client:
@@ -118,20 +115,14 @@ async def chat_with_papers(
     if not question:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == chat_msg.workspace_id, Workspace.user_id == current_user.id)
-        .first()
-    )
+    workspace = repo.find_workspace_for_user(chat_msg.workspace_id, current_user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    paper_query = db.query(Paper).filter(Paper.workspace_id == chat_msg.workspace_id)
+    clean_ids = None
     if chat_msg.selected_paper_ids:
         clean_ids = sorted({paper_id for paper_id in chat_msg.selected_paper_ids if isinstance(paper_id, int) and paper_id > 0})
-        if clean_ids:
-            paper_query = paper_query.filter(Paper.id.in_(clean_ids))
-    workspace_papers = paper_query.all()
+    workspace_papers = repo.list_papers_for_workspace(chat_msg.workspace_id, clean_ids)
     if not workspace_papers:
         raise HTTPException(
             status_code=400,
@@ -139,7 +130,7 @@ async def chat_with_papers(
         )
     context = build_context(workspace_papers, question)
     conversation_context, recent_chat_turns = (
-        _recent_chat_context(db, chat_msg.workspace_id) if chat_msg.include_recent_chats else ("", 0)
+        _recent_chat_context(repo, chat_msg.workspace_id) if chat_msg.include_recent_chats else ("", 0)
     )
 
     system_prompt = (
@@ -170,19 +161,13 @@ async def chat_with_papers(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            **model_config(longform=False, max_tokens=2400, temperature=0.18),
+            **model_config(task="chat", longform=False, max_tokens=2400, temperature=0.18),
         )
         ai_response = (response.choices[0].message.content or "").strip()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(exc)}")
 
-    new_chat = Chat(
-        message=question,
-        response=ai_response,
-        workspace_id=chat_msg.workspace_id,
-    )
-    db.add(new_chat)
-    db.commit()
+    repo.create_chat(chat_msg.workspace_id, question, ai_response)
 
     return {
         "response": ai_response,

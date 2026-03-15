@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 import { toAppPath } from '../utils/routing';
+import { clearAuthSession } from '../utils/authSession';
 
 interface SidebarProps {
   userEmail?: string;
@@ -29,14 +30,15 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile
 
   const isActive = (path: string) => {
     if (path === '/home') {
-      return location.pathname === '/home' || (location.pathname === '/' && localStorage.getItem('token'));
+      return location.pathname === '/home';
     }
     return location.pathname.startsWith(path);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    window.location.href = toAppPath('/login');
+    void clearAuthSession().finally(() => {
+      window.location.href = toAppPath('/login');
+    });
   };
 
   return (

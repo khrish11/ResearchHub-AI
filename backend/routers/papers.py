@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal, get_db
 from models import SearchHistory, User, Paper, Workspace
+from repositories import FirebaseResearchRepository, ResearchRepository, SqlAlchemyResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
@@ -366,57 +367,35 @@ def _record_search_history(
         "source_status": source_status or {},
     }
 
-    db = SessionLocal()
     try:
-        latest = (
-            db.query(SearchHistory)
-            .filter(SearchHistory.user_id == user_id, SearchHistory.source == "global_merged")
-            .order_by(SearchHistory.created_at.desc())
-            .first()
-        )
-        now_utc = datetime.now(timezone.utc)
-        should_update_latest = False
-        if latest and str(latest.query or "").strip().lower() == trimmed_query.lower():
-            created = latest.created_at
-            if created is not None:
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                age_seconds = abs((now_utc - created).total_seconds())
-                should_update_latest = age_seconds <= 240
-
-        if should_update_latest and latest is not None:
-            latest.result_count = max(0, int(result_count or 0))
-            latest.filters_json = json.dumps(payload)
-            latest.created_at = now_utc
-        else:
-            db.add(
-                SearchHistory(
-                    user_id=user_id,
-                    query=trimmed_query[:300],
-                    source="global_merged",
-                    result_count=max(0, int(result_count or 0)),
-                    filters_json=json.dumps(payload),
-                    created_at=now_utc,
-                )
+        backend = (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower()
+        if backend == "firebase":
+            FirebaseResearchRepository().record_search_history(
+                user_id=user_id,
+                query=trimmed_query,
+                source="global_merged",
+                result_count=max(0, int(result_count or 0)),
+                filters_json=json.dumps(payload),
+                dedupe_seconds=240,
+                max_items=250,
             )
-        db.commit()
+            return
 
-        old_rows = (
-            db.query(SearchHistory.id)
-            .filter(SearchHistory.user_id == user_id)
-            .order_by(SearchHistory.created_at.desc())
-            .offset(250)
-            .all()
-        )
-        old_ids = [int(row[0]) for row in old_rows]
-        if old_ids:
-            db.query(SearchHistory).filter(SearchHistory.id.in_(old_ids)).delete(synchronize_session=False)
-            db.commit()
+        db = SessionLocal()
+        try:
+            SqlAlchemyResearchRepository(db).record_search_history(
+                user_id=user_id,
+                query=trimmed_query,
+                source="global_merged",
+                result_count=max(0, int(result_count or 0)),
+                filters_json=json.dumps(payload),
+                dedupe_seconds=240,
+                max_items=250,
+            )
+        finally:
+            db.close()
     except Exception:
         logging.exception("Failed to record search history")
-        db.rollback()
-    finally:
-        db.close()
 
 
 def _get_nasa_token() -> str:
@@ -4789,17 +4768,11 @@ async def search_global(
 @router.get("/search-history")
 def get_search_history(
     limit: int = 25,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     page_size = max(1, min(limit, 200))
-    rows = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(page_size)
-        .all()
-    )
+    rows = repo.list_search_history_for_user(current_user.id, limit=page_size)
     items: List[Dict[str, Any]] = []
     for row in rows:
         filters: Dict[str, Any] = {}
@@ -4830,17 +4803,11 @@ def get_search_history(
 @router.get("/search-history/insights")
 def get_search_history_insights(
     limit: int = 120,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     size = max(10, min(limit, 500))
-    rows = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(size)
-        .all()
-    )
+    rows = repo.list_search_history_for_user(current_user.id, limit=size)
 
     query_counts: Dict[str, int] = {}
     weighted_counts: Dict[str, float] = {}
@@ -4893,20 +4860,16 @@ def get_search_history_insights(
 @router.delete("/search-history")
 def delete_search_history(
     item_id: Optional[int] = None,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(SearchHistory).filter(SearchHistory.user_id == current_user.id)
     if item_id is not None:
-        row = query.filter(SearchHistory.id == item_id).first()
-        if not row:
+        deleted = repo.delete_search_history(current_user.id, item_id=item_id)
+        if not deleted:
             raise HTTPException(status_code=404, detail="Search history item not found.")
-        db.delete(row)
-        db.commit()
         return {"message": "Search history item deleted."}
 
-    deleted = query.delete(synchronize_session=False)
-    db.commit()
+    deleted = repo.delete_search_history(current_user.id)
     return {"message": "Search history cleared.", "deleted": int(deleted or 0)}
 
 
@@ -5396,15 +5359,35 @@ async def source_health(current_user: User = Depends(get_current_user)):
     return {"checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "sources": sources}
 
 
-def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int) -> Workspace:
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id, Workspace.user_id == user_id)
-        .first()
-    )
+def _research_repo(db: Session) -> ResearchRepository:
+    return get_research_repository(db)
+
+
+def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int):
+    workspace = _research_repo(db).find_workspace_for_user(workspace_id, user_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+def _find_existing_workspace_paper(
+    repo: ResearchRepository,
+    workspace_id: int,
+    *,
+    doi: str = "",
+    normalized_title: str = "",
+):
+    papers = repo.list_papers_for_workspace(workspace_id)
+    if doi:
+        for paper in papers:
+            if str(getattr(paper, "doi", "") or "").strip().lower() == doi.lower():
+                return paper
+    if normalized_title:
+        for paper in papers:
+            current_title = re.sub(r"\s+", " ", str(getattr(paper, "title", "") or "").strip().lower())
+            if current_title == normalized_title:
+                return paper
+    return None
 
 
 async def _resolve_access_payload(
@@ -5453,6 +5436,7 @@ async def import_institutional_papers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    repo = _research_repo(db)
     workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
     entries: List[InstitutionalPaperEntry] = []
     if payload.entries:
@@ -5475,19 +5459,12 @@ async def import_institutional_papers(
             continue
 
         doi_norm = _normalize_doi(str(entry.doi or ""))
-        existing: Optional[Paper] = None
-        if doi_norm:
-            existing = (
-                db.query(Paper)
-                .filter(Paper.workspace_id == workspace.id, Paper.doi == doi_norm)
-                .first()
-            )
-        if not existing:
-            existing = (
-                db.query(Paper)
-                .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == title.lower())
-                .first()
-            )
+        existing = _find_existing_workspace_paper(
+            repo,
+            workspace.id,
+            doi=doi_norm,
+            normalized_title=title.lower(),
+        )
 
         try:
             resolved = await _resolve_access_payload(
@@ -5520,26 +5497,25 @@ async def import_institutional_papers(
             existing.full_text_available = bool(
                 resolved.get("full_text_available") or existing.full_text_available
             )
+            repo.save(existing)
             updated += 1
             continue
 
-        paper = Paper(
+        paper = repo.create_paper(
+            workspace_id=workspace.id,
             title=title[:600],
             authors=", ".join(entry.authors or [])[:2000],
             abstract=str(entry.abstract or "").strip() or "Institutional import entry.",
             url=str(entry.url or "").strip() or None,
-            doi=doi_norm or None,
-            source=str(resolved.get("source") or "institutional_portal"),
-            pdf_url=str(resolved.get("pdf_url") or "").strip() or None,
-            institutional_url=str(resolved.get("institutional_url") or "").strip() or None,
-            access_type=str(resolved.get("access_type") or "institutional"),
-            full_text_available=bool(resolved.get("full_text_available")),
-            workspace_id=workspace.id,
         )
-        db.add(paper)
+        paper.doi = doi_norm or None
+        paper.source = str(resolved.get("source") or "institutional_portal")
+        paper.pdf_url = str(resolved.get("pdf_url") or "").strip() or None
+        paper.institutional_url = str(resolved.get("institutional_url") or "").strip() or None
+        paper.access_type = str(resolved.get("access_type") or "institutional")
+        paper.full_text_available = bool(resolved.get("full_text_available"))
+        repo.save(paper)
         imported += 1
-
-    db.commit()
 
     return {
         "workspace_id": workspace.id,
@@ -5559,14 +5535,13 @@ async def resolve_access(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    paper: Optional[Paper] = None
+    repo = _research_repo(db)
+    paper = None
     if payload.workspace_id and payload.paper_id:
         workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
-        paper = (
-            db.query(Paper)
-            .filter(Paper.id == payload.paper_id, Paper.workspace_id == workspace.id)
-            .first()
-        )
+        paper = repo.find_paper_for_user(payload.paper_id, current_user.id)
+        if paper and int(getattr(paper, "workspace_id", 0) or 0) != int(workspace.id):
+            paper = None
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found in workspace.")
 
@@ -5596,8 +5571,7 @@ async def resolve_access(
         paper.source = str(resolved.get("source") or paper.source or "manual_import")
         paper.access_type = str(resolved.get("access_type") or "metadata_only")
         paper.full_text_available = bool(resolved.get("full_text_available"))
-        db.commit()
-        db.refresh(paper)
+        repo.save(paper)
 
     return {
         "paper_id": paper.id if paper else None,
@@ -5612,8 +5586,9 @@ async def resolve_workspace_access(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    repo = _research_repo(db)
     workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
-    rows = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+    rows = repo.list_papers_for_workspace(workspace.id)
     if not rows:
         return {
             "workspace_id": workspace.id,
@@ -5683,13 +5658,9 @@ async def resolve_workspace_access(
                 }
             )
 
-    db.commit()
+        repo.save(row)
 
-    full_text_count = (
-        db.query(Paper)
-        .filter(Paper.workspace_id == workspace.id, Paper.full_text_available.is_(True))
-        .count()
-    )
+    full_text_count = sum(1 for row in repo.list_papers_for_workspace(workspace.id) if bool(row.full_text_available))
 
     return {
         "workspace_id": workspace.id,
@@ -5712,30 +5683,20 @@ async def import_paper(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == paper_data.workspace_id, Workspace.user_id == current_user.id)
-        .first()
-    )
+    repo = _research_repo(db)
+    workspace = repo.find_workspace_for_user(paper_data.workspace_id, current_user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     normalized_doi = _normalize_doi(paper_data.doi or "")
     normalized_title = re.sub(r"\s+", " ", str(paper_data.title or "").strip().lower())
 
-    existing: Optional[Paper] = None
-    if normalized_doi:
-        existing = (
-            db.query(Paper)
-            .filter(Paper.workspace_id == workspace.id, Paper.doi == normalized_doi)
-            .first()
-        )
-    if not existing and normalized_title:
-        existing = (
-            db.query(Paper)
-            .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == normalized_title)
-            .first()
-        )
+    existing = _find_existing_workspace_paper(
+        repo,
+        workspace.id,
+        doi=normalized_doi,
+        normalized_title=normalized_title,
+    )
 
     source_name = str(paper_data.source or "manual_import").strip().lower()[:120] or "manual_import"
     pdf_url = str(paper_data.pdf_url or "").strip()
@@ -5764,25 +5725,25 @@ async def import_paper(
             or existing.access_type
             or ("open_access" if full_text_available else "metadata_only")
         )
-        db.commit()
-        db.refresh(existing)
+        repo.save(existing)
         return {"message": "Paper updated successfully", "paper_id": existing.id, "updated": True}
 
-    new_paper = Paper(
+    new_paper = repo.create_paper(
+        workspace_id=paper_data.workspace_id,
         title=paper_data.title.strip()[:600],
         authors=", ".join(paper_data.authors or []),
         abstract=paper_data.abstract,
         url=paper_data.url,
-        doi=normalized_doi or None,
-        bibcode=paper_data.bibcode,
-        source=source_name,
         pdf_url=pdf_url or None,
-        institutional_url=institutional_url or None,
-        access_type=(str(paper_data.access_type or "").strip().lower() or ("open_access" if full_text_available else "metadata_only")),
-        full_text_available=bool(full_text_available),
-        workspace_id=paper_data.workspace_id,
     )
-    db.add(new_paper)
-    db.commit()
-    db.refresh(new_paper)
+    new_paper.doi = normalized_doi or None
+    new_paper.bibcode = paper_data.bibcode
+    new_paper.source = source_name
+    new_paper.institutional_url = institutional_url or None
+    new_paper.access_type = (
+        str(paper_data.access_type or "").strip().lower()
+        or ("open_access" if full_text_available else "metadata_only")
+    )
+    new_paper.full_text_available = bool(full_text_available)
+    repo.save(new_paper)
     return {"message": "Paper imported successfully", "paper_id": new_paper.id, "updated": False}

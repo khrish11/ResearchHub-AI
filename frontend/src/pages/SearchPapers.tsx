@@ -16,8 +16,6 @@ import {
   Calendar,
   FileText,
   RefreshCw,
-  Sparkles,
-  Layers3,
   History,
   Trash2,
   X,
@@ -25,6 +23,8 @@ import {
 import Layout from '../components/Layout';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
+import { openFileUrl } from '../utils/openFile';
+import { getUiDensityDefault } from '../utils/firebaseClient';
 import { useToast } from '../contexts/ToastContext';
 
 interface Paper {
@@ -94,8 +94,6 @@ interface SessionStatePayload {
 interface SourceCatalogEntry {
   key: string;
   label: string;
-  family: string;
-  setup: string;
   note: string;
 }
 
@@ -167,67 +165,34 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 const SOURCE_CATALOG: SourceCatalogEntry[] = [
-  { key: 'openalex', label: 'OpenAlex', family: 'Scholarly graph', setup: 'Optional mailto', note: 'Broad metadata and citation graph coverage.' },
-  { key: 'econbiz', label: 'EconBiz', family: 'Economics', setup: 'Public', note: 'Economics and business literature via official public API.' },
-  { key: 'jstage', label: 'J-STAGE', family: 'Japanese journals', setup: 'Public + attribution', note: 'Japanese journal discovery via official J-STAGE WebAPI.' },
-  { key: 'orkg', label: 'ORKG', family: 'Knowledge graph', setup: 'Public', note: 'Open Research Knowledge Graph paper entries and linked metadata.' },
-  { key: 'semantic', label: 'Semantic Scholar', family: 'Scholarly graph', setup: 'Optional API key', note: 'High-signal ranking and metadata enrichment.' },
-  { key: 'arxiv', label: 'ArXiv', family: 'Preprints', setup: 'Public', note: 'Fast open preprint search for technical fields.' },
-  { key: 'crossref', label: 'Crossref', family: 'DOI registry', setup: 'Optional mailto', note: 'Cross-publisher DOI metadata and venue coverage.' },
-  { key: 'openaire', label: 'OpenAIRE', family: 'Repositories', setup: 'Public', note: 'European repositories and publications.' },
-  { key: 'hal', label: 'HAL', family: 'Repositories', setup: 'Public', note: 'French open archive for papers and preprints.' },
-  { key: 'zenodo', label: 'Zenodo', family: 'Repositories', setup: 'Public', note: 'Research outputs with strong OA links.' },
-  { key: 'figshare', label: 'Figshare', family: 'Repositories', setup: 'Public', note: 'Article and artifact discovery with direct assets.' },
-  { key: 'osf', label: 'OSF Preprints', family: 'Preprints', setup: 'Public', note: 'Open preprints and affiliated providers.' },
-  { key: 'dryad', label: 'Dryad', family: 'Repositories', setup: 'Public', note: 'Dataset-backed research outputs.' },
-  { key: 'datacite', label: 'DataCite', family: 'DOI registry', setup: 'Public', note: 'Research works and persistent identifier metadata.' },
-  { key: 'dblp', label: 'DBLP', family: 'Computer science', setup: 'Public', note: 'Computer science publication index.' },
-  { key: 'inspire', label: 'INSPIRE-HEP', family: 'Physics', setup: 'Public', note: 'Physics and high-energy literature.' },
-  { key: 'nasa', label: 'NASA ADS', family: 'Astronomy', setup: 'Optional token', note: 'Astrophysics and space-science coverage.' },
-  { key: 'springer', label: 'Springer', family: 'Publishers', setup: 'Optional API key', note: 'Publisher catalog expansion where keys are available.' },
-  { key: 'pubmed', label: 'PubMed', family: 'Biomedical', setup: 'Optional API key', note: 'NCBI biomedical index with strong recall.' },
-  { key: 'europepmc', label: 'Europe PMC', family: 'Biomedical', setup: 'Public', note: 'Open biomedical full text and metadata.' },
-  { key: 'pmc', label: 'PMC', family: 'Biomedical', setup: 'Public', note: 'PubMed Central full-text archive.' },
-  { key: 'doaj', label: 'DOAJ', family: 'Open access', setup: 'Public', note: 'Directory of open access journal articles.' },
-  { key: 'plos', label: 'PLOS', family: 'Open access', setup: 'Public', note: 'Open publisher search for life sciences.' },
-  { key: 'elife', label: 'eLife', family: 'Open access', setup: 'Public', note: 'Open life-science journal coverage.' },
-  { key: 'biorxiv', label: 'bioRxiv', family: 'Preprints', setup: 'Public', note: 'Biology preprints.' },
-  { key: 'medrxiv', label: 'medRxiv', family: 'Preprints', setup: 'Public', note: 'Medical preprints.' },
-  { key: 'eric', label: 'ERIC', family: 'Education', setup: 'Public', note: 'Education research and policy literature.' },
-  { key: 'osti', label: 'OSTI', family: 'Energy / DOE', setup: 'Public', note: 'DOE publications and technical reports.' },
-];
-
-const OPERATOR_CHECKLIST = [
-  {
-    title: 'Set OPENALEX_MAILTO, CROSSREF_MAILTO, and UNPAYWALL_MAILTO',
-    impact: 'Moves you into polite pools and improves full-text resolution quality.',
-    level: 'Recommended',
-  },
-  {
-    title: 'Add SEMANTIC_SCHOLAR_API_KEY',
-    impact: 'Improves Semantic Scholar throughput for heavier usage.',
-    level: 'Optional',
-  },
-  {
-    title: 'Add NCBI_API_KEY',
-    impact: 'Raises PubMed quota ceiling for biomedical-heavy teams.',
-    level: 'Optional',
-  },
-  {
-    title: 'Add NASA_ADS_TOKEN and SPRINGER_META_KEY',
-    impact: 'Unlocks astronomy and Springer catalog breadth.',
-    level: 'Optional',
-  },
-  {
-    title: 'Add J-STAGE attribution in your deployed source credits',
-    impact: 'Their API terms require visible J-STAGE credit when you display their content.',
-    level: 'Required',
-  },
-  {
-    title: 'Run scripts/install-git-hooks.ps1 on every workstation',
-    impact: 'Keeps the local main-branch push guard enforced on free private GitHub.',
-    level: 'Required',
-  },
+  { key: 'openalex', label: 'OpenAlex', note: 'Broad metadata and citation graph coverage.' },
+  { key: 'econbiz', label: 'EconBiz', note: 'Economics and business literature via official public API.' },
+  { key: 'jstage', label: 'J-STAGE', note: 'Japanese journal discovery via official J-STAGE WebAPI.' },
+  { key: 'orkg', label: 'ORKG', note: 'Open Research Knowledge Graph paper entries and linked metadata.' },
+  { key: 'semantic', label: 'Semantic Scholar', note: 'High-signal ranking and metadata enrichment.' },
+  { key: 'arxiv', label: 'ArXiv', note: 'Fast open preprint search for technical fields.' },
+  { key: 'crossref', label: 'Crossref', note: 'Cross-publisher DOI metadata and venue coverage.' },
+  { key: 'openaire', label: 'OpenAIRE', note: 'European repositories and publications.' },
+  { key: 'hal', label: 'HAL', note: 'French open archive for papers and preprints.' },
+  { key: 'zenodo', label: 'Zenodo', note: 'Research outputs with strong OA links.' },
+  { key: 'figshare', label: 'Figshare', note: 'Article and artifact discovery with direct assets.' },
+  { key: 'osf', label: 'OSF Preprints', note: 'Open preprints and affiliated providers.' },
+  { key: 'dryad', label: 'Dryad', note: 'Dataset-backed research outputs.' },
+  { key: 'datacite', label: 'DataCite', note: 'Research works and persistent identifier metadata.' },
+  { key: 'dblp', label: 'DBLP', note: 'Computer science publication index.' },
+  { key: 'inspire', label: 'INSPIRE-HEP', note: 'Physics and high-energy literature.' },
+  { key: 'nasa', label: 'NASA ADS', note: 'Astrophysics and space-science coverage.' },
+  { key: 'springer', label: 'Springer', note: 'Publisher catalog expansion where keys are available.' },
+  { key: 'pubmed', label: 'PubMed', note: 'NCBI biomedical index with strong recall.' },
+  { key: 'europepmc', label: 'Europe PMC', note: 'Open biomedical full text and metadata.' },
+  { key: 'pmc', label: 'PMC', note: 'PubMed Central full-text archive.' },
+  { key: 'doaj', label: 'DOAJ', note: 'Directory of open access journal articles.' },
+  { key: 'plos', label: 'PLOS', note: 'Open publisher search for life sciences.' },
+  { key: 'elife', label: 'eLife', note: 'Open life-science journal coverage.' },
+  { key: 'biorxiv', label: 'bioRxiv', note: 'Biology preprints.' },
+  { key: 'medrxiv', label: 'medRxiv', note: 'Medical preprints.' },
+  { key: 'eric', label: 'ERIC', note: 'Education research and policy literature.' },
+  { key: 'osti', label: 'OSTI', note: 'DOE publications and technical reports.' },
 ];
 
 const OPEN_ACCESS_SOURCES = new Set([
@@ -394,6 +359,17 @@ const SearchPapers: React.FC = () => {
   const [showInstitutionalImport, setShowInstitutionalImport] = useState(false);
   const [resolvingAccess, setResolvingAccess] = useState<Record<string, boolean>>({});
 
+  const handleOpenFile = useCallback(
+    async (url: string, fallbackFilename: string) => {
+      try {
+        await openFileUrl(url, fallbackFilename);
+      } catch (err: unknown) {
+        toastError(apiErrorMessage(err, 'Failed to open file.'));
+      }
+    },
+    [toastError],
+  );
+
   const inputRef = useRef<HTMLInputElement | null>(null);
   const activeControllerRef = useRef<AbortController | null>(null);
   const runIdRef = useRef(0);
@@ -454,6 +430,9 @@ const SearchPapers: React.FC = () => {
         const restoredResultView = String((extra as Record<string, unknown>).resultView || '');
         if (restoredResultView === 'comfortable' || restoredResultView === 'compact') {
           setResultView(restoredResultView as ResultView);
+        } else {
+          const uiDensity = await getUiDensityDefault();
+          setResultView(uiDensity === 'minimal' ? 'compact' : 'comfortable');
         }
 
         if (list.length > 0) {
@@ -831,52 +810,6 @@ const SearchPapers: React.FC = () => {
       .sort((a, b) => b.count - a.count);
   }, [sourceStatusEntries]);
 
-  const sourceStatusByCanonical = useMemo(() => {
-    const mapped: Record<string, SourceStatusMeta> = {};
-    Object.entries(sourceStatus).forEach(([name, meta]) => {
-      const key = canonicalSourceKey(name);
-      if (!key) return;
-      const count = Number(meta?.count || 0);
-      const existing = mapped[key];
-      if (!existing || count >= Number(existing.count || 0)) {
-        mapped[key] = {
-          status: meta?.status,
-          count,
-          detail: meta?.detail,
-        };
-      }
-    });
-    return mapped;
-  }, [sourceStatus]);
-
-  const sourceCountsByCanonical = useMemo(() => {
-    const mapped: Record<string, number> = {};
-    Object.entries(sourceCounts).forEach(([name, count]) => {
-      const key = canonicalSourceKey(name);
-      if (!key) return;
-      mapped[key] = Math.max(mapped[key] || 0, Number(count || 0));
-    });
-    Object.entries(sourceStatusByCanonical).forEach(([name, meta]) => {
-      mapped[name] = Math.max(mapped[name] || 0, Number(meta?.count || 0));
-    });
-    return mapped;
-  }, [sourceCounts, sourceStatusByCanonical]);
-
-  const sourceAtlasCards = useMemo(
-    () =>
-      SOURCE_CATALOG.map((entry) => {
-        const meta = sourceStatusByCanonical[entry.key];
-        const count = Number(sourceCountsByCanonical[entry.key] || 0);
-        return {
-          ...entry,
-          count,
-          status: String(meta?.status || (count > 0 ? 'ok' : 'idle')).toLowerCase(),
-          detail: String(meta?.detail || entry.note),
-        };
-      }),
-    [sourceCountsByCanonical, sourceStatusByCanonical],
-  );
-
   useEffect(() => {
     if (sourceFilter === 'all') {
       return;
@@ -892,15 +825,8 @@ const SearchPapers: React.FC = () => {
   );
   const canRenderMore = renderedResults.length < filteredResults.length;
   const knownSourceCount = SOURCE_CATALOG.length;
-  const respondingSourceCount = sourceAtlasCards.filter((item) => ['ok', 'warning'].includes(item.status)).length;
-  const activeResultSourceCount = sourceAtlasCards.filter((item) => item.count > 0).length;
-  const openAccessCount = filteredResults.filter((paper) => isLikelyOpenAccess(paper)).length;
-  const fullTextCount = filteredResults.filter(
-    (paper) => Boolean(paper.full_text_available) || Boolean(paper.full_text_url) || hasPdfLink(paper),
-  ).length;
-  const recentResultCount = filteredResults.filter((paper) => parseYear(paper.published) >= 2024).length;
+  const respondingSourceCount = sourceFilterOptions.length;
   const importReadyCount = renderedResults.filter((paper) => !importedSet.has(normalizeKey(paper))).length;
-  const highlightedAtlasCards = sourceAtlasCards.filter((item) => item.count > 0).slice(0, 6);
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null,
     [activeWorkspaceId, workspaces],
@@ -1250,84 +1176,49 @@ const SearchPapers: React.FC = () => {
   return (
     <Layout>
       <section className="space-y-6 pb-8">
-        <div className="overflow-hidden rounded-[32px] border border-slate-200 bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.16),_transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(34,197,94,0.14),_transparent_28%),linear-gradient(135deg,_rgba(255,255,255,0.98),_rgba(248,250,252,0.94))] shadow-[0_28px_90px_-48px_rgba(15,23,42,0.45)]">
-          <div className="grid gap-6 p-6 md:p-8 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)]">
-            <div className="space-y-5">
-              <div>
-                <p className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.28em] text-slate-500">
-                  <Sparkles className="h-3.5 w-3.5 text-sky-600" />
-                  Unified Multi-Source Search
-                </p>
-                <h2 className="max-w-3xl text-3xl font-semibold tracking-tight text-slate-950 md:text-4xl">
-                  Search across the strongest public research paper rails in one place.
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600" role="status" aria-live="polite">
-                  {statusText}
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                <span className="rounded-full border border-slate-200 bg-white/80 px-3 py-1">
-                  Mode: <span className="font-semibold text-slate-900">{searchMode}</span>
-                </span>
-                <span className="rounded-full border border-slate-200 bg-white/80 px-3 py-1">
-                  {SEARCH_MODE_COPY[searchMode]}
-                </span>
-                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700">
-                  New public additions live: ERIC + OSTI + PMC + EconBiz + J-STAGE + ORKG
-                </span>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => exportCitations('txt')}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/85 px-3 py-2 text-slate-700 hover:bg-white"
-                >
-                  <Download className="h-4 w-4" />
-                  Export TXT
-                </button>
-                <button
-                  type="button"
-                  onClick={() => exportCitations('csv')}
-                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white/85 px-3 py-2 text-slate-700 hover:bg-white"
-                >
-                  <FileText className="h-4 w-4" />
-                  Export CSV
-                </button>
-              </div>
+        <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Paper search</p>
+              <h2 className="text-3xl font-semibold tracking-tight text-slate-950">Search across connected research sources.</h2>
+              <p className="max-w-2xl text-sm leading-6 text-slate-600" role="status" aria-live="polite">
+                {statusText}
+              </p>
             </div>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-3xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Source Rails</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">{knownSourceCount}</p>
-                <p className="mt-1 text-sm text-slate-600">Canonical paper sources wired into search.</p>
-              </div>
-              <div className="rounded-3xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Responding Now</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">
-                  {respondingSourceCount}
-                  <span className="ml-1 text-lg text-slate-400">/ {knownSourceCount}</span>
-                </p>
-                <p className="mt-1 text-sm text-slate-600">Sources with live or warning state in the current run.</p>
-              </div>
-              <div className="rounded-3xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Open Access In View</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">{openAccessCount}</p>
-                <p className="mt-1 text-sm text-slate-600">Filtered results that look openly accessible.</p>
-              </div>
-              <div className="rounded-3xl border border-white/70 bg-white/80 p-4 shadow-sm">
-                <p className="text-[11px] uppercase tracking-[0.22em] text-slate-500">Full Text Ready</p>
-                <p className="mt-2 text-3xl font-semibold text-slate-950">{fullTextCount}</p>
-                <p className="mt-1 text-sm text-slate-600">Records with full text or direct PDF paths.</p>
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => exportCitations('txt')}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700 hover:bg-slate-50"
+              >
+                <Download className="h-4 w-4" />
+                Export TXT
+              </button>
+              <button
+                type="button"
+                onClick={() => exportCitations('csv')}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700 hover:bg-slate-50"
+              >
+                <FileText className="h-4 w-4" />
+                Export CSV
+              </button>
             </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
+              Mode: <span className="font-semibold text-slate-900">{searchMode}</span>
+            </span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
+              {SEARCH_MODE_COPY[searchMode]}
+            </span>
+            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1">
+              Sources responding: <span className="font-semibold text-slate-900">{respondingSourceCount}/{knownSourceCount}</span>
+            </span>
           </div>
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(330px,0.85fr)]">
-          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-[0_20px_70px_-45px_rgba(15,23,42,0.45)] space-y-5">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-5">
             <div className="flex gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
@@ -1373,10 +1264,7 @@ const SearchPapers: React.FC = () => {
 
           <div className="grid gap-3 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-              <p className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                <Layers3 className="h-3.5 w-3.5 text-indigo-500" />
-                Search controls
-              </p>
+              <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Search controls</p>
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="block text-sm text-slate-500">
                   <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Import target</span>
@@ -1692,116 +1580,22 @@ const SearchPapers: React.FC = () => {
                         )}
                       </div>
                     </div>
-                  ))}
+                ))}
               </div>
             )}
           </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+            Includes J-STAGE metadata where available.{' '}
+            <a
+              href="https://www.jstage.jst.go.jp/"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-slate-900 underline underline-offset-2"
+            >
+              Powered by J-STAGE
+              <ExternalLink className="h-3 w-3" />
+            </a>
           </div>
-          <aside className="space-y-5">
-            <div className="rounded-3xl border border-slate-200 bg-slate-950 p-5 text-white shadow-[0_24px_70px_-40px_rgba(15,23,42,0.75)]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-400">From Your Side</p>
-                  <h3 className="mt-2 text-xl font-semibold">Operator checklist</h3>
-                </div>
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">
-                  Public sources need no key
-                </span>
-              </div>
-              <p className="mt-3 text-sm leading-6 text-slate-300">
-                The zero-cost additions are already live. Only the optional keyed sources below still depend on your setup.
-              </p>
-              <div className="mt-4 space-y-3">
-                {OPERATOR_CHECKLIST.map((item) => (
-                  <div key={item.title} className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="text-sm font-medium text-white">{item.title}</p>
-                      <span
-                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] ${
-                          item.level === 'Required'
-                            ? 'bg-rose-500/15 text-rose-200'
-                            : item.level === 'Recommended'
-                            ? 'bg-sky-500/15 text-sky-200'
-                            : 'bg-slate-700 text-slate-200'
-                        }`}
-                      >
-                        {item.level}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-slate-300">{item.impact}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-[0_18px_60px_-45px_rgba(15,23,42,0.45)]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Coverage Atlas</p>
-                  <h3 className="mt-2 text-xl font-semibold text-slate-900">Source network</h3>
-                </div>
-                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600">
-                  {activeResultSourceCount} contributing
-                </span>
-              </div>
-              <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                {(highlightedAtlasCards.length > 0 ? highlightedAtlasCards : sourceAtlasCards.slice(0, 6)).map((item) => {
-                  const isActive = sourceFilter !== 'all' && sourceFilter === item.key;
-                  const toneClass =
-                    item.status === 'ok'
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                      : item.status === 'warning'
-                      ? 'border-amber-200 bg-amber-50 text-amber-800'
-                      : item.status === 'timeout' || item.status === 'error'
-                      ? 'border-rose-200 bg-rose-50 text-rose-800'
-                      : 'border-slate-200 bg-slate-50 text-slate-700';
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setSourceFilter(isActive ? 'all' : item.key)}
-                      className={`rounded-2xl border p-3 text-left transition hover:-translate-y-0.5 ${toneClass} ${
-                        isActive ? 'ring-2 ring-slate-300' : ''
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold">{item.label}</p>
-                          <p className="mt-1 text-[11px] uppercase tracking-[0.14em] opacity-75">{item.family}</p>
-                        </div>
-                        <span className="text-lg font-semibold">{item.count}</span>
-                      </div>
-                      <p className="mt-2 text-xs leading-5 opacity-85">{item.detail}</p>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {SOURCE_CATALOG.map((item) => (
-                  <span
-                    key={item.key}
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] text-slate-600"
-                    title={item.note}
-                  >
-                    {item.label} | {item.setup}
-                  </span>
-                ))}
-              </div>
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-                Includes J-STAGE metadata where available.
-                {' '}
-                <a
-                  href="https://www.jstage.jst.go.jp/"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 font-medium text-slate-900 underline underline-offset-2"
-                >
-                  Powered by J-STAGE
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            </div>
-          </aside>
         </div>
 
         {error && (
@@ -1827,13 +1621,10 @@ const SearchPapers: React.FC = () => {
               </span>
             )}
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
-              2024+ results: {recentResultCount}
+              Sources responding: {respondingSourceCount}/{knownSourceCount}
             </span>
             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
               Ready to import: {importReadyCount}
-            </span>
-            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
-              View: {resultView}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -1862,38 +1653,6 @@ const SearchPapers: React.FC = () => {
             </button>
           </div>
         </div>
-
-        {sourceStatusEntries.length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {sourceStatusEntries.map(([name, meta]) => {
-              const canonical = canonicalSourceKey(name);
-              const sourceName = SOURCE_LABELS[canonical] || SOURCE_LABELS[name] || name;
-              const status = String(meta?.status || 'ok').toLowerCase();
-              const toneClass =
-                status === 'ok'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : status === 'warning'
-                  ? 'bg-amber-50 text-amber-700 border-amber-200'
-                  : status === 'timeout' || status === 'error'
-                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                  : 'bg-slate-100 text-slate-600 border-slate-200';
-              const isActiveSource = sourceFilter !== 'all' && canonical === sourceFilter;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => setSourceFilter(isActiveSource ? 'all' : canonical)}
-                  className={`rounded-full border px-2.5 py-1 text-[11px] transition ${toneClass} ${
-                    isActiveSource ? 'ring-2 ring-slate-300' : ''
-                  }`}
-                  title={sourceName}
-                >
-                  {sourceName}: {Number(meta?.count || 0)}
-                </button>
-              );
-            })}
-          </div>
-        )}
 
         <div className="space-y-4">
           {loading && (
@@ -2011,27 +1770,25 @@ const SearchPapers: React.FC = () => {
                     </a>
 
                     {paper.pdf_url && (
-                      <a
-                        href={paper.pdf_url}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenFile(paper.pdf_url || '', `${paper.title || 'paper'}.pdf`)}
                         className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                       >
                         <FileText className="h-4 w-4" />
                         Open PDF
-                      </a>
+                      </button>
                     )}
 
                     {fullTextLink && (
-                      <a
-                        href={fullTextLink}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenFile(fullTextLink, `${paper.title || 'paper'}-full-text.pdf`)}
                         className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-100"
                       >
                         <FileText className="h-4 w-4" />
                         Open Full Text
-                      </a>
+                      </button>
                     )}
 
                     <button
