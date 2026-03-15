@@ -62,8 +62,9 @@ ACCESS_TOKEN_COOKIE_NAME = "researchhub_access_token"
 REFRESH_TOKEN_COOKIE_NAME = "researchhub_refresh_token"
 COOKIE_SAMESITE = (os.getenv("AUTH_COOKIE_SAMESITE") or "lax").strip().lower() or "lax"
 COOKIE_DOMAIN = (os.getenv("AUTH_COOKIE_DOMAIN") or "").strip() or None
+DEFAULT_AUTH_COOKIE_SECURE = "1" if APP_ENV in {"production", "staging"} else "0"
 COOKIE_SECURE = (
-    os.getenv("AUTH_COOKIE_SECURE", "1" if APP_ENV != "development" else "0").strip().lower() in {"1", "true", "yes"}
+    os.getenv("AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE).strip().lower() in {"1", "true", "yes"}
 )
 _INMEM_REFRESH_STORE: dict[str, dict[str, Any]] = {}
 _INMEM_REFRESH_LOCK = Lock()
