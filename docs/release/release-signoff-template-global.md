@@ -3,17 +3,17 @@
 Date: `2026-03-05`  
 Release version/tag: `global-readiness-baseline-2026-03-05`  
 Environment: `Production`  
-Prepared by: `ResearchHub Dev`
+Prepared by: `Soyog Dev`
 
 ## 1) Approvers
 
 | Function | Name | Decision (Approve/Block) | Date | Notes |
 | --- | --- | --- | --- | --- |
-| Engineering Lead | `ResearchHub Dev` | `Block` | `2026-03-05` | Awaiting closure of external/prod/legal gates |
-| Security Lead | `ResearchHub Dev (acting)` | `Block` | `2026-03-05` | External pentest and prod OWASP evidence pending |
-| Platform/SRE Lead | `ResearchHub Dev (acting)` | `Block` | `2026-03-05` | Edge and 30-day SLO evidence pending |
+| Engineering Lead | `Soyog Dev` | `Block` | `2026-03-05` | Awaiting closure of external/prod/legal gates |
+| Security Lead | `Soyog Dev (acting)` | `Block` | `2026-03-05` | External pentest and prod OWASP evidence pending |
+| Platform/SRE Lead | `Soyog Dev (acting)` | `Block` | `2026-03-05` | Edge and 30-day SLO evidence pending |
 | Legal/Compliance | `External Counsel (to assign)` | `Block` | `2026-03-05` | Legal review/sign-off pending |
-| Product Owner | `ResearchHub Dev` | `Block` | `2026-03-05` | Global launch blocked until all required gates pass |
+| Product Owner | `Soyog Dev` | `Block` | `2026-03-05` | Global launch blocked until all required gates pass |
 
 ## 2) Gate Decision Matrix
 
@@ -31,9 +31,9 @@ Prepared by: `ResearchHub Dev`
 
 | Risk ID | Description | Severity | Mitigation | Owner | Target Date | Approved By |
 | --- | --- | --- | --- | --- | --- | --- |
-| R-001 | External pentest not yet executed on production | Critical | Contract vendor and run full test + retest | `ResearchHub Dev` | `2026-03-26` | `TBD-Security` |
-| R-002 | Manual WCAG audit evidence missing | High | Execute keyboard + screen-reader audit and log findings | `ResearchHub Dev` | `2026-03-17` | `TBD-Product` |
-| R-003 | Runtime drift observed on backend port `8010` | High | Redeploy hardened backend build and verify health endpoints | `ResearchHub Dev` | `2026-03-08` | `TBD-SRE` |
+| R-001 | External pentest not yet executed on production | Critical | Contract vendor and run full test + retest | `Soyog Dev` | `2026-03-26` | `TBD-Security` |
+| R-002 | Manual WCAG audit evidence missing | High | Execute keyboard + screen-reader audit and log findings | `Soyog Dev` | `2026-03-17` | `TBD-Product` |
+| R-003 | Runtime drift observed on backend port `8010` | High | Redeploy hardened backend build and verify health endpoints | `Soyog Dev` | `2026-03-08` | `TBD-SRE` |
 
 ## 4) Change Summary
 
@@ -65,7 +65,7 @@ Prepared by: `ResearchHub Dev`
 
 | Check | Result | Owner | Notes |
 | --- | --- | --- | --- |
-| Error rate normal | `N/A (NO-GO baseline)` | `ResearchHub Dev` | Validate after approved go-live |
-| Latency within SLO | `N/A (NO-GO baseline)` | `ResearchHub Dev` | Validate after approved go-live |
-| Auth + critical flows healthy | `N/A (NO-GO baseline)` | `ResearchHub Dev` | Validate after approved go-live |
-| Alerts stable | `N/A (NO-GO baseline)` | `ResearchHub Dev` | Validate after approved go-live |
+| Error rate normal | `N/A (NO-GO baseline)` | `Soyog Dev` | Validate after approved go-live |
+| Latency within SLO | `N/A (NO-GO baseline)` | `Soyog Dev` | Validate after approved go-live |
+| Auth + critical flows healthy | `N/A (NO-GO baseline)` | `Soyog Dev` | Validate after approved go-live |
+| Alerts stable | `N/A (NO-GO baseline)` | `Soyog Dev` | Validate after approved go-live |

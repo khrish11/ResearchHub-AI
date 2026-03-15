@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, X } from 'lucide-react';
+import { Command, Menu, X } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ThemeToggle from './ThemeToggle';
+import { openCommandPalette } from '../utils/commandPalette';
 
 interface MobileLayoutProps {
   children: React.ReactNode;
@@ -38,23 +39,38 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
       {/* Mobile Header */}
-      <header className="md:hidden bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-4 py-3 flex items-center justify-between">
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="mobile-menu-btn p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-          aria-label="Open menu"
-        >
-          <Menu className="h-5 w-5 text-slate-600 dark:text-slate-300" />
-        </button>
+      <header className="md:hidden sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 px-4 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-800/90">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="mobile-menu-btn p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5 text-slate-600 dark:text-slate-300" />
+            </button>
 
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-            ResearchHub AI
-          </h1>
-        </div>
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
+                Research shell
+              </p>
+              <h1 className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
+                Soyog AI
+              </h1>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={openCommandPalette}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white p-2 text-slate-600 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              aria-label="Open command palette"
+            >
+              <Command className="h-4 w-4" />
+            </button>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 

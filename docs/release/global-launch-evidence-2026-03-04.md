@@ -1,7 +1,7 @@
 # Global Launch Evidence Log
 
 Date: 2026-03-04  
-Environment: local verification on `e:\rezsrch\ResearchHub-AI`  
+Environment: local verification on `<repo-root>`  
 Assessor: Codex
 Updated at: 2026-03-05 20:03:49 +05:30
 
@@ -53,7 +53,7 @@ Evidence collected:
   - `ops/monitoring/alerts.yml`
 - Endpoint coverage validated in backend test suite (`40 passed` total across endpoint/additional tests).
 - Runtime note on currently running service at `127.0.0.1:8010`:
-  - `/` responded with `{"message":"ResearchHub AI API is running"}`
+  - `/` responded with `{"message":"Soyog AI API is running"}`
   - `/health/live` and `/health/ready` returned `404` on that process, indicating deployment/runtime drift versus current code.
 
 Missing for `PASS`:

@@ -1,15 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-
-const CONSENT_KEY = 'researchhub.cookie_consent.v1';
-
-type ConsentState = 'accepted' | 'rejected' | null;
+import { COOKIE_CONSENT_KEY, type CookieConsentState, setCookieConsent } from '../utils/consent';
 
 const CookieConsentBanner: React.FC = () => {
-  const [consent, setConsent] = useState<ConsentState>(null);
+  const [consent, setConsent] = useState<CookieConsentState>(null);
 
   useEffect(() => {
-    const existing = localStorage.getItem(CONSENT_KEY);
+    const existing = localStorage.getItem(COOKIE_CONSENT_KEY);
     if (existing === 'accepted' || existing === 'rejected') {
       setConsent(existing);
       return;
@@ -33,7 +30,7 @@ const CookieConsentBanner: React.FC = () => {
         <button
           type="button"
           onClick={() => {
-            localStorage.setItem(CONSENT_KEY, 'accepted');
+            setCookieConsent('accepted');
             setConsent('accepted');
           }}
           className="rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-900"
@@ -43,7 +40,7 @@ const CookieConsentBanner: React.FC = () => {
         <button
           type="button"
           onClick={() => {
-            localStorage.setItem(CONSENT_KEY, 'rejected');
+            setCookieConsent('rejected');
             setConsent('rejected');
           }}
           className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"

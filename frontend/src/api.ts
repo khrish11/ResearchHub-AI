@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { toAppPath } from './utils/routing';
+import { getAppCheckTokenValue } from './utils/firebaseClient';
+import { clearAuthSession, getBackendToken } from './utils/authSession';
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8010';
 export const GOOGLE_LOGIN_URL = `${API_URL}/auth/google/login`;
 
 const getFrontendRedirectBase = () => {
@@ -23,27 +25,53 @@ export const getGoogleLoginUrl = () => {
 
 const api = axios.create({
     baseURL: API_URL,
+    withCredentials: true,
 });
 
 api.interceptors.request.use((config) => {
-    const token = localStorage.getItem('token');
+    const token = getBackendToken();
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
 });
 
+let refreshInFlight: Promise<void> | null = null;
+
+const shouldSkipAutoAuthHandling = (path: string) =>
+    path.includes('/auth/token') ||
+    path.includes('/auth/register') ||
+    path.includes('/auth/oauth/exchange') ||
+    path.includes('/auth/refresh') ||
+    path.includes('/auth/logout') ||
+    path.includes('/auth/me');
+
 api.interceptors.response.use(
     (response) => response,
-    (error) => {
+    async (error) => {
         const status = error?.response?.status;
         const path = String(error?.config?.url || '');
-        const skipAuthRedirect = path.includes('/auth/token') || path.includes('/auth/register');
+        const originalConfig = error?.config || {};
+        const alreadyRetried = Boolean((originalConfig as { _retry?: boolean })._retry);
 
-        if (status === 401 && !skipAuthRedirect) {
-            localStorage.removeItem('token');
-            if (!window.location.pathname.endsWith('/login')) {
-                window.location.href = toAppPath('/login');
+        if (status === 401 && !shouldSkipAutoAuthHandling(path) && !alreadyRetried) {
+            (originalConfig as { _retry?: boolean })._retry = true;
+            if (!refreshInFlight) {
+                refreshInFlight = api
+                    .post('/auth/refresh')
+                    .then(() => undefined)
+                    .finally(() => {
+                        refreshInFlight = null;
+                    });
+            }
+            try {
+                await refreshInFlight;
+                return api(originalConfig);
+            } catch {
+                await clearAuthSession();
+                if (!window.location.pathname.endsWith('/login')) {
+                    window.location.href = toAppPath('/login');
+                }
             }
         }
 
@@ -52,3 +80,11 @@ api.interceptors.response.use(
 );
 
 export default api;
+
+api.interceptors.request.use(async (config) => {
+    const appCheckToken = await getAppCheckTokenValue();
+    if (appCheckToken) {
+        config.headers['X-Firebase-AppCheck'] = appCheckToken;
+    }
+    return config;
+});

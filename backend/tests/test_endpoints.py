@@ -1,12 +1,15 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 # Use a unique temporary file-backed SQLite DB for tests so SQLAlchemy tables
 # persist across threads used by TestClient and avoid collisions with running
 # servers or other test runs.
 import uuid
 TEST_DB_PATH = os.path.join(os.path.dirname(__file__), f"test_temp_{uuid.uuid4().hex}.db")
 os.environ['DATABASE_URL'] = f'sqlite:///{TEST_DB_PATH}'
+os.environ['STORAGE_BACKEND'] = 'sqlalchemy'
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -33,10 +36,12 @@ from database import engine, Base
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 
+TEST_PASSWORD = "Passw0rd!"
+
 
 
 def register_and_get_token(email: str):
-    resp = client.post('/auth/register', json={'email': email, 'password': 'pw'})
+    resp = client.post('/auth/register', json={'email': email, 'password': TEST_PASSWORD})
     assert resp.status_code == 200
     return resp.json()['access_token']
 
@@ -66,15 +71,171 @@ def test_auth_rate_limit_blocks_when_threshold_exceeded(monkeypatch):
     monkeypatch.setattr(main_mod, 'RATE_LIMIT_AUTH_PER_WINDOW', 1)
     main_mod._RATE_LIMIT_BUCKETS.clear()
 
-    first = client.post('/auth/register', json={'email': 'ratelimit-1@example.com', 'password': 'pw'})
+    first = client.post('/auth/register', json={'email': 'ratelimit-1@example.com', 'password': TEST_PASSWORD})
     assert first.status_code == 200
 
-    second = client.post('/auth/register', json={'email': 'ratelimit-2@example.com', 'password': 'pw'})
+    second = client.post('/auth/register', json={'email': 'ratelimit-2@example.com', 'password': TEST_PASSWORD})
     assert second.status_code == 429
     assert second.json().get('detail')
     assert second.headers.get('retry-after')
 
     main_mod._RATE_LIMIT_BUCKETS.clear()
+
+
+def test_auth_rate_limit_ignores_spoofed_forwarded_for_by_default(monkeypatch):
+    import main as main_mod
+
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_ENABLED', True)
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_WINDOW_SECONDS', 60)
+    monkeypatch.setattr(main_mod, 'RATE_LIMIT_AUTH_PER_WINDOW', 1)
+    monkeypatch.setattr(main_mod, 'TRUST_PROXY_HEADERS', False)
+    main_mod._RATE_LIMIT_BUCKETS.clear()
+
+    first = client.post(
+        '/auth/register',
+        json={'email': 'spoofed-rate-limit-1@example.com', 'password': TEST_PASSWORD},
+        headers={'X-Forwarded-For': '198.51.100.10'},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        '/auth/register',
+        json={'email': 'spoofed-rate-limit-2@example.com', 'password': TEST_PASSWORD},
+        headers={'X-Forwarded-For': '203.0.113.11'},
+    )
+    assert second.status_code == 429
+
+    main_mod._RATE_LIMIT_BUCKETS.clear()
+
+
+def test_register_rejects_weak_passwords():
+    empty = client.post('/auth/register', json={'email': 'weak-empty@example.com', 'password': ''})
+    assert empty.status_code == 400
+    assert 'Password' in empty.json().get('detail', '')
+
+    no_number = client.post('/auth/register', json={'email': 'weak-alpha@example.com', 'password': 'password'})
+    assert no_number.status_code == 400
+    assert 'letter and one number' in no_number.json().get('detail', '')
+
+
+def test_google_oauth_uses_signed_state_cookie_and_one_time_exchange(monkeypatch):
+    import routers.auth as auth_mod
+
+    client.cookies.clear()
+    auth_mod._OAUTH_HANDOFF_STORE.clear()
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'google-client-id')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'google-client-secret')
+    monkeypatch.setattr(auth_mod, 'BACKEND_URL', 'http://localhost:8010')
+    monkeypatch.setattr(auth_mod, 'FRONTEND_URL', 'http://localhost:5173')
+    monkeypatch.setattr(auth_mod, 'GOOGLE_REDIRECT_URI', 'http://localhost:8010/auth/google/callback')
+
+    login_resp = client.get(
+        '/auth/google/login',
+        params={'frontend_redirect': 'http://localhost:5173'},
+        follow_redirects=False,
+    )
+    assert login_resp.status_code in (302, 307)
+    state_cookie = client.cookies.get(auth_mod.GOOGLE_OAUTH_STATE_COOKIE_NAME)
+    assert state_cookie
+
+    login_location = urlparse(login_resp.headers['location'])
+    state_value = parse_qs(login_location.query).get('state', [''])[0]
+    assert state_value == state_cookie
+
+    class DummyResponse:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return DummyResponse({'access_token': 'google-provider-access-token'})
+
+        async def get(self, *args, **kwargs):
+            return DummyResponse(
+                {
+                    'sub': 'google-user-id',
+                    'email': 'google-flow@example.com',
+                    'email_verified': True,
+                    'name': 'Google Flow',
+                    'picture': 'https://example.com/avatar.png',
+                }
+            )
+
+    monkeypatch.setattr(auth_mod.httpx, 'AsyncClient', DummyAsyncClient)
+
+    callback_resp = client.get(
+        '/auth/google/callback',
+        params={'code': 'google-auth-code', 'state': state_value},
+        follow_redirects=False,
+    )
+    assert callback_resp.status_code in (302, 307)
+    redirect_target = callback_resp.headers['location']
+    assert redirect_target.startswith('http://localhost:5173#oauth_code=')
+    assert 'token=' not in redirect_target
+
+    oauth_code = parse_qs(urlparse(redirect_target).fragment).get('oauth_code', [''])[0]
+    assert oauth_code
+
+    exchange_resp = client.post('/auth/oauth/exchange', json={'code': oauth_code})
+    assert exchange_resp.status_code == 200
+    token = exchange_resp.json()['access_token']
+
+    me_resp = client.get('/auth/me', headers={'Authorization': f'Bearer {token}'})
+    assert me_resp.status_code == 200
+    assert me_resp.json()['email'] == 'google-flow@example.com'
+
+    reused = client.post('/auth/oauth/exchange', json={'code': oauth_code})
+    assert reused.status_code == 400
+
+    client.cookies.clear()
+    auth_mod._OAUTH_HANDOFF_STORE.clear()
+
+
+def test_google_oauth_callback_rejects_invalid_state(monkeypatch):
+    import routers.auth as auth_mod
+
+    client.cookies.clear()
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'google-client-id')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'google-client-secret')
+    monkeypatch.setattr(auth_mod, 'FRONTEND_URL', 'http://localhost:5173')
+    monkeypatch.setattr(auth_mod, 'GOOGLE_REDIRECT_URI', 'http://localhost:8010/auth/google/callback')
+
+    login_resp = client.get(
+        '/auth/google/login',
+        params={'frontend_redirect': 'http://localhost:5173'},
+        follow_redirects=False,
+    )
+    assert login_resp.status_code in (302, 307)
+    state_cookie = client.cookies.get(auth_mod.GOOGLE_OAUTH_STATE_COOKIE_NAME)
+    assert state_cookie
+
+    bad_state = f'{state_cookie}tampered'
+    callback_resp = client.get(
+        '/auth/google/callback',
+        params={'code': 'google-auth-code', 'state': bad_state},
+        follow_redirects=False,
+    )
+    assert callback_resp.status_code in (302, 307)
+    assert callback_resp.headers['location'].startswith('http://localhost:5173/login?')
+    assert 'invalid+or+expired' in callback_resp.headers['location']
+
+    client.cookies.clear()
 
 
 def test_compliance_data_rights_and_export_flow():
@@ -1271,6 +1432,100 @@ def test_global_search_cache_reused_across_users(monkeypatch):
     assert r2.json().get('cache_hit') is True
 
 
+def test_global_search_diversifies_relevant_sources(monkeypatch):
+    import routers.papers as papers_mod
+
+    async def europepmc_many(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": f"Catalysis screening report {idx}",
+                    "authors": ["Europe PMC Author"],
+                    "abstract": "Catalysis screening dataset with limited machine context.",
+                    "url": f"https://example.org/europepmc/{idx}",
+                    "published": f"2026-01-{idx + 1:02d}",
+                    "categories": ["catalysis"],
+                    "source": "europe_pmc",
+                }
+                for idx in range(8)
+            ],
+            "notice": None,
+        }
+
+    async def orkg_relevant(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": title,
+                    "authors": ["ORKG Author"],
+                    "abstract": "Machine learning catalysis benchmark with strong graph metadata.",
+                    "url": f"https://example.org/orkg/{idx}",
+                    "published": f"2024-0{idx + 1}-01",
+                    "categories": ["machine learning", "catalysis"],
+                    "source": "orkg",
+                }
+                for idx, title in enumerate(
+                    [
+                        "Machine Learning In Catalysis",
+                        "Catalysis benchmark knowledge graph",
+                        "Graph retrieval for catalytic materials",
+                        "Learning-assisted catalyst ranking",
+                    ]
+                )
+            ],
+            "notice": None,
+        }
+
+    async def jstage_relevant(*args, **kwargs):
+        return {
+            "papers": [
+                {
+                    "title": title,
+                    "authors": ["J-STAGE Author"],
+                    "abstract": "Machine learning catalysis methods from a specialist journal.",
+                    "url": f"https://example.org/jstage/{idx}",
+                    "published": f"2023-0{idx + 1}-01",
+                    "categories": ["machine learning", "catalysis"],
+                    "source": "jstage",
+                }
+                for idx, title in enumerate(
+                    [
+                        "Machine learning for catalytic reaction design",
+                        "Catalysis journals and machine models",
+                        "Surface chemistry prediction with learning systems",
+                        "Learning pipelines for catalyst discovery",
+                    ]
+                )
+            ],
+            "notice": None,
+        }
+
+    monkeypatch.setitem(papers_mod.GLOBAL_SEARCH_SOURCE_PRESETS, 'balanced', ['europepmc', 'orkg', 'jstage'])
+    monkeypatch.setattr(papers_mod, 'search_europepmc', europepmc_many)
+    monkeypatch.setattr(papers_mod, 'search_orkg', orkg_relevant)
+    monkeypatch.setattr(papers_mod, 'search_jstage', jstage_relevant)
+    papers_mod._GLOBAL_SEARCH_CACHE.clear()
+
+    token = register_and_get_token('global-diversity@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    resp = client.get(
+        '/papers/search-global',
+        params={'query': 'machine learning catalysis', 'max_results': 10, 'search_mode': 'balanced'},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    papers = payload.get('papers', [])
+    sources = [paper.get('source') for paper in papers]
+
+    assert len(papers) == 10
+    assert sources[0] in {'orkg', 'jstage'}
+    assert sources.count('europe_pmc') <= 4
+    assert 'orkg' in sources
+    assert 'jstage' in sources
+
+
 def test_workspace_research_report_exports_pdf_and_docx():
     token = register_and_get_token('report-export@example.com')
     headers = {'Authorization': f'Bearer {token}'}
@@ -1714,13 +1969,25 @@ def test_ai_model_selection_endpoint():
     chosen = models[0]
     update = client.post(
         '/ai/models/select',
-        json={'model': chosen, 'apply_to_all': True},
+        json={
+            'model': chosen,
+            'longform_model': chosen,
+            'apply_to_all': False,
+            'task_models': {
+                'chat': chosen,
+                'upload_summary': chosen,
+                'mindmap': chosen,
+                'pipeline': chosen,
+            },
+        },
         headers=headers,
     )
     assert update.status_code == 200
     updated = update.json()
     assert updated.get('active_model') == chosen
     assert updated.get('active_longform_model') == chosen
+    assert updated.get('active_task_models', {}).get('chat') == chosen
+    assert updated.get('active_task_models', {}).get('mindmap') == chosen
 
 
 def test_docspace_roundtrip_and_account_overview():
@@ -1754,3 +2021,184 @@ def test_docspace_roundtrip_and_account_overview():
     overview = overview_resp.json()
     assert int(overview.get('counts', {}).get('workspaces', 0)) >= 1
     assert int(overview.get('counts', {}).get('documents', 0)) >= 1
+
+
+def test_workspace_session_state_roundtrip():
+    token = register_and_get_token('session-state@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'State Workspace'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    update_resp = client.put(
+        '/workspaces/session-state',
+        json={
+            'page_path': f"/workspace/{ws['id']}",
+            'workspace_id': ws['id'],
+            'last_query': 'graph neural operators',
+            'draft_text': 'draft note',
+            'extra': {'tab': 'papers'},
+        },
+        headers=headers,
+    )
+    assert update_resp.status_code == 200
+    updated = update_resp.json()
+    assert updated.get('workspace_id') == ws['id']
+    assert updated.get('last_query') == 'graph neural operators'
+    assert updated.get('extra', {}).get('tab') == 'papers'
+
+    get_resp = client.get('/workspaces/session-state', headers=headers)
+    assert get_resp.status_code == 200
+    fetched = get_resp.json()
+    assert fetched.get('workspace_id') == ws['id']
+    assert fetched.get('page_path') == f"/workspace/{ws['id']}"
+
+
+def test_upload_pdf_saves_paper_to_workspace(monkeypatch):
+    token = register_and_get_token('upload-repo@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'Upload Workspace'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    import routers.upload as upload_mod
+
+    monkeypatch.setattr(upload_mod, 'extract_text_from_pdf', lambda _bytes: 'Methods and results section.')
+    monkeypatch.setattr(upload_mod, 'summarize_with_ai', lambda _text: 'Structured summary.')
+
+    response = client.post(
+        '/papers/upload',
+        headers=headers,
+        data={'workspace_id': str(ws['id']), 'summarize': 'true'},
+        files={'file': ('sample.pdf', b'%PDF-1.4 fake', 'application/pdf')},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get('paper_id')
+
+    ws_detail = client.get(f"/workspaces/{ws['id']}", headers=headers)
+    assert ws_detail.status_code == 200
+    papers = ws_detail.json().get('papers') or []
+    assert any(paper.get('id') == payload['paper_id'] for paper in papers)
+
+
+def test_upload_pdf_stores_file_metadata_when_firebase_storage_enabled(monkeypatch):
+    token = register_and_get_token('upload-storage@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'Upload Storage Workspace'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    import routers.upload as upload_mod
+
+    monkeypatch.setattr(upload_mod, 'extract_text_from_pdf', lambda _bytes: 'Methods and results section.')
+    monkeypatch.setattr(upload_mod, 'summarize_with_ai', lambda _text: 'Structured summary.')
+    monkeypatch.setattr(upload_mod, 'storage_is_configured', lambda: True)
+    monkeypatch.setattr(
+        upload_mod,
+        'upload_bytes',
+        lambda **kwargs: SimpleNamespace(
+            bucket='test-bucket',
+            path=kwargs['storage_path'],
+            gs_url=f"gs://test-bucket/{kwargs['storage_path']}",
+            content_type=kwargs.get('content_type') or 'application/pdf',
+            size_bytes=len(kwargs['data']),
+        ),
+    )
+    monkeypatch.setattr(
+        upload_mod,
+        'download_bytes',
+        lambda **kwargs: SimpleNamespace(
+            data=b'%PDF-1.4 uploaded',
+            content_type='application/pdf',
+            filename='sample.pdf',
+        ),
+    )
+
+    response = client.post(
+        '/papers/upload',
+        headers=headers,
+        data={'workspace_id': str(ws['id']), 'summarize': 'true'},
+        files={'file': ('sample.pdf', b'%PDF-1.4 fake', 'application/pdf')},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get('paper_id')
+    assert payload.get('file_record_id')
+    assert payload.get('storage_bucket') == 'test-bucket'
+    assert '/papers/uploaded/' in str(payload.get('pdf_url') or '')
+
+    files_resp = client.get(f"/workspaces/{ws['id']}/files", headers=headers)
+    assert files_resp.status_code == 200
+    files = files_resp.json()
+    assert len(files) == 1
+    assert files[0]['kind'] == 'uploaded_pdf'
+    assert files[0]['paper_id'] == payload['paper_id']
+
+    download_resp = client.get(f"/papers/uploaded/{payload['paper_id']}/download", headers=headers)
+    assert download_resp.status_code == 200
+    assert download_resp.content.startswith(b'%PDF')
+
+
+def test_workspace_export_persists_file_to_storage_when_enabled(monkeypatch):
+    token = register_and_get_token('workspace-export-storage@example.com')
+    headers = {'Authorization': f'Bearer {token}'}
+
+    ws_resp = client.post('/workspaces/', json={'name': 'Stored Export Workspace'}, headers=headers)
+    assert ws_resp.status_code == 200
+    ws = ws_resp.json()
+
+    imp = client.post(
+        '/papers/import',
+        json={
+            'title': 'Exported Paper',
+            'authors': ['Alice'],
+            'abstract': 'Export me.',
+            'workspace_id': ws['id'],
+        },
+        headers=headers,
+    )
+    assert imp.status_code == 200
+
+    import routers.workspaces as workspaces_mod
+
+    monkeypatch.setattr(workspaces_mod, 'storage_is_configured', lambda: True)
+    monkeypatch.setattr(
+        workspaces_mod,
+        'upload_bytes',
+        lambda **kwargs: SimpleNamespace(
+            bucket='test-bucket',
+            path=kwargs['storage_path'],
+            gs_url=f"gs://test-bucket/{kwargs['storage_path']}",
+            content_type=kwargs.get('content_type') or 'text/csv',
+            size_bytes=len(kwargs['data']),
+        ),
+    )
+    monkeypatch.setattr(
+        workspaces_mod,
+        'download_bytes',
+        lambda **kwargs: SimpleNamespace(
+            data=b'title,authors\nExported Paper,Alice\n',
+            content_type='text/csv',
+            filename='workspace-1.csv',
+        ),
+    )
+
+    export_resp = client.get(f"/workspaces/{ws['id']}/export?format=csv", headers=headers)
+    assert export_resp.status_code == 200
+    assert export_resp.headers.get('x-storage-file-id')
+    assert export_resp.headers.get('x-storage-path')
+
+    files_resp = client.get(f"/workspaces/{ws['id']}/files", headers=headers)
+    assert files_resp.status_code == 200
+    files = files_resp.json()
+    assert len(files) == 1
+    file_id = files[0]['id']
+    assert files[0]['kind'] == 'workspace_export_csv'
+
+    download_resp = client.get(f"/workspaces/{ws['id']}/files/{file_id}/download", headers=headers)
+    assert download_resp.status_code == 200
+    assert download_resp.content.startswith(b'title,authors')

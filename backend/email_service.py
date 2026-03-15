@@ -1,51 +1,30 @@
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Optional
 
+import aiosmtplib
 from jinja2 import Template
 from models import User
 from sqlalchemy.orm import Session
-
-try:
-    from fastapi_mail import FastMail, MessageSchema, ConnectionConfig
-except Exception:  # pragma: no cover - optional dependency in local/dev
-    FastMail = None  # type: ignore[assignment]
-    MessageSchema = None  # type: ignore[assignment]
-    ConnectionConfig = None  # type: ignore[assignment]
 
 MAIL_USERNAME = os.getenv("MAIL_USERNAME", "").strip()
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "").strip()
 MAIL_FROM = os.getenv("MAIL_FROM", "noreply@researchhub.ai").strip() or "noreply@researchhub.ai"
 MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com").strip() or "smtp.gmail.com"
 MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
+MAIL_STARTTLS = os.getenv("MAIL_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
+MAIL_SSL_TLS = os.getenv("MAIL_SSL_TLS", "0").strip().lower() in {"1", "true", "yes"}
 
 MAIL_ENABLED = bool(
-    FastMail
-    and ConnectionConfig
-    and MessageSchema
-    and MAIL_USERNAME
-    and MAIL_PASSWORD
-    and MAIL_FROM
+    MAIL_USERNAME and MAIL_PASSWORD and MAIL_FROM and MAIL_SERVER and MAIL_PORT > 0
 )
 
-if MAIL_ENABLED:
-    conf = ConnectionConfig(
-        MAIL_USERNAME=MAIL_USERNAME,
-        MAIL_PASSWORD=MAIL_PASSWORD,
-        MAIL_FROM=MAIL_FROM,
-        MAIL_PORT=MAIL_PORT,
-        MAIL_SERVER=MAIL_SERVER,
-        MAIL_STARTTLS=True,
-        MAIL_SSL_TLS=False,
-        USE_CREDENTIALS=True,
-        VALIDATE_CERTS=True,
-    )
-    fm = FastMail(conf)
-else:
-    conf = None
-    fm = None
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 def generate_verification_token() -> str:
     """Generate a secure random token for email verification."""
@@ -53,11 +32,32 @@ def generate_verification_token() -> str:
 
 def get_verification_token_expiry() -> datetime:
     """Get the expiry time for verification tokens (24 hours from now)."""
-    return datetime.utcnow() + timedelta(hours=24)
+    return utc_now() + timedelta(hours=24)
+
+
+async def _send_html_email(subject: str, recipient: str, html_content: str) -> None:
+    message = EmailMessage()
+    message["From"] = MAIL_FROM
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content("Please use an HTML-compatible email client to view this message.")
+    message.add_alternative(html_content, subtype="html")
+
+    await aiosmtplib.send(
+        message,
+        hostname=MAIL_SERVER,
+        port=MAIL_PORT,
+        username=MAIL_USERNAME,
+        password=MAIL_PASSWORD,
+        start_tls=MAIL_STARTTLS and not MAIL_SSL_TLS,
+        use_tls=MAIL_SSL_TLS,
+        timeout=20,
+    )
+
 
 async def send_verification_email(email: str, token: str, user_name: Optional[str] = None):
     """Send email verification email to user."""
-    if not MAIL_ENABLED or not fm or not MessageSchema:
+    if not MAIL_ENABLED:
         logging.getLogger(__name__).info("Email sending skipped (mail service not configured).")
         return
 
@@ -70,7 +70,7 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Verify Your Email - ResearchHub AI</title>
+        <title>Verify Your Email - Soyog AI</title>
         <style>
             body { font-family: 'Space Grotesk', sans-serif; margin: 0; padding: 0; background-color: #f6f8ff; }
             .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
@@ -85,11 +85,11 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
         <div class="container">
             <div class="header">
                 <h1>Verify Your Email</h1>
-                <p>Welcome to ResearchHub AI</p>
+                <p>Welcome to Soyog AI</p>
             </div>
             <div class="content">
                 <h2>Hello{{ name and ' ' + name or '' }}!</h2>
-                <p>Thank you for signing up for ResearchHub AI. To complete your registration and start building your research workflow, please verify your email address.</p>
+                <p>Thank you for signing up for Soyog AI. To complete your registration and start building your research workflow, please verify your email address.</p>
 
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{{ verification_url }}" class="button">Verify Email Address</a>
@@ -100,13 +100,13 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
 
                 <p><strong>This verification link will expire in 24 hours.</strong></p>
 
-                <p>If you didn't create an account with ResearchHub AI, you can safely ignore this email.</p>
+                <p>If you didn't create an account with Soyog AI, you can safely ignore this email.</p>
 
-                <p>Best regards,<br>The ResearchHub AI Team</p>
+                <p>Best regards,<br>The Soyog AI Team</p>
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 ResearchHub AI. All rights reserved.</p>
+                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -119,18 +119,11 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
         verification_url=verification_url
     )
 
-    message = MessageSchema(
-        subject="Verify Your Email - ResearchHub AI",
-        recipients=[email],
-        body=html_content,
-        subtype="html"
-    )
-
-    await fm.send_message(message)
+    await _send_html_email("Verify Your Email - Soyog AI", email, html_content)
 
 async def send_password_reset_email(email: str, token: str, user_name: Optional[str] = None):
     """Send password reset email to user."""
-    if not MAIL_ENABLED or not fm or not MessageSchema:
+    if not MAIL_ENABLED:
         logging.getLogger(__name__).info("Password reset email skipped (mail service not configured).")
         return
 
@@ -142,7 +135,7 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
     <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Reset Your Password - ResearchHub AI</title>
+        <title>Reset Your Password - Soyog AI</title>
         <style>
             body { font-family: 'Space Grotesk', sans-serif; margin: 0; padding: 0; background-color: #f6f8ff; }
             .container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
@@ -156,11 +149,11 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
         <div class="container">
             <div class="header">
                 <h1>Reset Your Password</h1>
-                <p>Secure your ResearchHub AI account</p>
+                <p>Secure your Soyog AI account</p>
             </div>
             <div class="content">
                 <h2>Hello{{ name and ' ' + name or '' }}!</h2>
-                <p>We received a request to reset your password for your ResearchHub AI account. Click the button below to create a new password.</p>
+                <p>We received a request to reset your password for your Soyog AI account. Click the button below to create a new password.</p>
 
                 <div style="text-align: center; margin: 30px 0;">
                     <a href="{{ reset_url }}" class="button">Reset Password</a>
@@ -170,11 +163,11 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
 
                 <p><strong>This reset link will expire in 1 hour.</strong></p>
 
-                <p>Best regards,<br>The ResearchHub AI Team</p>
+                <p>Best regards,<br>The Soyog AI Team</p>
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 ResearchHub AI. All rights reserved.</p>
+                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -187,20 +180,13 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
         reset_url=reset_url
     )
 
-    message = MessageSchema(
-        subject="Reset Your Password - ResearchHub AI",
-        recipients=[email],
-        body=html_content,
-        subtype="html"
-    )
-
-    await fm.send_message(message)
+    await _send_html_email("Reset Your Password - Soyog AI", email, html_content)
 
 def verify_email_token(db: Session, token: str) -> Optional[User]:
     """Verify email verification token and return user if valid."""
     user = db.query(User).filter(
         User.verification_token == token,
-        User.verification_token_expires > datetime.utcnow(),
+        User.verification_token_expires > utc_now(),
         User.is_active == True
     ).first()
 

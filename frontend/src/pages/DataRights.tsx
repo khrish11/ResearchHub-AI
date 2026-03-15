@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
+import { useUser } from '../hooks/useUser';
 
 type RequestType =
   | 'access'
@@ -30,11 +31,11 @@ const DataRights: React.FC = () => {
   const [requests, setRequests] = useState<DataRequestItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const token = localStorage.getItem('token');
+  const { user, loading: userLoading } = useUser();
+  const isAuthenticated = Boolean(user);
 
   const loadMine = useCallback(async () => {
-    if (!token) {
+    if (!isAuthenticated) {
       setLoading(false);
       return;
     }
@@ -46,7 +47,7 @@ const DataRights: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     void loadMine();
@@ -54,7 +55,7 @@ const DataRights: React.FC = () => {
 
   const submitRequest = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!token) return;
+    if (!isAuthenticated) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -80,7 +81,7 @@ const DataRights: React.FC = () => {
           Submit GDPR/CCPA requests and export your account data.
         </p>
 
-        {!token ? (
+        {!isAuthenticated ? (
           <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
             Sign in to submit and track requests.
             <Link to="/login" className="ml-2 font-semibold underline">
@@ -169,7 +170,7 @@ const DataRights: React.FC = () => {
 
             <div className="mt-6">
               <h2 className="text-lg font-semibold text-slate-900">My Requests</h2>
-              {loading && <p className="mt-2 text-sm text-slate-500">Loading requests...</p>}
+              {(loading || userLoading) && <p className="mt-2 text-sm text-slate-500">Loading requests...</p>}
               {!loading && requests.length === 0 && (
                 <p className="mt-2 text-sm text-slate-500">No requests submitted yet.</p>
               )}

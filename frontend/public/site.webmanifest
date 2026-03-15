@@ -1,7 +1,7 @@
 {
-  "name": "ResearchHub AI",
-  "short_name": "ResearchHub",
-  "description": "Research discovery and workflow platform with AI assistance.",
+  "name": "Soyog AI",
+  "short_name": "Soyog",
+  "description": "Soyog AI is a research discovery and workflow platform with AI assistance.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

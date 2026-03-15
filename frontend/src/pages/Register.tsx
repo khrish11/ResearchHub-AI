@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
 import api, { API_URL, getGoogleLoginUrl } from '../api';
+import { firebaseAuthAvailable, registerWithFirebasePassword, signInWithFirebaseGoogle } from '../utils/firebaseAuth';
+import { getRemoteBoolean } from '../utils/firebaseClient';
 
 interface RegisterProps {
   setToken?: (token: string) => void;
@@ -13,10 +15,17 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [googleConfigured, setGoogleConfigured] = useState(true);
+  const [firebaseEnabled, setFirebaseEnabled] = useState(false);
+  const [googleRedirecting, setGoogleRedirecting] = useState(false);
   const [googleLoginUrl, setGoogleLoginUrl] = useState(getGoogleLoginUrl());
   const navigate = useNavigate();
 
   useEffect(() => {
+    const localFirebaseAvailability = firebaseAuthAvailable();
+    setFirebaseEnabled(localFirebaseAvailability);
+    void getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability).then((enabled) => {
+      setFirebaseEnabled(localFirebaseAvailability && enabled);
+    });
     setGoogleLoginUrl(getGoogleLoginUrl());
     api
       .get('/auth/google/status')
@@ -38,16 +47,22 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
     e.preventDefault();
     setError('');
     try {
-      const response = await api.post('/auth/register', { email, password });
-      const token = response.data?.access_token;
-      if (token && setToken) {
-        setToken(token);
+      const response = firebaseEnabled
+        ? await registerWithFirebasePassword(email, password)
+        : await api.post('/auth/register', { email, password }).then((res) => res.data);
+      const accessToken = response.access_token;
+      if (accessToken && setToken) {
+        setToken(accessToken);
         navigate('/home');
       } else {
         navigate('/login');
       }
     } catch (err: unknown) {
       const axErr = err as { response?: { status: number; data?: { detail?: string } }; message?: string };
+      if (firebaseEnabled && err instanceof Error && !axErr.response) {
+        setError(err.message || 'Firebase sign-up failed. Please try again.');
+        return;
+      }
       if (axErr.response?.status === 400) {
         setError(axErr.response?.data?.detail || 'Email already registered.');
       } else if (axErr.message?.includes('Network') || !axErr.response) {
@@ -56,6 +71,27 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
         setError(axErr.response?.data?.detail || 'Registration failed. Please try again.');
       }
     }
+  };
+
+  const handleGoogleSignUp = () => {
+    setError('');
+    setGoogleRedirecting(true);
+    if (firebaseEnabled) {
+      void signInWithFirebaseGoogle()
+        .then((response) => {
+          if (setToken) {
+            setToken(response.access_token);
+          }
+          navigate('/home');
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : 'Google sign-up failed. Please try again.';
+          setError(message);
+          setGoogleRedirecting(false);
+        });
+      return;
+    }
+    window.location.href = googleLoginUrl;
   };
 
   return (
@@ -73,7 +109,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <Microscope className="h-5 w-5 text-white" />
             </div>
             <div>
-              <h1>ResearchHub AI</h1>
+              <h1>Soyog AI</h1>
               <p>Intelligence for research workflows</p>
             </div>
           </div>
@@ -98,7 +134,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
               <p>1-minute onboarding</p>
             </div>
             <div className="auth-metric">
-              <h4>14+</h4>
+              <h4>28+</h4>
               <p>Search indices</p>
             </div>
             <div className="auth-metric">
@@ -163,16 +199,18 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
                 <span>Or continue with</span>
               </div>
 
-              {googleConfigured ? (
-                <a href={googleLoginUrl} className="auth-google-btn">
+              {(firebaseEnabled || googleConfigured) ? (
+                <button type="button" onClick={handleGoogleSignUp} className="auth-google-btn">
                   <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
                     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
                     <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
                     <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
                     <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                   </svg>
-                  Sign up with Google
-                </a>
+                  {googleRedirecting
+                    ? (firebaseEnabled ? 'Opening Google sign-up...' : 'Redirecting to Google...')
+                    : 'Sign up with Google'}
+                </button>
               ) : (
                 <button type="button" disabled className="auth-google-btn auth-google-disabled">
                   Google sign-up not configured

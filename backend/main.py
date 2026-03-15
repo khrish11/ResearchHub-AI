@@ -19,16 +19,24 @@ from pathlib import Path
 BACKEND_ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=BACKEND_ENV_PATH, override=False)
 load_dotenv(override=False)
+from utils.secret_manager import bootstrap_secret_manager_env
+bootstrap_secret_manager_env()
 
 # Enforce secure configuration in production
 import os
 import logging
 import json
+import ipaddress
 import time
 from collections import deque
 from threading import Lock
 from typing import Any, Deque, Dict, Optional, Tuple
 from uuid import uuid4
+
+try:
+    import redis
+except Exception:  # pragma: no cover - optional runtime dependency
+    redis = None  # type: ignore[assignment]
 APP_ENV = os.getenv("APP_ENV", "production")
 SECRET_KEY = os.getenv("SECRET_KEY")
 if APP_ENV != "development" and (not SECRET_KEY or SECRET_KEY == "secret"):
@@ -43,11 +51,15 @@ from starlette.middleware.gzip import GZipMiddleware
 from routers import auth, papers, chat, workspaces, ai, upload, research_agent, developer, compliance
 from sqlalchemy import text
 from database import engine, Base
+from repositories import FirebaseResearchRepository
+from utils.cloud_logging import setup_google_cloud_logging
+from utils.firebase_admin_client import verify_firebase_app_check_token
 
 logger = logging.getLogger(__name__)
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger.setLevel(logging.INFO)
+setup_google_cloud_logging()
 
 RATE_LIMIT_ENABLED = (
     os.getenv("RATE_LIMIT_ENABLED", "1" if APP_ENV != "development" else "0")
@@ -62,6 +74,24 @@ SECURITY_HEADERS_ENABLED = (
     os.getenv("SECURITY_HEADERS_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
 )
 METRICS_AUTH_TOKEN = str(os.getenv("METRICS_AUTH_TOKEN", "")).strip()
+STORAGE_BACKEND = (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower()
+FIREBASE_APPCHECK_ENFORCED = (
+    os.getenv("FIREBASE_APPCHECK_ENFORCED", "0").strip().lower() in {"1", "true", "yes"}
+)
+FIREBASE_APPCHECK_ALLOW_LOCALHOST = (
+    os.getenv("FIREBASE_APPCHECK_ALLOW_LOCALHOST", "1").strip().lower() in {"1", "true", "yes"}
+)
+GOOGLE_CLOUD_PROJECT = (os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("FIREBASE_PROJECT_ID") or "").strip()
+TRUST_PROXY_HEADERS = (
+    os.getenv("TRUST_PROXY_HEADERS", "0").strip().lower() in {"1", "true", "yes"}
+)
+TRUSTED_PROXY_IPS = {
+    value.strip()
+    for value in (os.getenv("TRUSTED_PROXY_IPS") or "127.0.0.1,::1").split(",")
+    if value.strip()
+}
+RATE_LIMIT_STORE = (os.getenv("RATE_LIMIT_STORE") or "memory").strip().lower()
+REDIS_URL = (os.getenv("REDIS_URL") or "").strip()
 
 _RATE_LIMIT_BUCKETS: Dict[str, Deque[float]] = {}
 _RATE_LIMIT_LOCK = Lock()
@@ -82,56 +112,25 @@ _HTTP_METRICS: Dict[str, Any] = {
     },
 }
 _RECENT_REQUESTS: Deque[Tuple[float, int, int]] = deque(maxlen=15000)
+_REDIS_RATE_LIMITER = None
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-
-# Lightweight SQLite schema sync for local/dev DBs that may predate new columns.
-# For production-grade deployments, use real migrations (e.g., Alembic).
-if engine.dialect.name == "sqlite":
-    with engine.begin() as conn:
+if RATE_LIMIT_STORE == "redis":
+    if not redis or not REDIS_URL:
+        logger.warning("RATE_LIMIT_STORE=redis is configured but redis client/REDIS_URL is unavailable; falling back to memory.")
+    else:
         try:
-            users_res = conn.execute(text("PRAGMA table_info('users')")).fetchall()
-            users_cols = {r[1] for r in users_res}
-            if 'google_id' not in users_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN google_id VARCHAR"))
-            if 'google_email' not in users_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN google_email VARCHAR"))
-            if 'name' not in users_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN name VARCHAR"))
-            if 'profile_pic' not in users_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN profile_pic VARCHAR"))
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id ON users (google_id)"))
+            _REDIS_RATE_LIMITER = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+            _REDIS_RATE_LIMITER.ping()
         except Exception as exc:
-            if APP_ENV == "development":
-                logger.warning("Non-fatal users schema sync issue: %s", exc)
-            else:
-                raise RuntimeError(f"Users schema sync failed: {exc}") from exc
+            logger.warning("Redis rate limiter init failed (%s); falling back to memory.", exc)
+            _REDIS_RATE_LIMITER = None
 
-        try:
-            papers_res = conn.execute(text("PRAGMA table_info('papers')")).fetchall()
-            papers_cols = {r[1] for r in papers_res}
-            if 'doi' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN doi VARCHAR"))
-            if 'bibcode' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN bibcode VARCHAR"))
-            if 'source' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN source VARCHAR"))
-            if 'pdf_url' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN pdf_url VARCHAR"))
-            if 'institutional_url' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN institutional_url VARCHAR"))
-            if 'access_type' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN access_type VARCHAR"))
-            if 'full_text_available' not in papers_cols:
-                conn.execute(text("ALTER TABLE papers ADD COLUMN full_text_available BOOLEAN DEFAULT 0"))
-        except Exception as exc:
-            if APP_ENV == "development":
-                logger.warning("Non-fatal papers schema sync issue: %s", exc)
-            else:
-                raise RuntimeError(f"Papers schema sync failed: {exc}") from exc
+if STORAGE_BACKEND == "sqlalchemy":
+    Base.metadata.create_all(bind=engine)
+elif STORAGE_BACKEND != "firebase":
+    raise RuntimeError(f"Unsupported STORAGE_BACKEND '{STORAGE_BACKEND}'.")
 
-app = FastAPI(title="ResearchHub AI API", version="1.0.0")
+app = FastAPI(title="Soyog AI API", version="1.0.0")
 
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 allowed_origins = {
@@ -162,13 +161,69 @@ def _is_https_request(request: Request) -> bool:
     return request.url.scheme == "https" or forwarded == "https"
 
 
-def _resolve_client_ip(request: Request) -> str:
-    forwarded_for = str(request.headers.get("x-forwarded-for", "")).split(",")[0].strip()
-    if forwarded_for:
-        return forwarded_for
+def _direct_client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
+
+
+def _normalize_ip(value: Optional[str]) -> Optional[str]:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1:candidate.index("]")]
+    elif candidate.count(":") == 1 and "." in candidate:
+        candidate = candidate.rsplit(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        lowered = candidate.lower()
+        if lowered == "localhost":
+            return "127.0.0.1"
+        return None
+
+
+def _extract_forwarded_ip(request: Request) -> Optional[str]:
+    forwarded_for = str(request.headers.get("x-forwarded-for", "")).split(",")[0].strip()
+    return _normalize_ip(forwarded_for)
+
+
+def _is_trusted_proxy_request(request: Request) -> bool:
+    if not TRUST_PROXY_HEADERS:
+        return False
+    direct_ip = _normalize_ip(_direct_client_ip(request))
+    return bool(direct_ip and direct_ip in TRUSTED_PROXY_IPS)
+
+
+def _is_local_direct_client(request: Request) -> bool:
+    direct_raw = str(_direct_client_ip(request) or "").strip().lower()
+    direct_ip = _normalize_ip(direct_raw)
+    return direct_raw == "localhost" or direct_ip in {"127.0.0.1", "::1"}
+
+
+def _resolve_client_ip(request: Request) -> str:
+    direct_ip = _normalize_ip(_direct_client_ip(request))
+    if _is_trusted_proxy_request(request):
+        forwarded_ip = _extract_forwarded_ip(request)
+        if forwarded_ip:
+            return forwarded_ip
+    if direct_ip:
+        return direct_ip
+    direct_raw = str(_direct_client_ip(request) or "").strip()
+    return direct_raw or "unknown"
+
+
+def _resolve_cloud_trace(request: Request) -> Optional[str]:
+    if not GOOGLE_CLOUD_PROJECT:
+        return None
+    trace_header = str(request.headers.get("x-cloud-trace-context", "")).strip()
+    if not trace_header:
+        return None
+    trace_id = trace_header.split("/", 1)[0].strip()
+    if not trace_id:
+        return None
+    return f"projects/{GOOGLE_CLOUD_PROJECT}/traces/{trace_id}"
 
 
 def _rate_limit_scope(path: str) -> Optional[Tuple[str, int]]:
@@ -193,7 +248,21 @@ def _check_rate_limit(request: Request) -> Tuple[bool, int]:
 
     now = time.time()
     cutoff = now - RATE_LIMIT_WINDOW_SECONDS
-    key = f"{_resolve_client_ip(request)}:{scope_name}"
+    key = f"{scope_name}:{_resolve_client_ip(request)}"
+
+    if _REDIS_RATE_LIMITER is not None:
+        window_bucket = int(now // RATE_LIMIT_WINDOW_SECONDS)
+        redis_key = f"researchhub:ratelimit:{key}:{window_bucket}"
+        try:
+            count = int(_REDIS_RATE_LIMITER.incr(redis_key))
+            if count == 1:
+                _REDIS_RATE_LIMITER.expire(redis_key, RATE_LIMIT_WINDOW_SECONDS + 2)
+            if count > limit:
+                retry_after = int(max(1, RATE_LIMIT_WINDOW_SECONDS - (now % RATE_LIMIT_WINDOW_SECONDS)))
+                return False, retry_after
+            return True, 0
+        except Exception as exc:
+            logger.warning("Redis rate limiting failed (%s); using memory fallback.", exc)
 
     with _RATE_LIMIT_LOCK:
         bucket = _RATE_LIMIT_BUCKETS.get(key)
@@ -326,6 +395,31 @@ async def request_logging_middleware(request: Request, call_next):
     started = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
     status_code = 500
+    cloud_trace = _resolve_cloud_trace(request)
+
+    if FIREBASE_APPCHECK_ENFORCED:
+        allow_local = FIREBASE_APPCHECK_ALLOW_LOCALHOST and _is_local_direct_client(request)
+        if not allow_local and not request.url.path.startswith(("/health/", "/docs", "/redoc", "/openapi.json", "/auth/google/", "/auth/firebase/status")):
+            app_check_token = (
+                request.headers.get("X-Firebase-AppCheck")
+                or request.headers.get("X-Firebase-Appcheck")
+                or request.headers.get("X-Firebase-AppCheck-Token")
+            )
+            if not app_check_token:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                response = JSONResponse(status_code=401, content={"detail": "Missing Firebase App Check token."})
+                _apply_response_headers(response, request, request_id, duration_ms)
+                _update_http_metrics(request.url.path, 401, duration_ms)
+                return response
+            try:
+                verify_firebase_app_check_token(str(app_check_token))
+            except Exception as exc:
+                logger.warning("Firebase App Check verification failed: %s", exc)
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                response = JSONResponse(status_code=401, content={"detail": "Invalid Firebase App Check token."})
+                _apply_response_headers(response, request, request_id, duration_ms)
+                _update_http_metrics(request.url.path, 401, duration_ms)
+                return response
 
     allowed, retry_after = _check_rate_limit(request)
     if not allowed:
@@ -348,6 +442,7 @@ async def request_logging_middleware(request: Request, call_next):
                     "duration_ms": duration_ms,
                     "rate_limited": True,
                     "retry_after_s": retry_after,
+                    "logging.googleapis.com/trace": cloud_trace,
                 }
             )
         )
@@ -368,6 +463,7 @@ async def request_logging_middleware(request: Request, call_next):
                     "path": request.url.path,
                     "status_code": 500,
                     "duration_ms": duration_ms,
+                    "logging.googleapis.com/trace": cloud_trace,
                 }
             )
         )
@@ -385,6 +481,7 @@ async def request_logging_middleware(request: Request, call_next):
                 "path": request.url.path,
                 "status_code": status_code,
                 "duration_ms": duration_ms,
+                "logging.googleapis.com/trace": cloud_trace,
             }
         )
     )
@@ -406,6 +503,7 @@ logger.info(
             "event": "startup_config",
             "app_env": APP_ENV,
             "backend_env_path": str(BACKEND_ENV_PATH),
+            "storage_backend": STORAGE_BACKEND,
             "database_url": str(engine.url),
         }
     )
@@ -419,6 +517,18 @@ async def health_live():
 
 @app.get("/health/ready")
 async def health_ready():
+    if STORAGE_BACKEND == "firebase":
+        try:
+            repo = FirebaseResearchRepository()
+            next(repo.users.limit(1).stream(), None)
+        except Exception as exc:
+            logger.warning("Firebase readiness check failed: %s", exc)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "degraded", "database": "unavailable", "storage_backend": "firebase"},
+            )
+        return {"status": "ok", "database": "up", "storage_backend": "firebase"}
+
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -426,9 +536,9 @@ async def health_ready():
         logger.warning("Readiness check failed: %s", exc)
         return JSONResponse(
             status_code=503,
-            content={"status": "degraded", "database": "unavailable"},
+            content={"status": "degraded", "database": "unavailable", "storage_backend": "sqlalchemy"},
         )
-    return {"status": "ok", "database": "up"}
+    return {"status": "ok", "database": "up", "storage_backend": "sqlalchemy"}
 
 
 def _require_metrics_token(request: Request) -> None:
@@ -500,4 +610,4 @@ async def ops_metrics(request: Request):
 
 @app.get("/")
 async def root():
-    return {"message": "ResearchHub AI API is running"}
+    return {"message": "Soyog AI API is running"}

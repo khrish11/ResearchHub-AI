@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Paper, SearchHistory, User, UserSessionState, Workspace
+from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from routers.papers import search_global
 from utils.groq_client import client as groq_client
@@ -310,7 +311,7 @@ async def _fetch_openalex_recent_titles(seed: str, max_items: int = 18) -> List[
         'per-page': min(max_items, 30),
         'filter': f'from_publication_date:{since}',
     }
-    headers = {'User-Agent': 'ResearchHub-AI/1.0'}
+    headers = {'User-Agent': 'Soyog-AI/1.0'}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.0)) as client:
             response = await client.get('https://api.openalex.org/works', params=params, headers=headers)
@@ -335,7 +336,7 @@ async def _fetch_arxiv_recent_titles(seed: str, max_items: int = 16) -> List[str
         'sortBy': 'submittedDate',
         'sortOrder': 'descending',
     }
-    headers = {'User-Agent': 'ResearchHub-AI/1.0'}
+    headers = {'User-Agent': 'Soyog-AI/1.0'}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(4.5, connect=2.0), headers=headers) as client:
             response = await client.get('https://export.arxiv.org/api/query', params=params)
@@ -482,37 +483,38 @@ def _overlap_score(a: str, b: str) -> float:
     return len(a_tokens & b_tokens) / max(len(a_tokens), 1)
 
 
-def _workspace_or_default(db: Session, current_user: User, workspace_id: Optional[int], default_name: str) -> Workspace:
+def _repo_for_db(db: Session) -> ResearchRepository:
+    return get_research_repository(db)
+
+
+def _workspace_or_default(db: Session, current_user: User, workspace_id: Optional[int], default_name: str):
+    repo = _repo_for_db(db)
     if workspace_id is not None:
-        workspace = (
-            db.query(Workspace)
-            .filter(Workspace.id == workspace_id, Workspace.user_id == current_user.id)
-            .first()
-        )
+        workspace = repo.find_workspace_for_user(workspace_id, current_user.id)
         if not workspace:
             raise HTTPException(status_code=404, detail='Workspace not found')
         return workspace
 
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.user_id == current_user.id, Workspace.name == default_name)
-        .first()
-    )
+    workspace = repo.find_workspace_by_name_for_user(current_user.id, default_name)
     if workspace:
         return workspace
 
-    workspace = Workspace(name=default_name, description='Auto-created research workspace', user_id=current_user.id)
-    db.add(workspace)
-    db.commit()
-    db.refresh(workspace)
-    return workspace
+    return repo.create_workspace(current_user.id, default_name, 'Auto-created research workspace')
 
 
-def _load_workspace_papers(db: Session, workspace: Workspace, paper_ids: Optional[List[int]] = None) -> List[Paper]:
-    query = db.query(Paper).filter(Paper.workspace_id == workspace.id)
-    if paper_ids:
-        query = query.filter(Paper.id.in_(paper_ids))
-    return query.all()
+def _load_workspace_papers(db: Session, workspace, paper_ids: Optional[List[int]] = None) -> List[Paper]:
+    repo = _repo_for_db(db)
+    return list(repo.list_papers_for_workspace(workspace.id, paper_ids))
+
+
+def _find_workspace_paper(db: Session, workspace_id: int, user_id: int, paper_id: int):
+    repo = _repo_for_db(db)
+    paper = repo.find_paper_for_user(paper_id, user_id)
+    if not paper:
+        return None
+    if int(getattr(paper, 'workspace_id', 0) or 0) != int(workspace_id):
+        return None
+    return paper
 
 
 async def _search_global_candidates(
@@ -546,6 +548,7 @@ def _llm_generate(
     user_prompt: str,
     max_tokens: int = 2400,
     longform: bool = True,
+    task: str = "pipeline",
     min_chars: int = 240,
     temperature: float = 0.16,
     expansion_instruction: Optional[str] = None,
@@ -577,7 +580,7 @@ def _llm_generate(
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_prompt[:28000]},
             ],
-            **model_config(longform=longform, max_tokens=max_tokens, temperature=temperature),
+            **model_config(task=task, longform=longform, max_tokens=max_tokens, temperature=temperature),
         )
         text = _normalize_paper_refs((response.choices[0].message.content or '').strip())
         if _is_response_sufficient(text):
@@ -595,6 +598,7 @@ def _llm_generate(
                 {'role': 'user', 'content': follow_up},
             ],
             **model_config(
+                task=task,
                 longform=longform,
                 max_tokens=min(5200, max(1800, max_tokens + 500)),
                 temperature=max(0.1, temperature - 0.02),
@@ -620,6 +624,7 @@ def _llm_generate(
                 },
             ],
             **model_config(
+                task=task,
                 longform=longform,
                 max_tokens=min(6200, max(2200, max_tokens + 900)),
                 temperature=max(0.1, temperature - 0.03),
@@ -706,7 +711,7 @@ async def _fetch_openalex_citation_count(doi: str) -> int:
     url = f'https://api.openalex.org/works/https://doi.org/{clean}'
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.5, connect=2.0)) as client:
-            response = await client.get(url, headers={'User-Agent': 'ResearchHub-AI/1.0'})
+            response = await client.get(url, headers={'User-Agent': 'Soyog-AI/1.0'})
             if response.status_code >= 400:
                 return 0
             data = response.json()
@@ -1453,7 +1458,8 @@ def _import_top_candidates(db: Session, workspace: Workspace, ranked: List[Dict[
     if not selected:
         return {'imported': 0, 'skipped': 0, 'imported_titles': []}
 
-    existing = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+    repo = _repo_for_db(db)
+    existing = repo.list_papers_for_workspace(workspace.id)
     existing_dois = {str((paper.doi or '')).lower().strip() for paper in existing if paper.doi}
     existing_titles = {str((paper.title or '')).lower().strip() for paper in existing}
 
@@ -1469,15 +1475,23 @@ def _import_top_candidates(db: Session, workspace: Workspace, ranked: List[Dict[
             continue
 
         payload = _to_db_paper_payload(candidate, workspace.id)
-        db.add(Paper(**payload))
+        row = repo.create_paper(
+            workspace_id=workspace.id,
+            title=payload['title'],
+            authors=payload['authors'],
+            abstract=payload['abstract'],
+            url=payload.get('url'),
+            pdf_url=payload.get('pdf_url'),
+        )
+        row.doi = payload.get('doi')
+        row.bibcode = payload.get('bibcode')
+        repo.save(row)
         imported_count += 1
         imported_titles.append(payload['title'])
         if doi_key:
             existing_dois.add(doi_key)
         if title_key:
             existing_titles.add(title_key)
-
-    db.commit()
     return {'imported': imported_count, 'skipped': skipped_count, 'imported_titles': imported_titles}
 
 
@@ -2525,7 +2539,7 @@ def research_chatbot(
 
     llm_text = _llm_generate(
         system_prompt=(
-            'You are ResearchHub Chatbot, a full-spectrum research assistant. '
+            'You are Soyog AI Chatbot, a full-spectrum research assistant. '
             'Behave like a conversational AI for any research question, while staying evidence-first.'
         ),
         user_prompt=(
@@ -2821,11 +2835,7 @@ def smart_read(
     title = 'Provided Text'
 
     if request.paper_id is not None:
-        paper = (
-            db.query(Paper)
-            .filter(Paper.id == request.paper_id, Paper.workspace_id == workspace.id)
-            .first()
-        )
+        paper = _find_workspace_paper(db, workspace.id, current_user.id, request.paper_id)
         if not paper:
             raise HTTPException(status_code=404, detail='Paper not found in workspace')
         source_name = 'workspace_paper'
@@ -2861,11 +2871,7 @@ def fault_detection(
     current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(db, current_user, request.workspace_id, 'Autonomous Research Lab')
-    paper = (
-        db.query(Paper)
-        .filter(Paper.workspace_id == workspace.id, Paper.id == request.paper_id)
-        .first()
-    )
+    paper = _find_workspace_paper(db, workspace.id, current_user.id, request.paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail='Paper not found in workspace.')
 
@@ -2983,11 +2989,7 @@ def compare_papers(
     current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(db, current_user, request.workspace_id, 'Autonomous Research Lab')
-    papers = (
-        db.query(Paper)
-        .filter(Paper.workspace_id == workspace.id, Paper.id.in_(request.paper_ids))
-        .all()
-    )
+    papers = _load_workspace_papers(db, workspace, request.paper_ids)
     if len(papers) < 2:
         raise HTTPException(status_code=400, detail='At least two valid papers are required for comparison.')
 
@@ -3046,6 +3048,7 @@ async def personalized_feed(
     current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(db, current_user, request.workspace_id, 'Autonomous Research Lab')
+    repo = _repo_for_db(db)
     papers = _load_workspace_papers(db, workspace)
     if not papers:
         raise HTTPException(status_code=400, detail='No papers found in workspace.')
@@ -3053,11 +3056,7 @@ async def personalized_feed(
     text_blob = ' '.join(f"{paper.title} {paper.abstract or ''}" for paper in papers)
     workspace_keywords = _extract_keywords(text_blob, top_n=16)
 
-    session_state = (
-        db.query(UserSessionState)
-        .filter(UserSessionState.user_id == current_user.id)
-        .first()
-    )
+    session_state = repo.get_session_state_for_user(current_user.id)
     session_extra: Dict[str, Any] = {}
     if session_state and session_state.extra_json:
         try:
@@ -3076,13 +3075,7 @@ async def personalized_feed(
     if request.force_live:
         refresh_turn += 1
 
-    history_rows = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(80)
-        .all()
-    )
+    history_rows = repo.list_search_history_for_user(current_user.id, limit=80)
     history_signals = _history_query_signals(history_rows)
     realtime_bundle = await _fetch_realtime_signal_bundle(
         [*workspace_keywords[:10], *(history_signals.get('keywords') or [])[:10]]
@@ -3256,8 +3249,7 @@ async def personalized_feed(
 
     try:
         if not session_state:
-            session_state = UserSessionState(user_id=current_user.id, page_path='/home')
-            db.add(session_state)
+            session_state = repo.create_session_state(current_user.id)
         next_extra = dict(session_extra)
         next_extra['personalized_feed_recent_keys'] = next_recent_keys
         next_extra['personalized_feed_turn'] = refresh_turn
@@ -3267,9 +3259,9 @@ async def personalized_feed(
         session_state.workspace_id = workspace.id
         session_state.extra_json = json.dumps(next_extra)
         session_state.updated_at = datetime.now(timezone.utc)
-        db.commit()
+        repo.save(session_state)
     except Exception:
-        db.rollback()
+        pass
 
     llm_text = _llm_generate(
         system_prompt='You are a personalized research feed curator.',

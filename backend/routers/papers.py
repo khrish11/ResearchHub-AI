@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal, get_db
 from models import SearchHistory, User, Paper, Workspace
+from repositories import FirebaseResearchRepository, ResearchRepository, SqlAlchemyResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
@@ -190,6 +191,59 @@ GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE: Dict[str, float] = {
     "deep": 1.15,
 }
 
+GLOBAL_SEARCH_SOURCE_FETCH_CAP_OVERRIDES: Dict[str, Dict[str, int]] = {
+    "fast": {
+        "europepmc": 6,
+    },
+    "balanced": {
+        "europepmc": 8,
+    },
+    "deep": {
+        "europepmc": 10,
+    },
+}
+
+GLOBAL_SEARCH_SOURCE_PRIORS: Dict[str, float] = {
+    "semantic": 1.35,
+    "openalex": 1.25,
+    "arxiv": 1.15,
+    "dblp": 1.1,
+    "inspire": 1.1,
+    "orkg": 1.1,
+    "jstage": 1.05,
+    "econbiz": 1.0,
+    "eric": 1.0,
+    "osti": 1.0,
+    "crossref": 0.95,
+    "pubmed": 0.9,
+    "pmc": 0.9,
+    "europepmc": 0.7,
+}
+
+GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE: Dict[str, float] = {
+    "fast": 0.45,
+    "balanced": 0.35,
+    "deep": 0.32,
+}
+
+GLOBAL_SEARCH_SOURCE_SOFT_CAP_MIN_BY_MODE: Dict[str, int] = {
+    "fast": 4,
+    "balanced": 4,
+    "deep": 5,
+}
+
+GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE: Dict[str, float] = {
+    "fast": 2.25,
+    "balanced": 2.0,
+    "deep": 1.8,
+}
+
+GLOBAL_SEARCH_RANK_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "in", "into", "is", "of", "on", "or", "that", "the", "their",
+    "these", "this", "to", "using", "via", "with",
+}
+
 ARXIV_API = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 OPENALEX_API = "https://api.openalex.org/works"
@@ -313,57 +367,35 @@ def _record_search_history(
         "source_status": source_status or {},
     }
 
-    db = SessionLocal()
     try:
-        latest = (
-            db.query(SearchHistory)
-            .filter(SearchHistory.user_id == user_id, SearchHistory.source == "global_merged")
-            .order_by(SearchHistory.created_at.desc())
-            .first()
-        )
-        now_utc = datetime.now(timezone.utc)
-        should_update_latest = False
-        if latest and str(latest.query or "").strip().lower() == trimmed_query.lower():
-            created = latest.created_at
-            if created is not None:
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                age_seconds = abs((now_utc - created).total_seconds())
-                should_update_latest = age_seconds <= 240
-
-        if should_update_latest and latest is not None:
-            latest.result_count = max(0, int(result_count or 0))
-            latest.filters_json = json.dumps(payload)
-            latest.created_at = now_utc
-        else:
-            db.add(
-                SearchHistory(
-                    user_id=user_id,
-                    query=trimmed_query[:300],
-                    source="global_merged",
-                    result_count=max(0, int(result_count or 0)),
-                    filters_json=json.dumps(payload),
-                    created_at=now_utc,
-                )
+        backend = (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower()
+        if backend == "firebase":
+            FirebaseResearchRepository().record_search_history(
+                user_id=user_id,
+                query=trimmed_query,
+                source="global_merged",
+                result_count=max(0, int(result_count or 0)),
+                filters_json=json.dumps(payload),
+                dedupe_seconds=240,
+                max_items=250,
             )
-        db.commit()
+            return
 
-        old_rows = (
-            db.query(SearchHistory.id)
-            .filter(SearchHistory.user_id == user_id)
-            .order_by(SearchHistory.created_at.desc())
-            .offset(250)
-            .all()
-        )
-        old_ids = [int(row[0]) for row in old_rows]
-        if old_ids:
-            db.query(SearchHistory).filter(SearchHistory.id.in_(old_ids)).delete(synchronize_session=False)
-            db.commit()
+        db = SessionLocal()
+        try:
+            SqlAlchemyResearchRepository(db).record_search_history(
+                user_id=user_id,
+                query=trimmed_query,
+                source="global_merged",
+                result_count=max(0, int(result_count or 0)),
+                filters_json=json.dumps(payload),
+                dedupe_seconds=240,
+                max_items=250,
+            )
+        finally:
+            db.close()
     except Exception:
         logging.exception("Failed to record search history")
-        db.rollback()
-    finally:
-        db.close()
 
 
 def _get_nasa_token() -> str:
@@ -471,6 +503,177 @@ def _paper_year_sort_value(paper: Dict[str, Any]) -> int:
         return int(match.group(0))
     except ValueError:
         return 0
+
+
+def _canonical_global_source_name(value: Any) -> str:
+    source = str(value or "").strip().lower()
+    aliases = {
+        "semantic_scholar": "semantic",
+        "semantic_scholar_fallback_arxiv": "semantic",
+        "europe_pmc": "europepmc",
+        "nasa_ads": "nasa",
+    }
+    return aliases.get(source, source)
+
+
+def _paper_has_real_abstract(paper: Dict[str, Any]) -> bool:
+    abstract = str(paper.get("abstract") or "").strip().lower()
+    return bool(abstract) and "no abstract available" not in abstract
+
+
+def _search_rank_tokens(text: str) -> List[str]:
+    normalized = _normalize_title(text)
+    tokens = [token for token in normalized.split() if token and token not in GLOBAL_SEARCH_RANK_STOP_WORDS]
+    return tokens[:24]
+
+
+def _query_overlap_count(query_tokens: List[str], text: str) -> int:
+    if not query_tokens:
+        return 0
+    text_tokens = set(_search_rank_tokens(text))
+    return len(set(query_tokens).intersection(text_tokens))
+
+
+def _paper_ranking_score(paper: Dict[str, Any], query: str) -> float:
+    query_tokens = _search_rank_tokens(query)
+    if not query_tokens:
+        return 0.0
+
+    normalized_query = _normalize_title(query)
+    title = str(paper.get("title") or "")
+    abstract = str(paper.get("abstract") or "")
+    categories_text = " ".join(str(item or "") for item in (paper.get("categories") or []))
+    publication_text = str(
+        paper.get("publication_name")
+        or paper.get("publication_title")
+        or ""
+    )
+
+    title_norm = _normalize_title(title)
+    abstract_norm = _normalize_title(abstract)
+    categories_norm = _normalize_title(categories_text)
+    publication_norm = _normalize_title(publication_text)
+
+    title_hits = _query_overlap_count(query_tokens, title)
+    abstract_hits = _query_overlap_count(query_tokens, abstract)
+    category_hits = _query_overlap_count(query_tokens, categories_text)
+    publication_hits = _query_overlap_count(query_tokens, publication_text)
+
+    phrase_bonus = 0.0
+    if normalized_query and normalized_query in title_norm:
+        phrase_bonus += 6.0
+    if normalized_query and normalized_query in categories_norm:
+        phrase_bonus += 2.0
+    if normalized_query and normalized_query in publication_norm:
+        phrase_bonus += 1.5
+    if normalized_query and normalized_query in abstract_norm:
+        phrase_bonus += 1.0
+
+    source_prior = float(
+        GLOBAL_SEARCH_SOURCE_PRIORS.get(
+            _canonical_global_source_name(paper.get("source")),
+            0.85,
+        )
+    )
+    year_bonus = min(2.5, max(0, _paper_year_sort_value(paper) - 2019) * 0.25)
+    access_bonus = 1.0 if _has_pdf(paper) else (0.45 if paper.get("full_text_available") else 0.0)
+    abstract_bonus = 0.35 if _paper_has_real_abstract(paper) else 0.0
+    doi_bonus = 0.15 if paper.get("doi") else 0.0
+
+    return (
+        (title_hits * 4.5)
+        + (abstract_hits * 2.0)
+        + (category_hits * 1.8)
+        + (publication_hits * 1.3)
+        + phrase_bonus
+        + source_prior
+        + year_bonus
+        + access_bonus
+        + abstract_bonus
+        + doi_bonus
+    )
+
+
+def _diversify_ranked_papers(
+    papers: List[Dict[str, Any]],
+    query: str,
+    page_size: int,
+    search_mode: str,
+) -> List[Dict[str, Any]]:
+    if not papers:
+        return []
+
+    soft_cap_ratio = float(GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE.get(search_mode, 0.35))
+    soft_cap_min = int(GLOBAL_SEARCH_SOURCE_SOFT_CAP_MIN_BY_MODE.get(search_mode, 4))
+    soft_cap = max(soft_cap_min, int(page_size * soft_cap_ratio))
+    repeat_penalty = float(GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE.get(search_mode, 2.0))
+
+    source_buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for index, paper in enumerate(papers):
+        paper["_ranking_score"] = _paper_ranking_score(paper, query)
+        paper["_source_key"] = _canonical_global_source_name(paper.get("source"))
+        paper["_ingest_index"] = index
+        source_buckets.setdefault(str(paper["_source_key"]), []).append(paper)
+
+    for bucket in source_buckets.values():
+        bucket.sort(
+            key=lambda p: (
+                float(p.get("_ranking_score") or 0.0),
+                _paper_year_sort_value(p),
+                1 if _has_pdf(p) else 0,
+                1 if _paper_has_real_abstract(p) else 0,
+                -int(p.get("_ingest_index") or 0),
+            ),
+            reverse=True,
+        )
+
+    source_positions: Dict[str, int] = {key: 0 for key in source_buckets}
+    selected_counts: Dict[str, int] = {}
+    diversified: List[Dict[str, Any]] = []
+    total_items = len(papers)
+
+    while len(diversified) < total_items:
+        best_source: Optional[str] = None
+        best_tuple: Optional[Tuple[float, float, int, int, int, int]] = None
+
+        for source_key, bucket in source_buckets.items():
+            position = source_positions.get(source_key, 0)
+            if position >= len(bucket):
+                continue
+            paper = bucket[position]
+            selected_for_source = int(selected_counts.get(source_key, 0))
+            effective_score = float(paper.get("_ranking_score") or 0.0) - (selected_for_source * repeat_penalty)
+            if selected_for_source >= soft_cap:
+                effective_score -= 4.0 + ((selected_for_source - soft_cap) * 1.25)
+            if selected_for_source == 0:
+                effective_score += 0.35
+            candidate_tuple = (
+                effective_score,
+                float(paper.get("_ranking_score") or 0.0),
+                _paper_year_sort_value(paper),
+                1 if _has_pdf(paper) else 0,
+                1 if _paper_has_real_abstract(paper) else 0,
+                -int(paper.get("_ingest_index") or 0),
+            )
+            if best_tuple is None or candidate_tuple > best_tuple:
+                best_source = source_key
+                best_tuple = candidate_tuple
+
+        if best_source is None:
+            break
+
+        source_index = source_positions.get(best_source, 0)
+        chosen = source_buckets[best_source][source_index]
+        source_positions[best_source] = source_index + 1
+        selected_counts[best_source] = int(selected_counts.get(best_source, 0)) + 1
+        diversified.append(chosen)
+
+    for paper in diversified:
+        paper.pop("_ranking_score", None)
+        paper.pop("_source_key", None)
+        paper.pop("_ingest_index", None)
+
+    return diversified
 
 
 def _strip_xml_html_tags(text: str) -> str:
@@ -861,7 +1064,7 @@ async def _fetch_unpaywall_pdf(doi: str) -> Optional[str]:
     url = f"{UNPAYWALL_API}{doi_clean}"
     try:
         async with httpx.AsyncClient(timeout=4) as client:
-            resp = await client.get(url, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(url, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
@@ -993,7 +1196,7 @@ async def search_papers(
     # actionable response while upstream recovers.
     fallback_paper = {
         "title": f"ArXiv temporarily unavailable for: {query}",
-        "authors": ["ResearchHub AI"],
+        "authors": ["Soyog AI"],
         "abstract": (
             "ArXiv did not respond in time. Retry in a moment, or use the global "
             "search endpoint for merged results across other sources."
@@ -1037,7 +1240,7 @@ async def search_semantic(
         "offset": start_offset,
         "fields": "title,authors,abstract,year,externalIds,publicationTypes,openAccessPdf,url",
     }
-    headers = {"User-Agent": "ResearchHub-AI/1.0"}
+    headers = {"User-Agent": "Soyog-AI/1.0"}
     if semantic_key:
         headers["x-api-key"] = semantic_key
     try:
@@ -1178,7 +1381,7 @@ async def search_openalex(
             response = await client.get(
                 OPENALEX_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -1290,7 +1493,7 @@ async def search_europepmc(
             response = await client.get(
                 EUROPE_PMC_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -1412,9 +1615,9 @@ async def search_crossref(
     if mailto:
         params["mailto"] = mailto
 
-    user_agent = "ResearchHub-AI/1.0"
+    user_agent = "Soyog-AI/1.0"
     if mailto:
-        user_agent = f"ResearchHub-AI/1.0 (mailto:{mailto})"
+        user_agent = f"Soyog-AI/1.0 (mailto:{mailto})"
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -1819,7 +2022,7 @@ async def search_doaj(
             response = await client.get(
                 url,
                 params={"page": page, "pageSize": page_size},
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -1933,7 +2136,7 @@ async def search_eric(
             response = await client.get(
                 ERIC_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2088,7 +2291,7 @@ async def search_osti(
             response = await client.get(
                 OSTI_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         rows = response.json()
@@ -2231,7 +2434,7 @@ async def search_econbiz(
             response = await client.get(
                 ECONBIZ_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2381,7 +2584,7 @@ async def search_jstage(
             response = await client.get(
                 JSTAGE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         root = ET.fromstring(response.text)
@@ -2501,7 +2704,7 @@ async def search_orkg(
             response = await client.get(
                 ORKG_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -2639,7 +2842,7 @@ async def search_hal(
     }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(HAL_API_SEARCH, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(HAL_API_SEARCH, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -2743,7 +2946,7 @@ async def _search_rxiv(server: str, query: str, max_results: int, lookback_days:
         url = f"{BIORXIV_API_BASE}/{server}/{start_date}/{end_date}/{cursor}"
         try:
             async with httpx.AsyncClient(timeout=6) as client:
-                resp = await client.get(url, headers={"User-Agent": "ResearchHub-AI/1.0"})
+                resp = await client.get(url, headers={"User-Agent": "Soyog-AI/1.0"})
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPError:
@@ -2848,7 +3051,7 @@ async def search_plos(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(PLOS_API, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(PLOS_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -2938,7 +3141,7 @@ async def search_elife(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(EUROPE_PMC_API, params=params, headers={"User-Agent": "ResearchHub-AI/1.0"})
+            resp = await client.get(EUROPE_PMC_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
@@ -3036,7 +3239,7 @@ async def search_datacite(
             response = await client.get(
                 DATACITE_WORKS_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3169,7 +3372,7 @@ async def search_dblp(
             response = await client.get(
                 DBLP_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3276,7 +3479,7 @@ async def search_zenodo(
             response = await client.get(
                 ZENODO_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3427,7 +3630,7 @@ async def search_openaire(
             response = await client.get(
                 OPENAIRE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         root = ET.fromstring(response.text)
@@ -3553,7 +3756,7 @@ async def search_figshare(
             response = await client.get(
                 FIGSHARE_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         rows = response.json()
@@ -3638,7 +3841,7 @@ async def search_osf(
             response = await client.get(
                 OSF_PREPRINT_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3743,7 +3946,7 @@ async def search_dryad(
             response = await client.get(
                 DRYAD_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -3863,7 +4066,7 @@ async def search_inspire(
             response = await client.get(
                 INSPIRE_HEP_API,
                 params=params,
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
             response.raise_for_status()
         data = response.json()
@@ -4038,12 +4241,19 @@ async def search_global(
     source_concurrency = int(GLOBAL_SOURCE_CONCURRENCY_BY_MODE.get(resolved_mode, GLOBAL_SOURCE_CONCURRENCY))
     source_semaphore = asyncio.Semaphore(max(3, source_concurrency))
 
+    def _source_limit(name: str) -> int:
+        canonical = _canonical_global_source_name(name)
+        mode_caps = GLOBAL_SEARCH_SOURCE_FETCH_CAP_OVERRIDES.get(resolved_mode, {})
+        cap = int(mode_caps.get(canonical, per_source_limit))
+        return max(3, min(per_source_limit, cap))
+
     async def _run_source(source_name: str):
+        source_limit = _source_limit(source_name)
         try:
             if source_name == "arxiv":
                 data = await search_papers(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     category="all",
                     sort_by="relevance",
@@ -4052,7 +4262,7 @@ async def search_global(
             elif source_name == "semantic":
                 data = await search_semantic(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     allow_fallback_arxiv=False,
                     current_user=current_user,
@@ -4060,182 +4270,182 @@ async def search_global(
             elif source_name == "openalex":
                 data = await search_openalex(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "europepmc":
                 data = await search_europepmc(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "pmc":
                 data = await search_pmc(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "econbiz":
                 data = await search_econbiz(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "jstage":
                 data = await search_jstage(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "orkg":
                 data = await search_orkg(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "pubmed":
                 data = await search_pubmed(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "doaj":
                 data = await search_doaj(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "eric":
                 data = await search_eric(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "openaire":
                 data = await search_openaire(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "figshare":
                 data = await search_figshare(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "osf":
                 data = await search_osf(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "dryad":
                 data = await search_dryad(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "inspire":
                 data = await search_inspire(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "osti":
                 data = await search_osti(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "dblp":
                 data = await search_dblp(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "zenodo":
                 data = await search_zenodo(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "datacite":
                 data = await search_datacite(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "crossref":
                 data = await search_crossref(
                     query=query,
-                    max_results=min(per_source_limit, 50),
+                    max_results=min(source_limit, 50),
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "hal":
                 data = await search_hal(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "biorxiv":
                 data = await search_biorxiv(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "medrxiv":
                 data = await search_medrxiv(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "plos":
                 data = await search_plos(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "elife":
                 data = await search_elife(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "springer":
                 data = await search_springer(
                     query=query,
-                    max_results=min(per_source_limit, 25),
+                    max_results=min(source_limit, 25),
                     offset=start_offset,
                     current_user=current_user,
                 )
             elif source_name == "nasa":
                 data = await search_nasa_ads(
                     query=query,
-                    max_results=per_source_limit,
+                    max_results=source_limit,
                     offset=start_offset,
                     current_user=current_user,
                 )
@@ -4473,13 +4683,11 @@ async def search_global(
     for paper in merged_papers:
         _annotate_access_metadata(paper)
 
-    merged_papers.sort(
-        key=lambda p: (
-            _paper_year_sort_value(p),
-            1 if _has_pdf(p) else 0,
-            1 if (p.get("abstract") and "no abstract" not in str(p.get("abstract")).lower()) else 0,
-        ),
-        reverse=True,
+    merged_papers = _diversify_ranked_papers(
+        papers=merged_papers,
+        query=query,
+        page_size=page_size,
+        search_mode=resolved_mode,
     )
 
     has_more = len(merged_papers) > page_size
@@ -4560,17 +4768,11 @@ async def search_global(
 @router.get("/search-history")
 def get_search_history(
     limit: int = 25,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     page_size = max(1, min(limit, 200))
-    rows = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(page_size)
-        .all()
-    )
+    rows = repo.list_search_history_for_user(current_user.id, limit=page_size)
     items: List[Dict[str, Any]] = []
     for row in rows:
         filters: Dict[str, Any] = {}
@@ -4601,17 +4803,11 @@ def get_search_history(
 @router.get("/search-history/insights")
 def get_search_history_insights(
     limit: int = 120,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
     size = max(10, min(limit, 500))
-    rows = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(size)
-        .all()
-    )
+    rows = repo.list_search_history_for_user(current_user.id, limit=size)
 
     query_counts: Dict[str, int] = {}
     weighted_counts: Dict[str, float] = {}
@@ -4664,20 +4860,16 @@ def get_search_history_insights(
 @router.delete("/search-history")
 def delete_search_history(
     item_id: Optional[int] = None,
-    db: Session = Depends(get_db),
+    repo: ResearchRepository = Depends(get_research_repository),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(SearchHistory).filter(SearchHistory.user_id == current_user.id)
     if item_id is not None:
-        row = query.filter(SearchHistory.id == item_id).first()
-        if not row:
+        deleted = repo.delete_search_history(current_user.id, item_id=item_id)
+        if not deleted:
             raise HTTPException(status_code=404, detail="Search history item not found.")
-        db.delete(row)
-        db.commit()
         return {"message": "Search history item deleted."}
 
-    deleted = query.delete(synchronize_session=False)
-    db.commit()
+    deleted = repo.delete_search_history(current_user.id)
     return {"message": "Search history cleared.", "deleted": int(deleted or 0)}
 
 
@@ -5136,7 +5328,7 @@ async def source_health(current_user: User = Depends(get_current_user)):
                     "pageSize": 1,
                     "page": 1,
                 },
-                headers={"User-Agent": "ResearchHub-AI/1.0"},
+                headers={"User-Agent": "Soyog-AI/1.0"},
             )
         elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         if response.status_code == 200:
@@ -5167,15 +5359,35 @@ async def source_health(current_user: User = Depends(get_current_user)):
     return {"checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "sources": sources}
 
 
-def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int) -> Workspace:
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id, Workspace.user_id == user_id)
-        .first()
-    )
+def _research_repo(db: Session) -> ResearchRepository:
+    return get_research_repository(db)
+
+
+def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int):
+    workspace = _research_repo(db).find_workspace_for_user(workspace_id, user_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
+
+
+def _find_existing_workspace_paper(
+    repo: ResearchRepository,
+    workspace_id: int,
+    *,
+    doi: str = "",
+    normalized_title: str = "",
+):
+    papers = repo.list_papers_for_workspace(workspace_id)
+    if doi:
+        for paper in papers:
+            if str(getattr(paper, "doi", "") or "").strip().lower() == doi.lower():
+                return paper
+    if normalized_title:
+        for paper in papers:
+            current_title = re.sub(r"\s+", " ", str(getattr(paper, "title", "") or "").strip().lower())
+            if current_title == normalized_title:
+                return paper
+    return None
 
 
 async def _resolve_access_payload(
@@ -5224,6 +5436,7 @@ async def import_institutional_papers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    repo = _research_repo(db)
     workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
     entries: List[InstitutionalPaperEntry] = []
     if payload.entries:
@@ -5246,19 +5459,12 @@ async def import_institutional_papers(
             continue
 
         doi_norm = _normalize_doi(str(entry.doi or ""))
-        existing: Optional[Paper] = None
-        if doi_norm:
-            existing = (
-                db.query(Paper)
-                .filter(Paper.workspace_id == workspace.id, Paper.doi == doi_norm)
-                .first()
-            )
-        if not existing:
-            existing = (
-                db.query(Paper)
-                .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == title.lower())
-                .first()
-            )
+        existing = _find_existing_workspace_paper(
+            repo,
+            workspace.id,
+            doi=doi_norm,
+            normalized_title=title.lower(),
+        )
 
         try:
             resolved = await _resolve_access_payload(
@@ -5291,26 +5497,25 @@ async def import_institutional_papers(
             existing.full_text_available = bool(
                 resolved.get("full_text_available") or existing.full_text_available
             )
+            repo.save(existing)
             updated += 1
             continue
 
-        paper = Paper(
+        paper = repo.create_paper(
+            workspace_id=workspace.id,
             title=title[:600],
             authors=", ".join(entry.authors or [])[:2000],
             abstract=str(entry.abstract or "").strip() or "Institutional import entry.",
             url=str(entry.url or "").strip() or None,
-            doi=doi_norm or None,
-            source=str(resolved.get("source") or "institutional_portal"),
-            pdf_url=str(resolved.get("pdf_url") or "").strip() or None,
-            institutional_url=str(resolved.get("institutional_url") or "").strip() or None,
-            access_type=str(resolved.get("access_type") or "institutional"),
-            full_text_available=bool(resolved.get("full_text_available")),
-            workspace_id=workspace.id,
         )
-        db.add(paper)
+        paper.doi = doi_norm or None
+        paper.source = str(resolved.get("source") or "institutional_portal")
+        paper.pdf_url = str(resolved.get("pdf_url") or "").strip() or None
+        paper.institutional_url = str(resolved.get("institutional_url") or "").strip() or None
+        paper.access_type = str(resolved.get("access_type") or "institutional")
+        paper.full_text_available = bool(resolved.get("full_text_available"))
+        repo.save(paper)
         imported += 1
-
-    db.commit()
 
     return {
         "workspace_id": workspace.id,
@@ -5330,14 +5535,13 @@ async def resolve_access(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    paper: Optional[Paper] = None
+    repo = _research_repo(db)
+    paper = None
     if payload.workspace_id and payload.paper_id:
         workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
-        paper = (
-            db.query(Paper)
-            .filter(Paper.id == payload.paper_id, Paper.workspace_id == workspace.id)
-            .first()
-        )
+        paper = repo.find_paper_for_user(payload.paper_id, current_user.id)
+        if paper and int(getattr(paper, "workspace_id", 0) or 0) != int(workspace.id):
+            paper = None
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found in workspace.")
 
@@ -5367,8 +5571,7 @@ async def resolve_access(
         paper.source = str(resolved.get("source") or paper.source or "manual_import")
         paper.access_type = str(resolved.get("access_type") or "metadata_only")
         paper.full_text_available = bool(resolved.get("full_text_available"))
-        db.commit()
-        db.refresh(paper)
+        repo.save(paper)
 
     return {
         "paper_id": paper.id if paper else None,
@@ -5383,8 +5586,9 @@ async def resolve_workspace_access(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    repo = _research_repo(db)
     workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
-    rows = db.query(Paper).filter(Paper.workspace_id == workspace.id).all()
+    rows = repo.list_papers_for_workspace(workspace.id)
     if not rows:
         return {
             "workspace_id": workspace.id,
@@ -5454,13 +5658,9 @@ async def resolve_workspace_access(
                 }
             )
 
-    db.commit()
+        repo.save(row)
 
-    full_text_count = (
-        db.query(Paper)
-        .filter(Paper.workspace_id == workspace.id, Paper.full_text_available.is_(True))
-        .count()
-    )
+    full_text_count = sum(1 for row in repo.list_papers_for_workspace(workspace.id) if bool(row.full_text_available))
 
     return {
         "workspace_id": workspace.id,
@@ -5483,30 +5683,20 @@ async def import_paper(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    workspace = (
-        db.query(Workspace)
-        .filter(Workspace.id == paper_data.workspace_id, Workspace.user_id == current_user.id)
-        .first()
-    )
+    repo = _research_repo(db)
+    workspace = repo.find_workspace_for_user(paper_data.workspace_id, current_user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
     normalized_doi = _normalize_doi(paper_data.doi or "")
     normalized_title = re.sub(r"\s+", " ", str(paper_data.title or "").strip().lower())
 
-    existing: Optional[Paper] = None
-    if normalized_doi:
-        existing = (
-            db.query(Paper)
-            .filter(Paper.workspace_id == workspace.id, Paper.doi == normalized_doi)
-            .first()
-        )
-    if not existing and normalized_title:
-        existing = (
-            db.query(Paper)
-            .filter(Paper.workspace_id == workspace.id, func.lower(Paper.title) == normalized_title)
-            .first()
-        )
+    existing = _find_existing_workspace_paper(
+        repo,
+        workspace.id,
+        doi=normalized_doi,
+        normalized_title=normalized_title,
+    )
 
     source_name = str(paper_data.source or "manual_import").strip().lower()[:120] or "manual_import"
     pdf_url = str(paper_data.pdf_url or "").strip()
@@ -5535,25 +5725,25 @@ async def import_paper(
             or existing.access_type
             or ("open_access" if full_text_available else "metadata_only")
         )
-        db.commit()
-        db.refresh(existing)
+        repo.save(existing)
         return {"message": "Paper updated successfully", "paper_id": existing.id, "updated": True}
 
-    new_paper = Paper(
+    new_paper = repo.create_paper(
+        workspace_id=paper_data.workspace_id,
         title=paper_data.title.strip()[:600],
         authors=", ".join(paper_data.authors or []),
         abstract=paper_data.abstract,
         url=paper_data.url,
-        doi=normalized_doi or None,
-        bibcode=paper_data.bibcode,
-        source=source_name,
         pdf_url=pdf_url or None,
-        institutional_url=institutional_url or None,
-        access_type=(str(paper_data.access_type or "").strip().lower() or ("open_access" if full_text_available else "metadata_only")),
-        full_text_available=bool(full_text_available),
-        workspace_id=paper_data.workspace_id,
     )
-    db.add(new_paper)
-    db.commit()
-    db.refresh(new_paper)
+    new_paper.doi = normalized_doi or None
+    new_paper.bibcode = paper_data.bibcode
+    new_paper.source = source_name
+    new_paper.institutional_url = institutional_url or None
+    new_paper.access_type = (
+        str(paper_data.access_type or "").strip().lower()
+        or ("open_access" if full_text_available else "metadata_only")
+    )
+    new_paper.full_text_available = bool(full_text_available)
+    repo.save(new_paper)
     return {"message": "Paper imported successfully", "paper_id": new_paper.id, "updated": False}

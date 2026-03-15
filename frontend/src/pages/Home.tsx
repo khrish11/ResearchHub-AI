@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MessageSquare, FileText, BookOpen, Sparkles, Orbit, BrainCircuit, Layers3, ArrowRight, RefreshCw } from 'lucide-react';
+import { Search, MessageSquare, FileText, BookOpen, Sparkles, Orbit, BrainCircuit, Layers3, ArrowRight, RefreshCw, Bot, Upload, Workflow } from 'lucide-react';
 import Layout from '../components/Layout';
 import api from '../api';
 
@@ -318,6 +318,55 @@ const Home = () => {
     },
   ];
 
+  const quickActionCards = [
+    {
+      title: 'Discover literature',
+      desc: 'Run global search across 28+ source rails with live ranking and source diversity.',
+      icon: Search,
+      to: '/search',
+      tone: 'from-indigo-500 to-cyan-500',
+    },
+    {
+      title: 'Ask the research agent',
+      desc: 'Move from search results to guided exploration when you need deeper synthesis.',
+      icon: Bot,
+      to: '/research-agent',
+      tone: 'from-sky-500 to-blue-600',
+    },
+    {
+      title: 'Ingest private PDFs',
+      desc: 'Bring your own documents into the same workspace and keep the evidence layer unified.',
+      icon: Upload,
+      to: '/upload',
+      tone: 'from-emerald-500 to-teal-600',
+    },
+    {
+      title: 'Map the review',
+      desc: 'Turn clusters of papers into a mindmap before writing or drafting structured review output.',
+      icon: Workflow,
+      to: '/mindmap',
+      tone: 'from-fuchsia-500 to-violet-600',
+    },
+  ];
+
+  const runwaySteps = [
+    {
+      label: '1. Scout',
+      title: 'Search broad, then narrow fast',
+      copy: 'Start in multi-source search, save one useful query, and identify the source mix before importing.',
+    },
+    {
+      label: '2. Capture',
+      title: 'Import only the evidence you need',
+      copy: 'Move selected papers into a workspace so AI tools and exports stay tied to one clear project context.',
+    },
+    {
+      label: '3. Synthesize',
+      title: 'Let the AI operate on context, not fragments',
+      copy: 'Use AI Tools, Research Chat, or Mindmap once the workspace contains enough strong material.',
+    },
+  ];
+
   return (
     <Layout>
       <section className="home-hero mb-6">
@@ -329,7 +378,7 @@ const Home = () => {
             Design Breakthrough Research Pipelines, Not Just Paper Lists
           </h2>
           <p className="text-cyan-100/90 mt-4 max-w-2xl text-sm md:text-base">
-            ResearchHub AI now blends deep search, live source verification, and AI-native writing flow in one command surface.
+            Soyog AI now blends deep search, live source verification, and AI-native writing flow in one command surface.
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link to="/search" className="hero-btn-primary">
@@ -365,6 +414,51 @@ const Home = () => {
           </div>
         </section>
       )}
+
+      <section className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr,0.9fr]">
+        <div className="feature-surface">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-[0.2em] text-slate-500">Research runway</p>
+              <h3 className="text-xl font-bold text-slate-900">Your next three high-leverage moves</h3>
+            </div>
+            <Link to="/dashboard" className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600">
+              Open workspace ops <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {runwaySteps.map((step) => (
+              <article key={step.label} className="rounded-2xl border border-slate-200 bg-slate-50/90 px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-600">{step.label}</p>
+                <h4 className="mt-1 text-base font-semibold text-slate-900">{step.title}</h4>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{step.copy}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {quickActionCards.map((card) => {
+            const Icon = card.icon;
+            return (
+              <Link
+                key={card.title}
+                to={card.to}
+                className="group rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition-transform duration-150 hover:-translate-y-1 hover:shadow-lg"
+              >
+                <div className={`inline-flex rounded-2xl bg-gradient-to-br ${card.tone} p-2.5 text-white shadow-md`}>
+                  <Icon className="h-5 w-5" />
+                </div>
+                <h4 className="mt-4 text-base font-semibold text-slate-900">{card.title}</h4>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{card.desc}</p>
+                <span className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-slate-700">
+                  Jump in <ArrowRight className="h-3.5 w-3.5 transition-transform duration-150 group-hover:translate-x-0.5" />
+                </span>
+              </Link>
+            );
+          })}
+        </div>
+      </section>
 
       <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
@@ -442,19 +536,30 @@ const Home = () => {
             {recommendations.map((paper, index) => {
               const link = paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : '');
               return (
-                <article key={`${paper.title}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <p className="text-sm font-semibold text-slate-900 line-clamp-2">{paper.title}</p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {paper.source || 'multi-source'} {paper.year ? ` | ${paper.year}` : ''}
-                  </p>
+                <article key={`${paper.title}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50/90 p-3.5 shadow-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                      {paper.source || 'multi-source'}
+                    </span>
+                    {paper.year && (
+                      <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] font-semibold text-cyan-700">
+                        {paper.year}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-slate-900 line-clamp-2">{paper.title}</p>
                   {(paper.ranking_score || paper.score) && (
-                    <p className="text-[11px] text-slate-500 mt-1">
+                    <p className="mt-2 text-[11px] text-slate-500">
                       relevance score: {(paper.ranking_score || paper.score || 0).toFixed(2)}
                     </p>
                   )}
-                  {paper.reason && <p className="text-[11px] text-indigo-600 mt-1">{paper.reason}</p>}
+                  {paper.reason && (
+                    <p className="mt-2 rounded-xl border border-indigo-100 bg-indigo-50 px-2.5 py-2 text-[11px] text-indigo-700">
+                      {paper.reason}
+                    </p>
+                  )}
                   {link && (
-                    <a href={link} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-indigo-700">
+                    <a href={link} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-indigo-700">
                       Open paper <ArrowRight className="h-3.5 w-3.5" />
                     </a>
                   )}
@@ -471,7 +576,7 @@ const Home = () => {
             <Orbit className="h-5 w-5" />
           </div>
           <p className="stat-label">Search Fabric</p>
-          <p className="stat-value">14 Unified Sources</p>
+          <p className="stat-value">28+ Source Rails</p>
         </div>
         <div className="stat-tile">
           <div className="stat-icon" style={{ background: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>

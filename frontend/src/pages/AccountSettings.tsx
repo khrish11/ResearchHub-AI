@@ -17,6 +17,7 @@ import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import Layout from '../components/Layout';
 import api from '../api';
 import { asApiError, apiErrorMessage } from '../utils/apiError';
+import { clearAuthSession } from '../utils/authSession';
 
 interface UserProfile {
   id: number;
@@ -25,6 +26,8 @@ interface UserProfile {
   google_email?: string;
   name?: string;
   profile_pic?: string;
+  auth_provider?: string;
+  managed_auth?: boolean;
 }
 
 interface AccountOverview {
@@ -97,7 +100,7 @@ const AccountSettings: React.FC = () => {
     } catch (err: unknown) {
       const apiErr = asApiError(err);
       if (apiErr.response?.status === 401) {
-        localStorage.removeItem('token');
+        await clearAuthSession();
         navigate('/login');
         return;
       }
@@ -166,7 +169,7 @@ const AccountSettings: React.FC = () => {
       setError('Please type your account email to confirm deletion');
       return;
     }
-    if (!profile.google_id && !deletePassword) {
+    if (!profile.managed_auth && !deletePassword) {
       setError('Current password is required to delete account');
       return;
     }
@@ -178,10 +181,10 @@ const AccountSettings: React.FC = () => {
       await api.delete('/auth/me', {
         data: {
           confirm_email: confirmEmail,
-          password: profile.google_id ? undefined : deletePassword,
+          password: profile.managed_auth ? undefined : deletePassword,
         },
       });
-      localStorage.removeItem('token');
+      await clearAuthSession();
       navigate('/login');
     } catch (err: unknown) {
       setError(apiErrorMessage(err, 'Failed to delete account'));
@@ -224,7 +227,11 @@ const AccountSettings: React.FC = () => {
             Manage profile details, security credentials, and account lifecycle actions from one place.
           </p>
           <div className="studio-chip-row">
-            <span className="studio-chip">{profile.google_id ? 'Google linked' : 'Password account'}</span>
+            <span className="studio-chip">
+              {profile.managed_auth
+                ? (profile.auth_provider === 'google' ? 'Google linked' : 'Firebase managed')
+                : 'Password account'}
+            </span>
             <span className="studio-chip">{profile.email}</span>
           </div>
           <div className="studio-orb" aria-hidden="true" />
@@ -320,10 +327,10 @@ const AccountSettings: React.FC = () => {
             <div>
               <p className="text-sm font-semibold text-slate-900">{profile.name || 'No name set'}</p>
               <p className="text-sm text-slate-500">{profile.email}</p>
-              {profile.google_id && (
+              {profile.managed_auth && (
                 <p className="text-xs text-emerald-600 mt-1 inline-flex items-center gap-1">
                   <Check className="h-3.5 w-3.5" />
-                  Connected with Google
+                  {profile.auth_provider === 'google' ? 'Connected with Google' : 'Managed by Firebase Authentication'}
                 </p>
               )}
             </div>
@@ -371,7 +378,7 @@ const AccountSettings: React.FC = () => {
             <ShieldCheck className="h-4.5 w-4.5 text-cyan-600" />
             Security
           </h3>
-          {!profile.google_id ? (
+          {!profile.managed_auth ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="studio-panel-quiet p-3">
                 <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
@@ -424,8 +431,7 @@ const AccountSettings: React.FC = () => {
           ) : (
             <div className="studio-panel-quiet p-3">
               <p className="text-sm text-emerald-700">
-                This account uses Google authentication. Password changes are managed by your Google
-                account.
+                This account uses {profile.auth_provider === 'google' ? 'Google' : 'Firebase'} authentication. Password changes are managed by your identity provider.
               </p>
             </div>
           )}
@@ -449,7 +455,7 @@ const AccountSettings: React.FC = () => {
                 placeholder={profile.email}
               />
             </div>
-            {!profile.google_id && (
+            {!profile.managed_auth && (
               <div className="studio-panel-quiet p-3">
                 <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
                   Current password

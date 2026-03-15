@@ -34,6 +34,8 @@ def ai_models(current_user: User = Depends(get_current_user)):
         "available_models": status.get("available_models", []),
         "active_model": status.get("active_model"),
         "active_longform_model": status.get("active_longform_model"),
+        "active_task_models": status.get("active_task_models", {}),
+        "task_model_labels": status.get("task_model_labels", {}),
     }
 
 
@@ -41,13 +43,23 @@ class ModelSelectionRequest(BaseModel):
     model: str
     longform_model: Optional[str] = None
     apply_to_all: bool = True
+    task_models: Optional[Dict[str, str]] = None
 
 
 @router.post("/models/select")
 def select_ai_models(req: ModelSelectionRequest, current_user: User = Depends(get_current_user)):
     selected_longform = req.model if req.apply_to_all else (req.longform_model or req.model)
+    selected_task_models = dict(req.task_models or {})
+    if req.apply_to_all:
+        selected_task_models = {
+            "chat": req.model,
+            "upload_summary": req.model,
+            "mindmap": selected_longform,
+            "pipeline": selected_longform,
+            **selected_task_models,
+        }
     try:
-        updated = set_active_models(req.model, selected_longform)
+        updated = set_active_models(req.model, selected_longform, selected_task_models)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -248,6 +260,7 @@ async def analyze(req: AnalyzeRequest, current_user: User = Depends(get_current_
                 {"role": "user", "content": trimmed},
             ],
             **model_config(
+                task="pipeline",
                 longform=mode in {"summaries", "insights", "review"},
                 max_tokens=target_tokens,
                 temperature=0.16 if mode in {"summaries", "insights", "review"} else 0.18,
@@ -273,6 +286,7 @@ async def analyze(req: AnalyzeRequest, current_user: User = Depends(get_current_
                     },
                 ],
                 **model_config(
+                    task="pipeline",
                     longform=True,
                     max_tokens=min(3600, max(2200, target_tokens // 2 + 300)),
                     temperature=0.14,

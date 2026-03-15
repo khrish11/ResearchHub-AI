@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Brain,
+  Bot,
   FileText,
   Home,
   LayoutDashboard,
@@ -15,9 +16,11 @@ import {
   Bell,
   MessageSquareCode,
 } from 'lucide-react';
+import { toAppPath } from '../utils/routing';
+import { OPEN_COMMAND_PALETTE_EVENT } from '../utils/commandPalette';
+import { clearAuthSession } from '../utils/authSession';
 
 const SAVED_QUERIES_STORAGE_KEY = 'researchhub.saved_queries.v1';
-const OPEN_COMMAND_PALETTE_EVENT = 'researchhub:open-command-palette';
 
 interface SavedQueryRecord {
   id: string;
@@ -145,6 +148,15 @@ const CommandPalette: React.FC = () => {
         onSelect: () => go('/research-chat'),
       },
       {
+        id: 'go-research-agent',
+        title: 'Go to Research Agent',
+        subtitle: '/research-agent',
+        group: 'Navigation',
+        icon: <Bot className="h-4 w-4" />,
+        keywords: ['research', 'agent', 'automation', 'assistant'],
+        onSelect: () => go('/research-agent'),
+      },
+      {
         id: 'go-upload',
         title: 'Go to Upload PDF',
         subtitle: '/upload',
@@ -188,8 +200,9 @@ const CommandPalette: React.FC = () => {
         icon: <LogOut className="h-4 w-4" />,
         keywords: ['logout', 'sign out'],
         onSelect: () => {
-          localStorage.removeItem('token');
-          window.location.href = '/login';
+          void clearAuthSession().finally(() => {
+            window.location.href = toAppPath('/login');
+          });
         },
       },
     ],

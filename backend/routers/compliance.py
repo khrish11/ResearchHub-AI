@@ -3,18 +3,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from database import get_db
-from models import (
-    Chat,
-    DataRightsRequest,
-    Paper,
-    SearchHistory,
-    User,
-    Workspace,
-    WorkspaceDocument,
-)
+from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
@@ -57,6 +47,14 @@ def _as_iso(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _sort_dt(value: Optional[datetime]) -> datetime:
+    if not value:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 @router.get("/privacy-summary")
 async def privacy_summary():
     return {
@@ -77,10 +75,10 @@ async def privacy_summary():
 @router.post("/data-rights-request", response_model=DataRightsRequestOut)
 async def create_data_rights_request(
     payload: DataRightsRequestIn,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(get_current_user),
 ):
-    row = DataRightsRequest(
+    row = repo.create_data_rights_request(
         user_id=current_user.id,
         email=str(current_user.email or "").strip().lower(),
         request_type=str(payload.request_type),
@@ -88,9 +86,6 @@ async def create_data_rights_request(
         details=str(payload.details or "").strip()[:6000],
         status="submitted",
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
     return DataRightsRequestOut(
         id=row.id,
         email=row.email,
@@ -105,16 +100,10 @@ async def create_data_rights_request(
 
 @router.get("/data-rights-request/me")
 async def list_my_data_rights_requests(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(get_current_user),
 ):
-    rows = (
-        db.query(DataRightsRequest)
-        .filter(DataRightsRequest.user_id == current_user.id)
-        .order_by(DataRightsRequest.submitted_at.desc())
-        .limit(100)
-        .all()
-    )
+    rows = repo.list_data_rights_requests_for_user(current_user.id, limit=100)
     items = [
         DataRightsRequestOut(
             id=row.id,
@@ -131,7 +120,7 @@ async def list_my_data_rights_requests(
     return {"items": items, "count": len(items)}
 
 
-def _workspace_payload(workspace: Workspace) -> Dict[str, Any]:
+def _workspace_payload(workspace: Any) -> Dict[str, Any]:
     return {
         "id": workspace.id,
         "name": workspace.name,
@@ -140,7 +129,7 @@ def _workspace_payload(workspace: Workspace) -> Dict[str, Any]:
     }
 
 
-def _paper_payload(paper: Paper) -> Dict[str, Any]:
+def _paper_payload(paper: Any) -> Dict[str, Any]:
     return {
         "id": paper.id,
         "workspace_id": paper.workspace_id,
@@ -156,7 +145,7 @@ def _paper_payload(paper: Paper) -> Dict[str, Any]:
     }
 
 
-def _chat_payload(chat: Chat) -> Dict[str, Any]:
+def _chat_payload(chat: Any) -> Dict[str, Any]:
     return {
         "id": chat.id,
         "workspace_id": chat.workspace_id,
@@ -166,7 +155,7 @@ def _chat_payload(chat: Chat) -> Dict[str, Any]:
     }
 
 
-def _search_payload(row: SearchHistory) -> Dict[str, Any]:
+def _search_payload(row: Any) -> Dict[str, Any]:
     return {
         "id": row.id,
         "query": row.query,
@@ -177,7 +166,7 @@ def _search_payload(row: SearchHistory) -> Dict[str, Any]:
     }
 
 
-def _document_payload(row: WorkspaceDocument) -> Dict[str, Any]:
+def _document_payload(row: Any) -> Dict[str, Any]:
     return {
         "id": row.id,
         "workspace_id": row.workspace_id,
@@ -189,54 +178,47 @@ def _document_payload(row: WorkspaceDocument) -> Dict[str, Any]:
     }
 
 
+def _workspace_file_payload(row: Any) -> Dict[str, Any]:
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "paper_id": row.paper_id,
+        "kind": row.kind,
+        "filename": row.filename,
+        "storage_bucket": row.storage_bucket,
+        "storage_path": row.storage_path,
+        "content_type": row.content_type,
+        "size_bytes": int(row.size_bytes or 0),
+        "download_url": row.download_url,
+        "created_at": _as_iso(row.created_at),
+    }
+
+
 @router.get("/export-my-data")
 async def export_my_data(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: Any = Depends(get_current_user),
 ):
-    workspaces: List[Workspace] = (
-        db.query(Workspace)
-        .filter(Workspace.user_id == current_user.id)
-        .order_by(Workspace.created_at.asc())
-        .all()
+    workspaces = sorted(
+        repo.list_workspaces_for_user(current_user.id),
+        key=lambda row: _sort_dt(row.created_at),
     )
     workspace_ids = [w.id for w in workspaces]
 
-    papers: List[Paper] = []
-    chats: List[Chat] = []
+    papers: List[Any] = []
+    chats: List[Any] = []
+    workspace_files: List[Any] = []
     if workspace_ids:
-        papers = (
-            db.query(Paper)
-            .filter(Paper.workspace_id.in_(workspace_ids))
-            .order_by(Paper.id.asc())
-            .all()
-        )
-        chats = (
-            db.query(Chat)
-            .filter(Chat.workspace_id.in_(workspace_ids))
-            .order_by(Chat.id.asc())
-            .all()
-        )
+        for workspace in workspaces:
+            papers.extend(repo.list_papers_for_workspace(workspace.id))
+            chats.extend(repo.list_chats_for_workspace(workspace.id, ascending=True))
+            workspace_files.extend(repo.list_workspace_files_for_workspace(workspace.id, current_user.id))
 
-    search_rows: List[SearchHistory] = (
-        db.query(SearchHistory)
-        .filter(SearchHistory.user_id == current_user.id)
-        .order_by(SearchHistory.created_at.desc())
-        .limit(1000)
-        .all()
-    )
-    docs: List[WorkspaceDocument] = (
-        db.query(WorkspaceDocument)
-        .filter(WorkspaceDocument.user_id == current_user.id)
-        .order_by(WorkspaceDocument.updated_at.desc())
-        .all()
-    )
-    dsr_rows: List[DataRightsRequest] = (
-        db.query(DataRightsRequest)
-        .filter(DataRightsRequest.user_id == current_user.id)
-        .order_by(DataRightsRequest.submitted_at.desc())
-        .all()
-    )
+    papers.sort(key=lambda row: int(row.id))
+    chats.sort(key=lambda row: int(row.id))
+    search_rows = repo.list_search_history_for_user(current_user.id, limit=1000)
+    docs = repo.list_workspace_documents_for_user(current_user.id)
+    dsr_rows = repo.list_data_rights_requests_for_user(current_user.id)
 
     return {
         "exported_at": _as_iso(datetime.now(timezone.utc)),
@@ -252,6 +234,7 @@ async def export_my_data(
         "chats": [_chat_payload(c) for c in chats],
         "search_history": [_search_payload(s) for s in search_rows],
         "documents": [_document_payload(d) for d in docs],
+        "workspace_files": [_workspace_file_payload(row) for row in workspace_files],
         "data_rights_requests": [
             {
                 "id": row.id,
