@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import Any, Dict, Literal, List, Optional
 import re
 from routers.auth import get_current_user
-from models import User
+from repositories.research import User
+from repositories import ResearchRepository, get_research_repository
 from utils.groq_client import (
     client,
     MODEL_CONFIG,
@@ -11,6 +12,8 @@ from utils.groq_client import (
     groq_client_status,
     set_active_models,
 )
+from services.ai_service import run_ai_query
+from services.analytics_service import log_ai_usage
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -219,7 +222,11 @@ def _paper_links_section_from_prompt(prompt: str) -> str:
 
 
 @router.post("/analyze")
-async def analyze(req: AnalyzeRequest, current_user: User = Depends(get_current_user)):
+async def analyze(
+    req: AnalyzeRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
     """
     Direct AI analysis endpoint.
     Frontend can pass a fully prepared prompt; this endpoint adds robust analysis instructions.
@@ -250,63 +257,76 @@ async def analyze(req: AnalyzeRequest, current_user: User = Depends(get_current_
         "Use section headers and concrete bullet points instead of generic paragraphs."
     )
 
+    # ── Primary call: cache → Groq → analytics ──────────────────────────────
     try:
-        response = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {"role": "user", "content": trimmed},
-            ],
-            **model_config(
+        ai_result = run_ai_query(
+            groq_client=client,
+            db=repo.db,
+            user_id=str(current_user.id),
+            query=trimmed,
+            system_prompt=system_prompt,
+            route="analyze",
+            model_kwargs=model_config(
                 task="pipeline",
                 longform=mode in {"summaries", "insights", "review"},
                 max_tokens=target_tokens,
                 temperature=0.16 if mode in {"summaries", "insights", "review"} else 0.18,
             ),
+            cacheable=True,
         )
-        content = (response.choices[0].message.content or "").strip()
-        content = _normalize_paper_refs(content, req.reference_style)
-
-        # Recovery pass: expand thin answers for long-form analysis modes.
-        min_len = {"quick": 700, "balanced": 1100, "deep": 1600}.get(detail_level, 1100)
-        if mode in {"summaries", "insights", "review"} and len(content) < min_len:
-            expand = client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": trimmed},
-                    {"role": "assistant", "content": content or "Draft was too brief."},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Expand this into a substantially more detailed analysis. "
-                            "Keep all claims evidence-grounded and cite using Paper N notation."
-                        ),
-                    },
-                ],
-                **model_config(
-                    task="pipeline",
-                    longform=True,
-                    max_tokens=min(3600, max(2200, target_tokens // 2 + 300)),
-                    temperature=0.14,
-                ),
-            )
-            extra = (expand.choices[0].message.content or "").strip()
-            if extra:
-                content = f"{content}\n\n{extra}".strip()
-            content = _normalize_paper_refs(content, req.reference_style)
-
-        if req.include_paper_links:
-            links_section = _paper_links_section_from_prompt(trimmed)
-            if links_section and "## Paper Links" not in content:
-                content = f"{content}\n\n{links_section}".strip()
-
-        return {
-            "response": content,
-            "mode": mode,
-            "detail_level": detail_level,
-            "focus": focus,
-        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI API error: {str(exc)}")
+
+    if ai_result.get("error") and not ai_result.get("response"):
+        raise HTTPException(status_code=502, detail=f"AI API error: {ai_result['error']}")
+
+    content = _normalize_paper_refs(ai_result.get("response") or "", req.reference_style)
+    cache_hit = ai_result.get("cache_hit", False)
+    cache_layer = ai_result.get("cache_layer")  # "memory" | "firestore" | None
+
+    # ── Recovery pass: expand thin answers (skipped on cache hits) ───────────
+    if not cache_hit:
+        try:
+            min_len = {"quick": 700, "balanced": 1100, "deep": 1600}.get(detail_level, 1100)
+            if mode in {"summaries", "insights", "review"} and len(content) < min_len:
+                expand = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": trimmed},
+                        {"role": "assistant", "content": content or "Draft was too brief."},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Expand this into a substantially more detailed analysis. "
+                                "Keep all claims evidence-grounded and cite using Paper N notation."
+                            ),
+                        },
+                    ],
+                    **model_config(
+                        task="pipeline",
+                        longform=True,
+                        max_tokens=min(3600, max(2200, target_tokens // 2 + 300)),
+                        temperature=0.14,
+                    ),
+                )
+                extra = (expand.choices[0].message.content or "").strip()
+                if extra:
+                    content = f"{content}\n\n{extra}".strip()
+                content = _normalize_paper_refs(content, req.reference_style)
+        except Exception:
+            pass  # Recovery failure is non-fatal
+
+    if req.include_paper_links:
+        links_section = _paper_links_section_from_prompt(trimmed)
+        if links_section and "## Paper Links" not in content:
+            content = f"{content}\n\n{links_section}".strip()
+
+    return {
+        "response": content,
+        "mode": mode,
+        "detail_level": detail_level,
+        "focus": focus,
+        "cache_hit": cache_hit,
+        "cache_layer": cache_layer,
+    }
+

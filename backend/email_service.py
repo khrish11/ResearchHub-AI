@@ -7,12 +7,23 @@ from typing import Optional
 
 import aiosmtplib
 from jinja2 import Template
-from models import User
-from sqlalchemy.orm import Session
+
+# SQLAlchemy imports are only used in the legacy verify_email_token helper below,
+# which is guarded so it never executes in Firebase mode.
+try:
+    from repositories.research import User as _SQLUser  # type: ignore[import]
+    
+    _SQLALCHEMY_AVAILABLE = True
+except Exception:
+    _SQLALCHEMY_AVAILABLE = False
+    _SQLUser = None  # type: ignore[assignment]
+    _Session = None  # type: ignore[assignment]
 
 MAIL_USERNAME = os.getenv("MAIL_USERNAME", "").strip()
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "").strip()
-MAIL_FROM = os.getenv("MAIL_FROM", "noreply@researchhub.ai").strip() or "noreply@researchhub.ai"
+MAIL_FROM = (
+    os.getenv("MAIL_FROM", "noreply@researchhub.ai").strip() or "noreply@researchhub.ai"
+)
 MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com").strip() or "smtp.gmail.com"
 MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
 MAIL_STARTTLS = os.getenv("MAIL_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
@@ -22,6 +33,7 @@ MAIL_ENABLED = bool(
     MAIL_USERNAME and MAIL_PASSWORD and MAIL_FROM and MAIL_SERVER and MAIL_PORT > 0
 )
 
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -29,6 +41,7 @@ def utc_now() -> datetime:
 def generate_verification_token() -> str:
     """Generate a secure random token for email verification."""
     return secrets.token_urlsafe(32)
+
 
 def get_verification_token_expiry() -> datetime:
     """Get the expiry time for verification tokens (24 hours from now)."""
@@ -40,7 +53,9 @@ async def _send_html_email(subject: str, recipient: str, html_content: str) -> N
     message["From"] = MAIL_FROM
     message["To"] = recipient
     message["Subject"] = subject
-    message.set_content("Please use an HTML-compatible email client to view this message.")
+    message.set_content(
+        "Please use an HTML-compatible email client to view this message."
+    )
     message.add_alternative(html_content, subtype="html")
 
     await aiosmtplib.send(
@@ -55,10 +70,14 @@ async def _send_html_email(subject: str, recipient: str, html_content: str) -> N
     )
 
 
-async def send_verification_email(email: str, token: str, user_name: Optional[str] = None):
+async def send_verification_email(
+    email: str, token: str, user_name: Optional[str] = None
+):
     """Send email verification email to user."""
     if not MAIL_ENABLED:
-        logging.getLogger(__name__).info("Email sending skipped (mail service not configured).")
+        logging.getLogger(__name__).info(
+            "Email sending skipped (mail service not configured)."
+        )
         return
 
     verification_url = f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/verify-email?token={token}"
@@ -106,7 +125,7 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
+                <p>&copy; 2026 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
@@ -114,17 +133,20 @@ async def send_verification_email(email: str, token: str, user_name: Optional[st
     """)
 
     html_content = template.render(
-        name=user_name,
-        email=email,
-        verification_url=verification_url
+        name=user_name, email=email, verification_url=verification_url
     )
 
     await _send_html_email("Verify Your Email - Soyog AI", email, html_content)
 
-async def send_password_reset_email(email: str, token: str, user_name: Optional[str] = None):
+
+async def send_password_reset_email(
+    email: str, token: str, user_name: Optional[str] = None
+):
     """Send password reset email to user."""
     if not MAIL_ENABLED:
-        logging.getLogger(__name__).info("Password reset email skipped (mail service not configured).")
+        logging.getLogger(__name__).info(
+            "Password reset email skipped (mail service not configured)."
+        )
         return
 
     reset_url = f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/reset-password?token={token}"
@@ -167,34 +189,28 @@ async def send_password_reset_email(email: str, token: str, user_name: Optional[
             </div>
             <div class="footer">
                 <p>This email was sent to {{ email }}. If you have any questions, please contact our support team.</p>
-                <p>&copy; 2024 Soyog AI. All rights reserved.</p>
+                <p>&copy; 2026 Soyog AI. All rights reserved.</p>
             </div>
         </div>
     </body>
     </html>
     """)
 
-    html_content = template.render(
-        name=user_name,
-        email=email,
-        reset_url=reset_url
+    html_content = template.render(name=user_name, email=email, reset_url=reset_url)
+    now = utc_now()
+    user = (
+        db.query(_SQLUser)
+        .filter(  # type: ignore[union-attr]
+            _SQLUser.verification_token == token,
+            _SQLUser.verification_token_expires > now,
+            _SQLUser.is_active == True,
+        )
+        .first()
     )
-
-    await _send_html_email("Reset Your Password - Soyog AI", email, html_content)
-
-def verify_email_token(db: Session, token: str) -> Optional[User]:
-    """Verify email verification token and return user if valid."""
-    user = db.query(User).filter(
-        User.verification_token == token,
-        User.verification_token_expires > utc_now(),
-        User.is_active == True
-    ).first()
-
     if user:
         user.is_verified = True
         user.verification_token = None
         user.verification_token_expires = None
-        db.commit()
-        db.refresh(user)
-
+        db.commit()  # type: ignore[union-attr]
+        db.refresh(user)  # type: ignore[union-attr]
     return user

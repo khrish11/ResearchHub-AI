@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
-from models import User, Paper
+from repositories.research import User, Paper
 from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from utils.groq_client import client, model_config
 from pydantic import BaseModel
 import re
+import time
 from typing import Iterable, List, Optional, Tuple
+from services.analytics_service import log_ai_usage
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -17,17 +19,7 @@ class ChatMessage(BaseModel):
     include_recent_chats: bool = True
 
 
-_STOP_WORDS = {
-    "the", "and", "for", "with", "from", "that", "this", "into", "using", "your",
-    "about", "have", "has", "are", "was", "were", "how", "what", "when", "where",
-    "which", "will", "would", "could", "should", "can", "also", "than", "then",
-    "their", "there", "these", "those", "over", "under", "between", "across",
-}
-
-
-def _tokenize(text: str) -> List[str]:
-    tokens = re.findall(r"[a-zA-Z0-9]{3,}", (text or "").lower())
-    return [tok for tok in tokens if tok not in _STOP_WORDS]
+from utils.text_utils import STOP_WORDS as _STOP_WORDS, tokenize as _tokenize
 
 
 def _paper_score(paper: Paper, query_tokens: Iterable[str]) -> int:
@@ -41,13 +33,17 @@ def _paper_score(paper: Paper, query_tokens: Iterable[str]) -> int:
     return (title_hits * 4) + (abstract_hits * 2)
 
 
-def build_context(papers: List[Paper], query: str, max_papers: int = 12, max_chars: int = 18000) -> str:
+def build_context(
+    papers: List[Paper], query: str, max_papers: int = 12, max_chars: int = 18000
+) -> str:
     """Build grounded context with ranked papers and stable citation ids [P#]."""
     if not papers:
         return "No papers available in this workspace."
 
     q_tokens = _tokenize(query)
-    ranked: List[Tuple[int, Paper]] = [(_paper_score(paper, q_tokens), paper) for paper in papers]
+    ranked: List[Tuple[int, Paper]] = [
+        (_paper_score(paper, q_tokens), paper) for paper in papers
+    ]
     ranked.sort(
         key=lambda pair: (
             pair[0],
@@ -109,7 +105,9 @@ async def chat_with_papers(
     current_user: User = Depends(get_current_user),
 ):
     if not client:
-        raise HTTPException(status_code=503, detail="AI service not configured. Set GROQ_API_KEY.")
+        raise HTTPException(
+            status_code=503, detail="AI service not configured. Set GROQ_API_KEY."
+        )
 
     question = (chat_msg.message or "").strip()
     if not question:
@@ -121,7 +119,13 @@ async def chat_with_papers(
 
     clean_ids = None
     if chat_msg.selected_paper_ids:
-        clean_ids = sorted({paper_id for paper_id in chat_msg.selected_paper_ids if isinstance(paper_id, int) and paper_id > 0})
+        clean_ids = sorted(
+            {
+                paper_id
+                for paper_id in chat_msg.selected_paper_ids
+                if isinstance(paper_id, int) and paper_id > 0
+            }
+        )
     workspace_papers = repo.list_papers_for_workspace(chat_msg.workspace_id, clean_ids)
     if not workspace_papers:
         raise HTTPException(
@@ -130,7 +134,9 @@ async def chat_with_papers(
         )
     context = build_context(workspace_papers, question)
     conversation_context, recent_chat_turns = (
-        _recent_chat_context(repo, chat_msg.workspace_id) if chat_msg.include_recent_chats else ("", 0)
+        _recent_chat_context(repo, chat_msg.workspace_id)
+        if chat_msg.include_recent_chats
+        else ("", 0)
     )
 
     system_prompt = (
@@ -156,15 +162,42 @@ async def chat_with_papers(
     )
 
     try:
+        _t0 = time.monotonic()
         response = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            **model_config(task="chat", longform=False, max_tokens=2400, temperature=0.18),
+            **model_config(
+                task="chat", longform=False, max_tokens=2400, temperature=0.18
+            ),
         )
         ai_response = (response.choices[0].message.content or "").strip()
+        _duration_ms = max(0, int((time.monotonic() - _t0) * 1000))
+        _model_used = str(getattr(response, "model", "") or "")
+        log_ai_usage(
+            repo.db,
+            user_id=str(current_user.id),
+            route="chat",
+            input_size=len(user_prompt),
+            output_size=len(ai_response),
+            duration_ms=_duration_ms,
+            status="success",
+            model=_model_used,
+            cache_hit=False,
+        )
     except Exception as exc:
+        log_ai_usage(
+            repo.db,
+            user_id=str(current_user.id),
+            route="chat",
+            input_size=len(user_prompt),
+            output_size=0,
+            duration_ms=0,
+            status="error",
+            model="",
+            cache_hit=False,
+        )
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(exc)}")
 
     repo.create_chat(chat_msg.workspace_id, question, ai_response)

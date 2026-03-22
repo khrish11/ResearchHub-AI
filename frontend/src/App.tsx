@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
-import { useState, useEffect, lazy, Suspense, type ReactElement } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense, type ReactElement } from 'react';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -8,8 +8,9 @@ import CookieConsentBanner from './components/CookieConsentBanner';
 import CommandPalette from './components/CommandPalette';
 import api from './api';
 import { getAppBasePath, toAppPath } from './utils/routing';
-import { bootstrapGoogleServices, trackRouteView } from './utils/firebaseClient';
+import { trackRouteView } from './utils/firebaseClient';
 import { notifyAuthLogin } from './utils/authSession';
+import { handleFirebaseRedirectResult, firebaseAuthAvailable } from './utils/firebaseAuth';
 
 const Landing = lazy(() => import('./pages/Landing'));
 const Login = lazy(() => import('./pages/Login'));
@@ -28,10 +29,13 @@ const UploadPDF = lazy(() => import('./pages/UploadPDF'));
 const DocSpace = lazy(() => import('./pages/DocSpace'));
 const WritingChat = lazy(() => import('./pages/WritingChat'));
 const DeveloperConsole = lazy(() => import('./pages/DeveloperConsole'));
+const AnalyticsDashboard = lazy(() => import('./pages/AnalyticsDashboard'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 const TermsOfService = lazy(() => import('./pages/TermsOfService'));
 const CookiePolicy = lazy(() => import('./pages/CookiePolicy'));
 const DataRights = lazy(() => import('./pages/DataRights'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 
 const RouteLoader = () => (
   <div className="min-h-[42vh] flex items-center justify-center" role="status" aria-live="polite">
@@ -56,10 +60,14 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const routerBasename = getAppBasePath();
+  const authBootstrapStarted = useRef(false);
 
   const refreshAuthState = async () => {
     try {
-      await api.get('/auth/me');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      await api.get('/auth/me', { signal: controller.signal });
+      clearTimeout(timeoutId);
       setIsAuthenticated(true);
     } catch {
       setIsAuthenticated(false);
@@ -76,11 +84,16 @@ function App() {
     void refreshAuthState();
   };
 
-  useEffect(() => {
-    void bootstrapGoogleServices();
-  }, []);
+  // useEffect(() => {
+  //   void bootstrapGoogleServices();
+  // }, []);
 
   useEffect(() => {
+    if (authBootstrapStarted.current) {
+      return;
+    }
+    authBootstrapStarted.current = true;
+
     const currentUrl = new URL(window.location.href);
     const hashParams = new URLSearchParams(currentUrl.hash.startsWith('#') ? currentUrl.hash.slice(1) : currentUrl.hash);
     const oauthCode = (hashParams.get('oauth_code') || currentUrl.searchParams.get('oauth_code') || '').trim();
@@ -95,32 +108,66 @@ function App() {
       window.history.replaceState({}, document.title, nextPath);
     };
 
-    if (oauthCode) {
-      clearAuthArtifacts();
-      void api
-        .post('/auth/oauth/exchange', { code: oauthCode })
-        .then((response) => {
-          const nextToken = String(response.data?.access_token || '');
-          if (!nextToken) {
-            throw new Error('Missing OAuth access token');
-          }
-          notifyAuthLogin();
+    // Safety net: guarantee authChecked becomes true even if everything else hangs.
+    const safetyTimeout = window.setTimeout(() => {
+      setAuthChecked((prev) => {
+        if (!prev) {
           void refreshAuthState();
+        }
+        return prev;
+      });
+    }, 5000);
+
+    // Check for Firebase redirect / current-user result first.
+    if (firebaseAuthAvailable()) {
+      handleFirebaseRedirectResult()
+        .then((response) => {
+          if (response) {
+            clearAuthArtifacts();
+            notifyAuthLogin();
+            window.location.replace(toAppPath('/home'));
+            return;
+          }
+          // No Firebase result — fall through to OAuth / cookie check.
+          checkOAuthFlow();
         })
         .catch(() => {
-          setIsAuthenticated(false);
-          setAuthChecked(true);
-          const error = encodeURIComponent('Google sign-in session expired. Please try again.');
-          window.location.replace(toAppPath(`/login?error=${error}`));
+          // Firebase check failed — fall through anyway.
+          checkOAuthFlow();
         });
-      return;
+    } else {
+      checkOAuthFlow();
     }
 
-    if (legacyToken) {
-      clearAuthArtifacts();
-    }
+    function checkOAuthFlow() {
+      if (oauthCode) {
+        clearAuthArtifacts();
+        void api
+          .post('/auth/oauth/exchange', { code: oauthCode })
+          .then((response) => {
+            const nextToken = String(response.data?.access_token || '');
+            if (!nextToken) {
+              throw new Error('Missing OAuth access token');
+            }
+            notifyAuthLogin();
+            window.location.replace(toAppPath('/home'));
+          })
+          .catch(() => {
+            setIsAuthenticated(false);
+            setAuthChecked(true);
+            window.clearTimeout(safetyTimeout);
+            const error = encodeURIComponent('Google sign-in session expired. Please try again.');
+            window.location.replace(toAppPath(`/login?error=${error}`));
+          });
+        return;
+      }
 
-    void refreshAuthState();
+      if (legacyToken) {
+        clearAuthArtifacts();
+      }
+
+      void refreshAuthState().then(() => window.clearTimeout(safetyTimeout));
+    }
   }, []);
 
   useEffect(() => {
@@ -215,11 +262,17 @@ function App() {
                       path="/developer"
                       element={protectedRoute(<DeveloperConsole />)}
                     />
+                    <Route
+                      path="/analytics"
+                      element={protectedRoute(<AnalyticsDashboard />)}
+                    />
                     <Route path="/privacy" element={<PrivacyPolicy />} />
                     <Route path="/terms" element={<TermsOfService />} />
                     <Route path="/cookies" element={<CookiePolicy />} />
                     <Route path="/data-rights" element={<DataRights />} />
                     <Route path="/verify-email" element={<EmailVerification />} />
+                    <Route path="/forgot-password" element={<ForgotPassword />} />
+                    <Route path="/reset-password" element={<ResetPassword />} />
                     <Route path="/" element={authChecked && isAuthenticated ? <Navigate to="/home" replace /> : <Landing />} />
                   </Routes>
                 </Suspense>

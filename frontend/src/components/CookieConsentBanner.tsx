@@ -33,7 +33,7 @@ const CookieConsentBanner: React.FC = () => {
             setCookieConsent('accepted');
             setConsent('accepted');
           }}
-          className="rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-900"
+          className="rounded-xl bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 shadow-sm"
         >
           Accept
         </button>

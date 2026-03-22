@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 import json
@@ -13,8 +12,7 @@ from datetime import datetime, timezone
 from utils.groq_client import client as groq_client, model_config
 from utils.firebase_storage import download_bytes, storage_is_configured, upload_bytes
 
-from database import get_db
-from models import User, Workspace, Paper, UserSessionState, WorkspaceDocument
+from repositories.research import User, Workspace, Paper, UserSessionState, WorkspaceDocument
 from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 
@@ -204,7 +202,9 @@ def _persist_workspace_file_if_configured(
     if not storage_is_configured():
         return None
     safe_name = _safe_storage_filename(filename, fallback="artifact.bin")
-    storage_path = f"workspace-files/{user_id}/{workspace_id}/exports/{kind}/{safe_name}"
+    storage_path = (
+        f"workspace-files/{user_id}/{workspace_id}/exports/{kind}/{safe_name}"
+    )
     uploaded = upload_bytes(
         storage_path=storage_path,
         data=content,
@@ -226,41 +226,22 @@ def _persist_workspace_file_if_configured(
         content_type=uploaded.content_type,
         size_bytes=uploaded.size_bytes,
     )
-    record.download_url = f"{_backend_base_url()}/workspaces/{workspace_id}/files/{record.id}/download"
+    record.download_url = (
+        f"{_backend_base_url()}/workspaces/{workspace_id}/files/{record.id}/download"
+    )
     repo.save(record)
     return record
 
 
+from utils.text_utils import (
+    STOP_WORDS as _STOP_WORDS,
+    tokenize as _tokenize_for_rank,
+    extract_keywords as _extract_keywords_shared,
+)
+
+
 def _extract_keywords(text: str, top_n: int = 12) -> List[str]:
-    stop_words = {
-        "with", "from", "that", "this", "these", "those", "their", "there", "about",
-        "into", "using", "based", "study", "paper", "analysis", "results", "method",
-        "methods", "data", "approach", "approaches", "system", "systems", "model",
-        "models", "research", "through", "between", "across", "where", "while",
-        "under", "over", "after", "before", "because", "which", "would", "could",
-        "should", "have", "has", "been", "being", "were", "such", "than", "into",
-        "more", "most", "less", "many", "also", "both", "each", "within", "without",
-    }
-    words = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
-    filtered = [word for word in words if word not in stop_words]
-    counts = Counter(filtered)
-    return [word for word, _ in counts.most_common(top_n)]
-
-
-_STOP_WORDS = {
-    "with", "from", "that", "this", "these", "those", "their", "there", "about",
-    "into", "using", "based", "study", "paper", "analysis", "results", "method",
-    "methods", "data", "approach", "approaches", "system", "systems", "model",
-    "models", "research", "through", "between", "across", "where", "while",
-    "under", "over", "after", "before", "because", "which", "would", "could",
-    "should", "have", "has", "been", "being", "were", "such", "than", "into",
-    "more", "most", "less", "many", "also", "both", "each", "within", "without",
-}
-
-
-def _tokenize_for_rank(text: str) -> List[str]:
-    tokens = re.findall(r"[a-zA-Z0-9]{3,}", (text or "").lower())
-    return [token for token in tokens if token not in _STOP_WORDS]
+    return _extract_keywords_shared(text, max_keywords=top_n)
 
 
 def _paper_relevance_score(topic: str, paper: Paper) -> int:
@@ -274,7 +255,9 @@ def _paper_relevance_score(topic: str, paper: Paper) -> int:
     return (title_hits * 4) + (abstract_hits * 2)
 
 
-def _select_ranked_papers(topic: str, papers: List[Paper], limit: int = 40) -> List[Paper]:
+def _select_ranked_papers(
+    topic: str, papers: List[Paper], limit: int = 40
+) -> List[Paper]:
     ranked = sorted(
         papers,
         key=lambda paper: (
@@ -293,13 +276,19 @@ def _paper_primary_link(paper: Paper) -> str:
     if url:
         return url
     if doi:
-        clean_doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        clean_doi = (
+            doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        )
         return f"https://doi.org/{clean_doi}" if clean_doi else ""
     return ""
 
 
 def _build_context(topic: str, selected_papers: List[Paper]) -> str:
-    lines = [f"Topic: {topic}", "", "Workspace papers (use references like 'Paper 1', 'Paper 2'):" ]
+    lines = [
+        f"Topic: {topic}",
+        "",
+        "Workspace papers (use references like 'Paper 1', 'Paper 2'):",
+    ]
     for idx, paper in enumerate(selected_papers, start=1):
         abstract = (paper.abstract or "").replace("\n", " ").strip()
         if len(abstract) > 1200:
@@ -330,7 +319,9 @@ def _paper_links_markdown(selected_papers: List[Paper], max_items: int = 16) -> 
     return "\n".join(rows) or "- Paper links unavailable."
 
 
-def _paper_links_data(selected_papers: List[Paper], max_items: int = 24) -> List[Dict[str, Any]]:
+def _paper_links_data(
+    selected_papers: List[Paper], max_items: int = 24
+) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for idx, paper in enumerate(selected_papers[:max_items], start=1):
         doi = (getattr(paper, "doi", "") or "").strip()
@@ -470,7 +461,11 @@ def _build_fallback_mindmap_nodes(
                 bullets.append(item)
 
         if not bullets and normalized_title == "key papers":
-            bullets = [paper.title for paper in selected_papers[:4] if (paper.title or "").strip()]
+            bullets = [
+                paper.title
+                for paper in selected_papers[:4]
+                if (paper.title or "").strip()
+            ]
 
         for bullet in bullets[:4]:
             _add_node(bullet, depth=2, parent_id=parent)
@@ -480,15 +475,29 @@ def _build_fallback_mindmap_nodes(
 
     if len(nodes) <= 1:
         keywords = _extract_keywords(
-            " ".join([topic] + [paper.title or "" for paper in selected_papers] + [paper.abstract or "" for paper in selected_papers]),
+            " ".join(
+                [topic]
+                + [paper.title or "" for paper in selected_papers]
+                + [paper.abstract or "" for paper in selected_papers]
+            ),
             top_n=8,
         )
         fallback_groups = [
             ("Core Concepts", keywords[:3]),
             ("Methods", ["Baselines", "Evaluation Setup", "Ablation Study"]),
-            ("Evidence", [paper.title for paper in selected_papers[:3] if (paper.title or "").strip()]),
+            (
+                "Evidence",
+                [
+                    paper.title
+                    for paper in selected_papers[:3]
+                    if (paper.title or "").strip()
+                ],
+            ),
             ("Gaps", ["Missing metrics", "Generalization risk", "Reproducibility"]),
-            ("Next Steps", ["Replication", "Robustness tests", "Deployment validation"]),
+            (
+                "Next Steps",
+                ["Replication", "Robustness tests", "Deployment validation"],
+            ),
         ]
         for group_label, items in fallback_groups:
             group_id = _add_node(group_label, depth=1, parent_id=root_id)
@@ -514,12 +523,16 @@ def _fallback_key_insights(selected_papers: List[Paper]) -> str:
         abstract = (paper.abstract or "").strip()
         first_sentence = abstract.split(".")[0].strip() if abstract else ""
         if not first_sentence:
-            first_sentence = "Evidence is limited for detailed extraction in this workspace."
+            first_sentence = (
+                "Evidence is limited for detailed extraction in this workspace."
+            )
         lines.append(
             f"- Insight: {first_sentence}. Why it matters: prioritizes evidence-backed planning. Evidence: Paper {idx}."
         )
     if not lines:
-        lines.append("- Insight: Insufficient evidence in workspace. Why it matters: add more papers before synthesis.")
+        lines.append(
+            "- Insight: Insufficient evidence in workspace. Why it matters: add more papers before synthesis."
+        )
     return "\n".join(lines)
 
 
@@ -532,24 +545,37 @@ def _ensure_report_sections(text: str, selected_papers: List[Paper]) -> str:
     return content
 
 
-def _fallback_report_markdown(topic: str, papers: List[Paper], depth: str = "balanced", focus_mode: str = "broad") -> str:
+def _fallback_report_markdown(
+    topic: str, papers: List[Paper], depth: str = "balanced", focus_mode: str = "broad"
+) -> str:
     selected = _select_ranked_papers(topic=topic, papers=papers, limit=12)
     combined_text = " ".join(
-        [paper.title or "" for paper in papers] + [paper.abstract or "" for paper in papers]
+        [paper.title or "" for paper in papers]
+        + [paper.abstract or "" for paper in papers]
     )
     keyword_limit = 8 if depth == "quick" else 12 if depth == "deep" else 10
     title_limit = 6 if depth == "quick" else 10 if depth == "deep" else 8
     keywords = _extract_keywords(combined_text, top_n=keyword_limit)
-    representative_titles = [paper.title for paper in selected[:title_limit] if paper.title]
+    representative_titles = [
+        paper.title for paper in selected[:title_limit] if paper.title
+    ]
     evidence_rows = []
     for idx, paper in enumerate(selected[:8], start=1):
         key_claim = ((paper.abstract or "").split(".")[0] or "").strip()
         if not key_claim:
             key_claim = "No abstract sentence available."
         evidence_rows.append(f"| Paper {idx} | {paper.title} | {key_claim[:120]} |")
-    evidence_table = "\n".join(
-        ["| Paper | Title | Key claim snippet |", "| --- | --- | --- |", *evidence_rows]
-    ) if evidence_rows else "| Paper | Title | Key claim snippet |\n| --- | --- | --- |\n| - | - | - |"
+    evidence_table = (
+        "\n".join(
+            [
+                "| Paper | Title | Key claim snippet |",
+                "| --- | --- | --- |",
+                *evidence_rows,
+            ]
+        )
+        if evidence_rows
+        else "| Paper | Title | Key claim snippet |\n| --- | --- | --- |\n| - | - | - |"
+    )
 
     gaps = [
         "Insufficient cross-benchmark comparability across studies.",
@@ -562,10 +588,19 @@ def _fallback_report_markdown(topic: str, papers: List[Paper], depth: str = "bal
         "applications": "Emphasis: practical deployment value, domains, and use-case transferability.",
         "risks": "Emphasis: failure modes, uncertainty, robustness, and operational risk.",
         "broad": "Emphasis: balanced synthesis across methods, evidence, and applications.",
-    }.get(focus_mode, "Emphasis: balanced synthesis across methods, evidence, and applications.")
+    }.get(
+        focus_mode,
+        "Emphasis: balanced synthesis across methods, evidence, and applications.",
+    )
 
-    keyword_bullets = "\n".join([f"- {word.title()}" for word in keywords[:8]]) or "- Topic not inferable from provided papers."
-    title_bullets = "\n".join([f"- {title}" for title in representative_titles]) or "- No representative titles available."
+    keyword_bullets = (
+        "\n".join([f"- {word.title()}" for word in keywords[:8]])
+        or "- Topic not inferable from provided papers."
+    )
+    title_bullets = (
+        "\n".join([f"- {title}" for title in representative_titles])
+        or "- No representative titles available."
+    )
     gap_bullets = "\n".join([f"- {gap}" for gap in gaps])
     paper_links = _paper_links_markdown(selected_papers=selected, max_items=12)
     depth_line = {
@@ -646,11 +681,15 @@ This report summarizes {len(papers)} papers currently stored in your workspace. 
 """
 
 
-def _generate_report_markdown(topic: str, papers: List[Paper], depth: str = "balanced", focus_mode: str = "broad") -> str:
+def _generate_report_markdown(
+    topic: str, papers: List[Paper], depth: str = "balanced", focus_mode: str = "broad"
+) -> str:
     selected = _select_ranked_papers(topic=topic, papers=papers, limit=40)
     context = _build_context(topic=topic, selected_papers=selected)
     if not groq_client:
-        return _fallback_report_markdown(topic=topic, papers=papers, depth=depth, focus_mode=focus_mode)
+        return _fallback_report_markdown(
+            topic=topic, papers=papers, depth=depth, focus_mode=focus_mode
+        )
 
     depth_instructions = {
         "quick": "Keep sections compact (4-6 bullets each) and prioritize strongest evidence.",
@@ -721,13 +760,17 @@ def _generate_report_markdown(topic: str, papers: List[Paper], depth: str = "bal
         )
         text = (response.choices[0].message.content or "").strip()
         if not text:
-            return _fallback_report_markdown(topic=topic, papers=papers, depth=depth, focus_mode=focus_mode)
+            return _fallback_report_markdown(
+                topic=topic, papers=papers, depth=depth, focus_mode=focus_mode
+            )
         if not text.startswith("# Research Brief:"):
             text = f"# Research Brief: {topic}\n\n{text}"
         text = _ensure_report_sections(text=text, selected_papers=selected)
         return text[:32000]
     except Exception:
-        return _fallback_report_markdown(topic=topic, papers=papers, depth=depth, focus_mode=focus_mode)
+        return _fallback_report_markdown(
+            topic=topic, papers=papers, depth=depth, focus_mode=focus_mode
+        )
 
 
 def _build_docx_bytes(markdown_text: str) -> bytes:
@@ -759,7 +802,9 @@ def _build_docx_bytes(markdown_text: str) -> bytes:
         stripped = line.lstrip(" ")
         if stripped.startswith("- "):
             indent_spaces = len(line) - len(stripped)
-            paragraph = document.add_paragraph(stripped[2:].strip(), style="List Bullet")
+            paragraph = document.add_paragraph(
+                stripped[2:].strip(), style="List Bullet"
+            )
             if indent_spaces > 0:
                 paragraph.paragraph_format.left_indent = Pt(min(indent_spaces * 4, 72))
             continue
@@ -852,6 +897,10 @@ def create_workspace(
     normalized_name = (payload.name or "").strip()
     if not normalized_name:
         raise HTTPException(status_code=400, detail="Workspace name is required")
+    if len(normalized_name) > 200:
+        raise HTTPException(
+            status_code=422, detail="Workspace name must be 200 characters or fewer."
+        )
 
     existing = repo.find_workspace_by_name_for_user(current_user.id, normalized_name)
     if existing:
@@ -860,7 +909,9 @@ def create_workspace(
     return repo.create_workspace(current_user.id, normalized_name, payload.description)
 
 
-def _owned_workspace_or_404(repo: ResearchRepository, workspace_id: int, user_id: int) -> Workspace:
+def _owned_workspace_or_404(
+    repo: ResearchRepository, workspace_id: int, user_id: int
+) -> Workspace:
     workspace = repo.find_workspace_for_user(workspace_id, user_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -907,7 +958,11 @@ def upsert_session_state(
     if payload.page_path is not None:
         state.page_path = _normalize_page_path(payload.page_path)
     if payload.workspace_id is not None:
-        state.workspace_id = payload.workspace_id if repo.workspace_exists_for_user(payload.workspace_id, current_user.id) else None
+        state.workspace_id = (
+            payload.workspace_id
+            if repo.workspace_exists_for_user(payload.workspace_id, current_user.id)
+            else None
+        )
     if payload.last_query is not None:
         state.last_query = (payload.last_query or "").strip()[:300] or None
     if payload.draft_text is not None:
@@ -1044,9 +1099,13 @@ def download_workspace_file(
     try:
         downloaded = download_bytes(storage_path=row.storage_path)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to download file from storage: {str(exc)}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to download file from storage: {str(exc)}"
+        )
     headers = {"Content-Disposition": f'attachment; filename="{row.filename}"'}
-    return Response(content=downloaded.data, media_type=downloaded.content_type, headers=headers)
+    return Response(
+        content=downloaded.data, media_type=downloaded.content_type, headers=headers
+    )
 
 
 @router.get("/{workspace_id}/export")
@@ -1061,19 +1120,23 @@ def export_workspace(
     papers = repo.list_papers_for_workspace(workspace.id)
 
     if format not in ("bibtex", "csv"):
-        raise HTTPException(status_code=400, detail="Unsupported export format. Use 'bibtex' or 'csv'.")
+        raise HTTPException(
+            status_code=400, detail="Unsupported export format. Use 'bibtex' or 'csv'."
+        )
 
     # CSV export
     if format == "csv":
         import csv, io, re
+
         def _sanitize_cell(v: str) -> str:
-            s = (v or "")
+            s = v or ""
             # Neutralize CSV injection vectors for Excel: prefix if starts with =, +, -, @
-            if s.startswith(('=', '+', '-', '@')):
+            if s.startswith(("=", "+", "-", "@")):
                 s = "'" + s
             # Remove control chars that break CSVs
             s = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", " ", s)
             return s
+
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["title", "authors", "abstract", "url", "doi", "bibcode"])
@@ -1083,8 +1146,8 @@ def export_workspace(
                 _sanitize_cell(p.authors or ""),
                 _sanitize_cell(p.abstract or ""),
                 _sanitize_cell(p.url or ""),
-                _sanitize_cell(getattr(p, 'doi', '') or ""),
-                _sanitize_cell(getattr(p, 'bibcode', '') or ""),
+                _sanitize_cell(getattr(p, "doi", "") or ""),
+                _sanitize_cell(getattr(p, "bibcode", "") or ""),
             ]
             writer.writerow(row)
         content = buf.getvalue()
@@ -1116,7 +1179,7 @@ def export_workspace(
         title = _escape(p.title)
         year = ""
         url = _escape(p.url)
-        doi = _escape(getattr(p, 'doi', '') or "")
+        doi = _escape(getattr(p, "doi", "") or "")
         abstract = _escape(p.abstract)
         bib_fields = []
         if doi:
@@ -1162,12 +1225,20 @@ def _resolve_research_report_inputs(
     workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
 
     requested_ids = set(payload.paper_ids or []) if payload else set()
-    papers = repo.list_papers_for_workspace(workspace.id, list(requested_ids) if requested_ids else None)
+    papers = repo.list_papers_for_workspace(
+        workspace.id, list(requested_ids) if requested_ids else None
+    )
 
     if not papers:
-        raise HTTPException(status_code=400, detail="No papers available for report generation.")
+        raise HTTPException(
+            status_code=400, detail="No papers available for report generation."
+        )
 
-    raw_topic = (payload.topic or workspace.name or "Research topic") if payload else (workspace.name or "Research topic")
+    raw_topic = (
+        (payload.topic or workspace.name or "Research topic")
+        if payload
+        else (workspace.name or "Research topic")
+    )
     topic = raw_topic.strip()[:160]
     depth = _normalize_report_depth(payload.depth if payload else "balanced")
     focus_mode = _normalize_focus_mode(payload.focus_mode if payload else "broad")
@@ -1183,11 +1254,13 @@ def preview_research_report(
     current_user: User = Depends(get_current_user),
 ):
     """Generate a markdown preview of the research brief + mindmap before export."""
-    workspace, papers, topic, depth, focus_mode, selected_ids = _resolve_research_report_inputs(
-        workspace_id=workspace_id,
-        payload=payload,
-        repo=repo,
-        current_user=current_user,
+    workspace, papers, topic, depth, focus_mode, selected_ids = (
+        _resolve_research_report_inputs(
+            workspace_id=workspace_id,
+            payload=payload,
+            repo=repo,
+            current_user=current_user,
+        )
     )
     selected = _select_ranked_papers(topic=topic, papers=papers, limit=40)
     report_markdown = _generate_report_markdown(
@@ -1232,13 +1305,17 @@ def export_research_report(
     Export options: PDF or DOCX.
     """
     if format not in ("pdf", "docx"):
-        raise HTTPException(status_code=400, detail="Unsupported export format. Use 'pdf' or 'docx'.")
+        raise HTTPException(
+            status_code=400, detail="Unsupported export format. Use 'pdf' or 'docx'."
+        )
 
-    workspace, papers, topic, depth, focus_mode, _selected_ids = _resolve_research_report_inputs(
-        workspace_id=workspace_id,
-        payload=payload,
-        repo=repo,
-        current_user=current_user,
+    workspace, papers, topic, depth, focus_mode, _selected_ids = (
+        _resolve_research_report_inputs(
+            workspace_id=workspace_id,
+            payload=payload,
+            repo=repo,
+            current_user=current_user,
+        )
     )
     report_markdown = _generate_report_markdown(
         topic=topic,
@@ -1252,7 +1329,9 @@ def export_research_report(
 
     if format == "docx":
         content = _build_docx_bytes(report_markdown)
-        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
         filename = f"{safe_topic}-mindmap-{timestamp}.docx"
     else:
         content = _build_pdf_bytes(report_markdown)

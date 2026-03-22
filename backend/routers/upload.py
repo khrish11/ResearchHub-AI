@@ -5,7 +5,7 @@ import io
 import os
 import re
 
-from models import User
+from repositories.research import User
 from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
 from utils.groq_client import client, model_config
@@ -72,7 +72,9 @@ def summarize_with_ai(text: str) -> str:
     try:
         response = client.chat.completions.create(
             messages=messages,
-            **model_config(task="upload_summary", longform=False, max_tokens=2200, temperature=0.12),
+            **model_config(
+                task="upload_summary", longform=False, max_tokens=2200, temperature=0.12
+            ),
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -94,9 +96,35 @@ async def upload_pdf(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
+    # Validate MIME type before reading the full payload.
+    allowed_content_types = {
+        "application/pdf",
+        "application/x-pdf",
+        "binary/octet-stream",
+    }
+    if file.content_type and file.content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type '{file.content_type}'. Only PDF files are accepted.",
+        )
+
     file_bytes = await file.read()
     if len(file_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    MAX_PDF_BYTES = 20 * 1024 * 1024  # 20 MB
+    if len(file_bytes) > MAX_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Maximum allowed size is 20 MB.",
+        )
+
+    # Verify PDF magic bytes (%PDF-) regardless of declared MIME type.
+    if not file_bytes.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=415,
+            detail="Uploaded file does not appear to be a valid PDF.",
+        )
 
     # Extract text
     try:
@@ -121,7 +149,12 @@ async def upload_pdf(
             raise HTTPException(status_code=404, detail="Workspace not found.")
 
         # Use filename (without extension) as fallback title
-        title = file.filename.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
+        title = (
+            file.filename.replace(".pdf", "")
+            .replace("_", " ")
+            .replace("-", " ")
+            .title()
+        )
         new_paper = repo.create_paper(
             workspace_id=workspace_id,
             title=title,
@@ -187,14 +220,20 @@ async def download_uploaded_pdf(
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found.")
 
-    file_record = repo.get_workspace_file_for_paper(paper_id, paper.workspace_id, current_user.id)
+    file_record = repo.get_workspace_file_for_paper(
+        paper_id, paper.workspace_id, current_user.id
+    )
     if not file_record:
         raise HTTPException(status_code=404, detail="Uploaded file metadata not found.")
 
     try:
         downloaded = download_bytes(storage_path=file_record.storage_path)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to download file from storage: {str(exc)}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to download file from storage: {str(exc)}"
+        )
 
     headers = {"Content-Disposition": f'inline; filename="{file_record.filename}"'}
-    return Response(content=downloaded.data, media_type=downloaded.content_type, headers=headers)
+    return Response(
+        content=downloaded.data, media_type=downloaded.content_type, headers=headers
+    )

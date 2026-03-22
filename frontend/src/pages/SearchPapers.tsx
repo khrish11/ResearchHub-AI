@@ -1241,7 +1241,7 @@ const SearchPapers: React.FC = () => {
               type="button"
               onClick={() => void runSearch(false)}
               disabled={loading}
-              className="h-12 px-5 rounded-2xl bg-slate-700 hover:bg-slate-800 disabled:bg-slate-400 text-white font-semibold inline-flex items-center gap-2"
+              className="h-12 px-5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white font-semibold inline-flex items-center gap-2 shadow-sm"
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
               Search
@@ -1468,7 +1468,7 @@ const SearchPapers: React.FC = () => {
                     type="button"
                     onClick={() => void importInstitutionalList()}
                     disabled={institutionalImporting || !institutionalRaw.trim()}
-                    className="inline-flex items-center gap-2 rounded-xl bg-slate-700 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-55"
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-55 shadow-sm"
                   >
                     {institutionalImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                     Import Institutional Papers

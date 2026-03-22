@@ -54,6 +54,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    console.log('Login attempt:', { email, firebaseEnabled });
     try {
       const response = firebaseEnabled
         ? await signInWithFirebasePassword(email, password)
@@ -61,6 +62,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           }).then((res) => res.data);
 
+      console.log('Login response:', response);
       setToken(response.access_token);
       navigate('/home');
     } catch (err: unknown) {
@@ -89,8 +91,16 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
           navigate('/home');
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : 'Google sign-in failed. Please try again.';
-          setError(message);
+          const axDetail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+          const raw = err instanceof Error ? err.message : '';
+          const msg =
+            axDetail ||
+            (raw.toLowerCase().includes('popup-closed') || raw.toLowerCase().includes('popup_closed')
+              ? 'Google sign-in was cancelled. Please try again.'
+              : raw.toLowerCase().includes('popup-blocked') || raw.toLowerCase().includes('popup_blocked')
+              ? 'Popups are blocked. Please allow popups for this site and try again.'
+              : raw || 'Google sign-in failed. Please try again.');
+          setError(msg);
           setGoogleRedirecting(false);
         });
       return;
@@ -196,9 +206,16 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
                 />
               </div>
 
-              <button type="submit" className="auth-primary-btn">
-                Sign In
-              </button>
+              <div className="flex items-center justify-between">
+                <button type="submit" className="auth-primary-btn flex-1">
+                  Sign In
+                </button>
+              </div>
+              <div className="text-right">
+                <Link to="/forgot-password" className="text-xs text-slate-500 hover:text-primary transition-colors">
+                  Forgot your password?
+                </Link>
+              </div>
 
               <div className="auth-divider">
                 <span>Or continue with</span>

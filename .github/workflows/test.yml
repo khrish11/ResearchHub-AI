@@ -1,0 +1,104 @@
+name: Backend CI — Firebase Emulator Tests
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "backend/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: ["main", "develop"]
+    paths:
+      - "backend/**"
+
+jobs:
+  test:
+    name: Pytest (Firebase Emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      # ── Emulator config ───────────────────────────────────────────────────
+      FIRESTORE_EMULATOR_HOST: "localhost:8080"
+      FIREBASE_PROJECT_ID: "demo-test"
+      # ── App config (all test-safe dummies) ───────────────────────────────
+      APP_ENV: "development"
+      SECRET_KEY: "ci-secret-key-not-real"
+      USE_BCRYPT: "0"
+      GROQ_API_KEY: "test-groq-key"
+      GOOGLE_CLIENT_ID: "test-google-client-id"
+      GOOGLE_CLIENT_SECRET: "test-google-client-secret"
+      BACKEND_URL: "http://localhost:8010"
+      FRONTEND_URL: "http://localhost:5173"
+      RATE_LIMIT_ENABLED: "0"
+      SECURITY_HEADERS_ENABLED: "0"
+      FIREBASE_APPCHECK_ENFORCED: "0"
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Python setup ────────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ── Java (required by Firebase Emulator) ────────────────────────────
+      - name: Set up Java 17 (for Firebase Emulator)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      # ── Firebase CLI ─────────────────────────────────────────────────────
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+
+      # ── Start Firestore Emulator ─────────────────────────────────────────
+      - name: Start Firebase Firestore Emulator
+        run: |
+          firebase emulators:start \
+            --only firestore \
+            --project demo-test \
+            --import ./tests/emulator_seed \
+            2>&1 &
+          # Wait until the emulator is accepting connections
+          echo "Waiting for Firestore emulator..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:8080 > /dev/null 2>&1; then
+              echo "Emulator ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+        working-directory: ${{ github.workspace }}
+
+      # ── Run Tests ─────────────────────────────────────────────────────────
+      - name: Run pytest
+        run: pytest --tb=short -q
+
+      # ── Upload test results (on failure) ─────────────────────────────────
+      - name: Upload pytest results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: |
+            backend/.pytest_cache/
+          retention-days: 7
+
+      # ── Stop Emulator (cleanup) ───────────────────────────────────────────
+      - name: Stop Firebase Emulator
+        if: always()
+        run: pkill -f "firebase" || true

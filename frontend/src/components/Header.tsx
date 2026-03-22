@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   ArrowUpRight,
@@ -15,7 +15,6 @@ import {
   Workflow,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import api from '../api';
 import { toAppPath } from '../utils/routing';
 import { openCommandPalette } from '../utils/commandPalette';
 import { clearAuthSession } from '../utils/authSession';
@@ -25,10 +24,7 @@ interface HeaderProps {
   userInitials?: string;
 }
 
-interface AiStatusResponse {
-  enabled: boolean;
-  model?: string | null;
-}
+
 
 interface HeaderMeta {
   title: string;
@@ -42,32 +38,7 @@ interface HeaderMeta {
 }
 
 const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
-  const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
-  const [aiModel, setAiModel] = useState<string | null>(null);
   const location = useLocation();
-
-  useEffect(() => {
-    let mounted = true;
-    api
-      .get<AiStatusResponse>('/ai/status')
-      .then((res) => {
-        if (!mounted) return;
-        setAiEnabled(!!res.data.enabled);
-        setAiModel(res.data.model || null);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setAiEnabled(false);
-        setAiModel(null);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const shortModel = aiModel
-    ? aiModel.replace('llama-', 'Llama ').replace('-versatile', '').replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-    : null;
 
   const headerMeta = useMemo<HeaderMeta>(() => {
     const path = location.pathname;
@@ -228,19 +199,7 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
                 {headerMeta.action.label}
               </Link>
 
-              {aiEnabled !== null && (
-                <div
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${
-                    aiEnabled
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                      : 'border-rose-200 bg-rose-50 text-rose-700'
-                  }`}
-                >
-                  <BrainCircuit className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">{aiEnabled ? `AI ${shortModel || 'Online'}` : 'AI Offline'}</span>
-                  <span className="sm:hidden">{aiEnabled ? 'AI On' : 'AI Off'}</span>
-                </div>
-              )}
+
             </div>
 
             {userEmail && (

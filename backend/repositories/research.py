@@ -7,21 +7,7 @@ from threading import Lock
 from typing import Any, Dict, Optional, Protocol, Sequence
 
 from fastapi import Depends, HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 
-from database import get_db
-from models import (
-    Chat,
-    DataRightsRequest,
-    Paper,
-    SearchHistory,
-    User,
-    UserSessionState,
-    Workspace,
-    WorkspaceDocument,
-    WorkspaceFile,
-)
 
 try:
     from google.cloud import firestore
@@ -33,6 +19,18 @@ except Exception:  # pragma: no cover - optional until Firebase path is enabled
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _firestore_client():
+    """Return a Firestore client from the Firebase Admin SDK."""
+    try:
+        from utils.firebase_admin_client import get_firebase_admin_app
+        import firebase_admin.firestore as _fs
+
+        app = get_firebase_admin_app()
+        return _fs.client(app=app)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot create Firestore client: {exc}") from exc
 
 
 def _normalize_email_key(value: str | None) -> str:
@@ -67,7 +65,7 @@ def _normalize_windows_env_path(raw_value: str | None) -> str | None:
 
 
 @dataclass
-class RepoWorkspace:
+class Workspace:
     id: int
     name: str
     description: Optional[str]
@@ -76,7 +74,7 @@ class RepoWorkspace:
 
 
 @dataclass
-class RepoUser:
+class User:
     id: Optional[int]
     email: str
     hashed_password: Optional[str] = None
@@ -90,10 +88,14 @@ class RepoUser:
     verification_token_expires: Optional[datetime] = None
     created_at: datetime = field(default_factory=_utcnow)
     updated_at: datetime = field(default_factory=_utcnow)
+    # ── Access control / feature flags ────────────────────────────────
+    role: str = "user"  # "user" | "pro" | "admin"
+    is_pro: bool = False  # quick shortcut; set to True for pro/admin roles
+    feature_flags: Dict[str, Any] = field(default_factory=dict)  # per-user overrides
 
 
 @dataclass
-class RepoPaper:
+class Paper:
     id: int
     title: str
     authors: str
@@ -110,7 +112,7 @@ class RepoPaper:
 
 
 @dataclass
-class RepoChat:
+class Chat:
     id: int
     message: str
     response: str
@@ -119,7 +121,7 @@ class RepoChat:
 
 
 @dataclass
-class RepoSearchHistory:
+class SearchHistory:
     id: Optional[int]
     user_id: int
     query: str
@@ -130,7 +132,7 @@ class RepoSearchHistory:
 
 
 @dataclass
-class RepoSessionState:
+class UserSessionState:
     id: Optional[int]
     user_id: int
     page_path: str = "/home"
@@ -142,7 +144,7 @@ class RepoSessionState:
 
 
 @dataclass
-class RepoWorkspaceDocument:
+class WorkspaceDocument:
     id: Optional[int]
     workspace_id: int
     user_id: int
@@ -154,7 +156,7 @@ class RepoWorkspaceDocument:
 
 
 @dataclass
-class RepoDataRightsRequest:
+class DataRightsRequest:
     id: Optional[int]
     user_id: Optional[int]
     email: str
@@ -167,7 +169,7 @@ class RepoDataRightsRequest:
 
 
 @dataclass
-class RepoWorkspaceFile:
+class WorkspaceFile:
     id: Optional[int]
     workspace_id: int
     user_id: int
@@ -183,17 +185,20 @@ class RepoWorkspaceFile:
 
 
 class ResearchRepository(Protocol):
-    def get_user_by_id(self, user_id: int) -> Optional[User | RepoUser]: ...
-    def get_user_by_email(self, email: str) -> Optional[User | RepoUser]: ...
-    def get_user_by_google_id(self, google_id: str) -> Optional[User | RepoUser]: ...
-    def list_users_for_normalized_email(self, normalized_email: str) -> list[User | RepoUser]: ...
+    db: Any  # type: ignore[assignment]  — actual type is google.cloud.firestore.Client
+
+    def get_user_by_id(self, user_id: int) -> Optional[User]: ...
+    def get_user_by_email(self, email: str) -> Optional[User]: ...
+    def get_user_by_google_id(self, google_id: str) -> Optional[User]: ...
+    def get_user_by_verification_token(self, token: str) -> Optional[User]: ...
+    def list_users_for_normalized_email(self, normalized_email: str) -> list[User]: ...
     def list_users(
         self,
         *,
         query: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
-    ) -> list[User | RepoUser]: ...
+    ) -> list[User]: ...
     def create_user(
         self,
         *,
@@ -207,16 +212,26 @@ class ResearchRepository(Protocol):
         is_verified: bool = False,
         verification_token: Optional[str] = None,
         verification_token_expires: Optional[datetime] = None,
-    ) -> User | RepoUser: ...
-    def merge_user_accounts(self, primary_user_id: int, secondary_user_id: int) -> None: ...
-    def list_workspaces_for_user(self, user_id: int) -> list[Workspace | RepoWorkspace]: ...
-    def find_workspace_for_user(self, workspace_id: int, user_id: int) -> Optional[Workspace | RepoWorkspace]: ...
-    def find_workspace_by_name_for_user(self, user_id: int, name: str) -> Optional[Workspace | RepoWorkspace]: ...
-    def create_workspace(self, user_id: int, name: str, description: Optional[str] = None) -> Workspace | RepoWorkspace: ...
-    def get_or_create_default_workspace(self, user_id: int) -> Workspace | RepoWorkspace: ...
+    ) -> User: ...
+    def merge_user_accounts(
+        self, primary_user_id: int, secondary_user_id: int
+    ) -> None: ...
+    def list_workspaces_for_user(self, user_id: int) -> list[Workspace]: ...
+    def find_workspace_for_user(
+        self, workspace_id: int, user_id: int
+    ) -> Optional[Workspace]: ...
+    def find_workspace_by_name_for_user(
+        self, user_id: int, name: str
+    ) -> Optional[Workspace]: ...
+    def create_workspace(
+        self, user_id: int, name: str, description: Optional[str] = None
+    ) -> Workspace: ...
+    def get_or_create_default_workspace(self, user_id: int) -> Workspace: ...
     def workspace_exists_for_user(self, workspace_id: int, user_id: int) -> bool: ...
-    def list_papers_for_workspace(self, workspace_id: int, paper_ids: Optional[Sequence[int]] = None) -> list[Paper | RepoPaper]: ...
-    def find_paper_for_user(self, paper_id: int, user_id: int) -> Optional[Paper | RepoPaper]: ...
+    def list_papers_for_workspace(
+        self, workspace_id: int, paper_ids: Optional[Sequence[int]] = None
+    ) -> list[Paper]: ...
+    def find_paper_for_user(self, paper_id: int, user_id: int) -> Optional[Paper]: ...
     def create_paper(
         self,
         workspace_id: int,
@@ -225,21 +240,21 @@ class ResearchRepository(Protocol):
         abstract: str,
         url: Optional[str] = None,
         pdf_url: Optional[str] = None,
-    ) -> Paper | RepoPaper: ...
+    ) -> Paper: ...
     def list_chats_for_workspace(
         self,
         workspace_id: int,
         *,
         ascending: bool = True,
         limit: Optional[int] = None,
-    ) -> list[Chat | RepoChat]: ...
-    def create_chat(self, workspace_id: int, message: str, response: str) -> Chat | RepoChat: ...
+    ) -> list[Chat]: ...
+    def create_chat(self, workspace_id: int, message: str, response: str) -> Chat: ...
     def list_search_history_for_user(
         self,
         user_id: int,
         *,
         limit: Optional[int] = None,
-    ) -> list[SearchHistory | RepoSearchHistory]: ...
+    ) -> list[SearchHistory]: ...
     def count_search_history_for_user(self, user_id: int) -> int: ...
     def record_search_history(
         self,
@@ -251,13 +266,21 @@ class ResearchRepository(Protocol):
         filters_json: Optional[str] = None,
         dedupe_seconds: int = 240,
         max_items: int = 250,
-    ) -> SearchHistory | RepoSearchHistory: ...
-    def delete_search_history(self, user_id: int, item_id: Optional[int] = None) -> int: ...
-    def get_session_state_for_user(self, user_id: int) -> Optional[UserSessionState | RepoSessionState]: ...
-    def create_session_state(self, user_id: int) -> UserSessionState | RepoSessionState: ...
+    ) -> SearchHistory: ...
+    def delete_search_history(
+        self, user_id: int, item_id: Optional[int] = None
+    ) -> int: ...
+    def get_session_state_for_user(
+        self, user_id: int
+    ) -> Optional[UserSessionState]: ...
+    def create_session_state(self, user_id: int) -> UserSessionState: ...
     def save(self, instance: object) -> object: ...
-    def get_docspace_document(self, workspace_id: int, user_id: int) -> Optional[WorkspaceDocument | RepoWorkspaceDocument]: ...
-    def list_workspace_documents_for_user(self, user_id: int) -> list[WorkspaceDocument | RepoWorkspaceDocument]: ...
+    def get_docspace_document(
+        self, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceDocument]: ...
+    def list_workspace_documents_for_user(
+        self, user_id: int
+    ) -> list[WorkspaceDocument]: ...
     def create_docspace_document(
         self,
         workspace_id: int,
@@ -265,7 +288,7 @@ class ResearchRepository(Protocol):
         title: str,
         content: str = "",
         version: int = 1,
-    ) -> WorkspaceDocument | RepoWorkspaceDocument: ...
+    ) -> WorkspaceDocument: ...
     def create_workspace_file(
         self,
         workspace_id: int,
@@ -278,10 +301,16 @@ class ResearchRepository(Protocol):
         size_bytes: int = 0,
         download_url: Optional[str] = None,
         paper_id: Optional[int] = None,
-    ) -> WorkspaceFile | RepoWorkspaceFile: ...
-    def list_workspace_files_for_workspace(self, workspace_id: int, user_id: int) -> list[WorkspaceFile | RepoWorkspaceFile]: ...
-    def get_workspace_file_for_user(self, file_id: int, workspace_id: int, user_id: int) -> Optional[WorkspaceFile | RepoWorkspaceFile]: ...
-    def get_workspace_file_for_paper(self, paper_id: int, workspace_id: int, user_id: int) -> Optional[WorkspaceFile | RepoWorkspaceFile]: ...
+    ) -> WorkspaceFile: ...
+    def list_workspace_files_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[WorkspaceFile]: ...
+    def get_workspace_file_for_user(
+        self, file_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]: ...
+    def get_workspace_file_for_paper(
+        self, paper_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]: ...
     def create_data_rights_request(
         self,
         *,
@@ -292,13 +321,13 @@ class ResearchRepository(Protocol):
         details: Optional[str] = None,
         status: str = "submitted",
         resolved_at: Optional[datetime] = None,
-    ) -> DataRightsRequest | RepoDataRightsRequest: ...
+    ) -> DataRightsRequest: ...
     def list_data_rights_requests_for_user(
         self,
         user_id: int,
         *,
         limit: Optional[int] = None,
-    ) -> list[DataRightsRequest | RepoDataRightsRequest]: ...
+    ) -> list[DataRightsRequest]: ...
     def count_users(self) -> int: ...
     def count_workspaces(self) -> int: ...
     def count_papers(self) -> int: ...
@@ -306,642 +335,6 @@ class ResearchRepository(Protocol):
     def count_documents_for_user(self, user_id: int) -> int: ...
     def delete_user_account(self, user_id: int) -> None: ...
     def delete_workspace_graph(self, workspace_id: int) -> None: ...
-
-
-class SqlAlchemyResearchRepository:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def get_user_by_id(self, user_id: int) -> Optional[User]:
-        return self.db.query(User).filter(User.id == user_id).first()
-
-    def get_user_by_email(self, email: str) -> Optional[User]:
-        normalized = _normalize_email_key(email)
-        if not normalized:
-            return None
-        return next(iter(self.list_users_for_normalized_email(normalized)), None)
-
-    def get_user_by_google_id(self, google_id: str) -> Optional[User]:
-        value = str(google_id or "").strip()
-        if not value:
-            return None
-        return self.db.query(User).filter(User.google_id == value).first()
-
-    def list_users_for_normalized_email(self, normalized_email: str) -> list[User]:
-        normalized = _normalize_email_key(normalized_email)
-        if not normalized:
-            return []
-        primary = (
-            self.db.query(User)
-            .filter(func.lower(func.trim(User.email)) == normalized)
-            .order_by(User.id.asc())
-            .all()
-        )
-        seen_ids = {user.id for user in primary}
-        secondary = [
-            user
-            for user in (
-                self.db.query(User)
-                .filter(func.lower(func.trim(func.coalesce(User.google_email, ""))) == normalized)
-                .order_by(User.id.asc())
-                .all()
-            )
-            if user.id not in seen_ids
-        ]
-        return primary + secondary
-
-    def list_users(
-        self,
-        *,
-        query: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: int = 0,
-    ) -> list[User]:
-        db_query = self.db.query(User)
-        trimmed = str(query or "").strip()
-        if trimmed:
-            like = f"%{trimmed}%"
-            db_query = db_query.filter(func.lower(User.email).like(like.lower()) | func.lower(func.coalesce(User.name, "")).like(like.lower()))
-        db_query = db_query.order_by(User.created_at.desc(), User.id.desc())
-        if offset:
-            db_query = db_query.offset(max(0, int(offset)))
-        if limit is not None:
-            db_query = db_query.limit(max(0, int(limit)))
-        return db_query.all()
-
-    def create_user(
-        self,
-        *,
-        email: str,
-        hashed_password: Optional[str] = None,
-        google_id: Optional[str] = None,
-        google_email: Optional[str] = None,
-        name: Optional[str] = None,
-        profile_pic: Optional[str] = None,
-        is_active: bool = True,
-        is_verified: bool = False,
-        verification_token: Optional[str] = None,
-        verification_token_expires: Optional[datetime] = None,
-    ) -> User:
-        row = User(
-            email=_normalize_email_key(email),
-            hashed_password=hashed_password,
-            google_id=google_id,
-            google_email=_normalize_email_key(google_email) if google_email else None,
-            name=name,
-            profile_pic=profile_pic,
-            is_active=is_active,
-            is_verified=is_verified,
-            verification_token=verification_token,
-            verification_token_expires=verification_token_expires,
-        )
-        self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
-    def merge_user_accounts(self, primary_user_id: int, secondary_user_id: int) -> None:
-        if primary_user_id == secondary_user_id:
-            return
-        secondary = self.get_user_by_id(secondary_user_id)
-        if secondary is None:
-            return
-        self.db.query(Workspace).filter(Workspace.user_id == secondary_user_id).update(
-            {Workspace.user_id: primary_user_id},
-            synchronize_session=False,
-        )
-        self.db.query(SearchHistory).filter(SearchHistory.user_id == secondary_user_id).update(
-            {SearchHistory.user_id: primary_user_id},
-            synchronize_session=False,
-        )
-        self.db.query(WorkspaceDocument).filter(WorkspaceDocument.user_id == secondary_user_id).update(
-            {WorkspaceDocument.user_id: primary_user_id},
-            synchronize_session=False,
-        )
-        self.db.query(WorkspaceFile).filter(WorkspaceFile.user_id == secondary_user_id).update(
-            {WorkspaceFile.user_id: primary_user_id},
-            synchronize_session=False,
-        )
-        self.db.query(DataRightsRequest).filter(DataRightsRequest.user_id == secondary_user_id).update(
-            {DataRightsRequest.user_id: primary_user_id},
-            synchronize_session=False,
-        )
-
-        other_state = self.db.query(UserSessionState).filter(UserSessionState.user_id == secondary_user_id).first()
-        primary_state = self.db.query(UserSessionState).filter(UserSessionState.user_id == primary_user_id).first()
-        if other_state and not primary_state:
-            other_state.user_id = primary_user_id
-        elif other_state and primary_state:
-            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
-            primary_updated = primary_state.updated_at or epoch
-            other_updated = other_state.updated_at or epoch
-            if primary_updated.tzinfo is None:
-                primary_updated = primary_updated.replace(tzinfo=timezone.utc)
-            if other_updated.tzinfo is None:
-                other_updated = other_updated.replace(tzinfo=timezone.utc)
-            if other_updated > primary_updated:
-                primary_state.page_path = other_state.page_path
-                primary_state.workspace_id = other_state.workspace_id
-                primary_state.last_query = other_state.last_query
-                primary_state.draft_text = other_state.draft_text
-                primary_state.extra_json = other_state.extra_json
-                primary_state.updated_at = other_state.updated_at
-            self.db.delete(other_state)
-
-        self.db.delete(secondary)
-        self.db.commit()
-
-    def list_workspaces_for_user(self, user_id: int) -> list[Workspace]:
-        return (
-            self.db.query(Workspace)
-            .outerjoin(Paper, Paper.workspace_id == Workspace.id)
-            .filter(Workspace.user_id == user_id)
-            .group_by(Workspace.id)
-            .order_by(func.count(Paper.id).desc(), Workspace.created_at.desc())
-            .all()
-        )
-
-    def find_workspace_for_user(self, workspace_id: int, user_id: int) -> Optional[Workspace]:
-        return (
-            self.db.query(Workspace)
-            .filter(Workspace.id == workspace_id, Workspace.user_id == user_id)
-            .first()
-        )
-
-    def find_workspace_by_name_for_user(self, user_id: int, name: str) -> Optional[Workspace]:
-        normalized = (name or "").strip()
-        if not normalized:
-            return None
-        return (
-            self.db.query(Workspace)
-            .filter(Workspace.user_id == user_id, func.lower(Workspace.name) == normalized.lower())
-            .first()
-        )
-
-    def create_workspace(self, user_id: int, name: str, description: Optional[str] = None) -> Workspace:
-        workspace = Workspace(name=name, description=description, user_id=user_id)
-        self.db.add(workspace)
-        self.db.commit()
-        self.db.refresh(workspace)
-        return workspace
-
-    def get_or_create_default_workspace(self, user_id: int) -> Workspace:
-        existing = self.find_workspace_by_name_for_user(user_id, "Default Workspace")
-        if existing:
-            return existing
-        return self.create_workspace(
-            user_id=user_id,
-            name="Default Workspace",
-            description="Automatically created workspace for quick imports.",
-        )
-
-    def workspace_exists_for_user(self, workspace_id: int, user_id: int) -> bool:
-        return self.find_workspace_for_user(workspace_id, user_id) is not None
-
-    def list_papers_for_workspace(
-        self,
-        workspace_id: int,
-        paper_ids: Optional[Sequence[int]] = None,
-    ) -> list[Paper]:
-        query = self.db.query(Paper).filter(Paper.workspace_id == workspace_id)
-        if paper_ids:
-            query = query.filter(Paper.id.in_(list(paper_ids)))
-        return query.all()
-
-    def find_paper_for_user(self, paper_id: int, user_id: int) -> Optional[Paper]:
-        return (
-            self.db.query(Paper)
-            .join(Workspace, Workspace.id == Paper.workspace_id)
-            .filter(Paper.id == paper_id, Workspace.user_id == user_id)
-            .first()
-        )
-
-    def create_paper(
-        self,
-        workspace_id: int,
-        title: str,
-        authors: str,
-        abstract: str,
-        url: Optional[str] = None,
-        pdf_url: Optional[str] = None,
-    ) -> Paper:
-        paper = Paper(
-            title=title,
-            authors=authors,
-            abstract=abstract,
-            url=url,
-            pdf_url=pdf_url,
-            workspace_id=workspace_id,
-        )
-        self.db.add(paper)
-        self.db.commit()
-        self.db.refresh(paper)
-        return paper
-
-    def list_chats_for_workspace(
-        self,
-        workspace_id: int,
-        *,
-        ascending: bool = True,
-        limit: Optional[int] = None,
-    ) -> list[Chat]:
-        query = self.db.query(Chat).filter(Chat.workspace_id == workspace_id)
-        query = query.order_by(Chat.timestamp.asc() if ascending else Chat.timestamp.desc())
-        if limit is not None:
-            query = query.limit(max(0, int(limit)))
-        return query.all()
-
-    def create_chat(self, workspace_id: int, message: str, response: str) -> Chat:
-        chat = Chat(message=message, response=response, workspace_id=workspace_id)
-        self.db.add(chat)
-        self.db.commit()
-        self.db.refresh(chat)
-        return chat
-
-    def list_search_history_for_user(
-        self,
-        user_id: int,
-        *,
-        limit: Optional[int] = None,
-    ) -> list[SearchHistory]:
-        query = (
-            self.db.query(SearchHistory)
-            .filter(SearchHistory.user_id == user_id)
-            .order_by(SearchHistory.created_at.desc())
-        )
-        if limit is not None:
-            query = query.limit(max(0, int(limit)))
-        return query.all()
-
-    def count_search_history_for_user(self, user_id: int) -> int:
-        return int(
-            self.db.query(func.count(SearchHistory.id))
-            .filter(SearchHistory.user_id == user_id)
-            .scalar()
-            or 0
-        )
-
-    def record_search_history(
-        self,
-        *,
-        user_id: int,
-        query: str,
-        source: str,
-        result_count: int,
-        filters_json: Optional[str] = None,
-        dedupe_seconds: int = 240,
-        max_items: int = 250,
-    ) -> SearchHistory:
-        trimmed_query = (query or "").strip()
-        if not trimmed_query:
-            raise ValueError("query is required")
-        latest = (
-            self.db.query(SearchHistory)
-            .filter(SearchHistory.user_id == user_id, SearchHistory.source == source)
-            .order_by(SearchHistory.created_at.desc())
-            .first()
-        )
-        now_utc = _utcnow()
-        should_update_latest = False
-        if latest and str(latest.query or "").strip().lower() == trimmed_query.lower():
-            created = latest.created_at
-            if created is not None:
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                should_update_latest = abs((now_utc - created).total_seconds()) <= max(1, int(dedupe_seconds))
-        if should_update_latest and latest is not None:
-            latest.result_count = max(0, int(result_count or 0))
-            latest.filters_json = filters_json
-            latest.created_at = now_utc
-            row = latest
-        else:
-            row = SearchHistory(
-                user_id=user_id,
-                query=trimmed_query[:300],
-                source=source,
-                result_count=max(0, int(result_count or 0)),
-                filters_json=filters_json,
-                created_at=now_utc,
-            )
-            self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        old_rows = (
-            self.db.query(SearchHistory.id)
-            .filter(SearchHistory.user_id == user_id)
-            .order_by(SearchHistory.created_at.desc())
-            .offset(max(0, int(max_items)))
-            .all()
-        )
-        old_ids = [int(item[0]) for item in old_rows if item and item[0] is not None]
-        if old_ids:
-            self.db.query(SearchHistory).filter(SearchHistory.id.in_(old_ids)).delete(synchronize_session=False)
-            self.db.commit()
-        return row
-
-    def delete_search_history(self, user_id: int, item_id: Optional[int] = None) -> int:
-        query = self.db.query(SearchHistory).filter(SearchHistory.user_id == user_id)
-        if item_id is not None:
-            row = query.filter(SearchHistory.id == item_id).first()
-            if row is None:
-                return 0
-            self.db.delete(row)
-            self.db.commit()
-            return 1
-        deleted = int(query.delete(synchronize_session=False) or 0)
-        self.db.commit()
-        return deleted
-
-    def get_session_state_for_user(self, user_id: int) -> Optional[UserSessionState]:
-        return self.db.query(UserSessionState).filter(UserSessionState.user_id == user_id).first()
-
-    def create_session_state(self, user_id: int) -> UserSessionState:
-        state = UserSessionState(user_id=user_id)
-        self.db.add(state)
-        self.db.commit()
-        self.db.refresh(state)
-        return state
-
-    def save(self, instance: object) -> object:
-        if isinstance(instance, RepoUser):
-            if instance.id is None:
-                return self.create_user(
-                    email=instance.email,
-                    hashed_password=instance.hashed_password,
-                    google_id=instance.google_id,
-                    google_email=instance.google_email,
-                    name=instance.name,
-                    profile_pic=instance.profile_pic,
-                    is_active=instance.is_active,
-                    is_verified=instance.is_verified,
-                    verification_token=instance.verification_token,
-                    verification_token_expires=instance.verification_token_expires,
-                )
-            row = self.get_user_by_id(instance.id)
-            if row is None:
-                raise ValueError(f"User {instance.id} not found")
-            row.email = _normalize_email_key(instance.email)
-            row.hashed_password = instance.hashed_password
-            row.google_id = instance.google_id
-            row.google_email = _normalize_email_key(instance.google_email) if instance.google_email else None
-            row.name = instance.name
-            row.profile_pic = instance.profile_pic
-            row.is_active = instance.is_active
-            row.is_verified = instance.is_verified
-            row.verification_token = instance.verification_token
-            row.verification_token_expires = instance.verification_token_expires
-            row.updated_at = _utcnow()
-            self.db.commit()
-            self.db.refresh(row)
-            return row
-        if isinstance(instance, RepoSearchHistory):
-            if instance.id is None:
-                return self.record_search_history(
-                    user_id=instance.user_id,
-                    query=instance.query,
-                    source=instance.source,
-                    result_count=instance.result_count,
-                    filters_json=instance.filters_json,
-                    dedupe_seconds=0,
-                    max_items=10_000,
-                )
-            row = self.db.query(SearchHistory).filter(SearchHistory.id == instance.id).first()
-            if row is None:
-                raise ValueError(f"Search history {instance.id} not found")
-            row.query = instance.query
-            row.source = instance.source
-            row.result_count = instance.result_count
-            row.filters_json = instance.filters_json
-            row.created_at = instance.created_at
-            self.db.commit()
-            self.db.refresh(row)
-            return row
-        self.db.add(instance)
-        self.db.commit()
-        self.db.refresh(instance)
-        return instance
-
-    def get_docspace_document(self, workspace_id: int, user_id: int) -> Optional[WorkspaceDocument]:
-        return (
-            self.db.query(WorkspaceDocument)
-            .filter(
-                WorkspaceDocument.workspace_id == workspace_id,
-                WorkspaceDocument.user_id == user_id,
-            )
-            .first()
-        )
-
-    def list_workspace_documents_for_user(self, user_id: int) -> list[WorkspaceDocument]:
-        return (
-            self.db.query(WorkspaceDocument)
-            .filter(WorkspaceDocument.user_id == user_id)
-            .order_by(WorkspaceDocument.updated_at.desc())
-            .all()
-        )
-
-    def create_docspace_document(
-        self,
-        workspace_id: int,
-        user_id: int,
-        title: str,
-        content: str = "",
-        version: int = 1,
-    ) -> WorkspaceDocument:
-        document = WorkspaceDocument(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            title=title,
-            content=content,
-            version=version,
-        )
-        self.db.add(document)
-        self.db.commit()
-        self.db.refresh(document)
-        return document
-
-    def create_workspace_file(
-        self,
-        workspace_id: int,
-        user_id: int,
-        kind: str,
-        filename: str,
-        storage_bucket: str,
-        storage_path: str,
-        content_type: Optional[str] = None,
-        size_bytes: int = 0,
-        download_url: Optional[str] = None,
-        paper_id: Optional[int] = None,
-    ) -> WorkspaceFile:
-        record = WorkspaceFile(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            kind=kind,
-            filename=filename,
-            storage_bucket=storage_bucket,
-            storage_path=storage_path,
-            content_type=content_type,
-            size_bytes=size_bytes,
-            download_url=download_url,
-            paper_id=paper_id,
-        )
-        self.db.add(record)
-        self.db.commit()
-        self.db.refresh(record)
-        return record
-
-    def list_workspace_files_for_workspace(self, workspace_id: int, user_id: int) -> list[WorkspaceFile]:
-        return (
-            self.db.query(WorkspaceFile)
-            .filter(WorkspaceFile.workspace_id == workspace_id, WorkspaceFile.user_id == user_id)
-            .order_by(WorkspaceFile.created_at.desc())
-            .all()
-        )
-
-    def get_workspace_file_for_user(self, file_id: int, workspace_id: int, user_id: int) -> Optional[WorkspaceFile]:
-        return (
-            self.db.query(WorkspaceFile)
-            .filter(
-                WorkspaceFile.id == file_id,
-                WorkspaceFile.workspace_id == workspace_id,
-                WorkspaceFile.user_id == user_id,
-            )
-            .first()
-        )
-
-    def get_workspace_file_for_paper(self, paper_id: int, workspace_id: int, user_id: int) -> Optional[WorkspaceFile]:
-        return (
-            self.db.query(WorkspaceFile)
-            .filter(
-                WorkspaceFile.paper_id == paper_id,
-                WorkspaceFile.workspace_id == workspace_id,
-                WorkspaceFile.user_id == user_id,
-            )
-            .order_by(WorkspaceFile.created_at.desc())
-            .first()
-        )
-
-    def create_data_rights_request(
-        self,
-        *,
-        user_id: Optional[int],
-        email: str,
-        request_type: str,
-        jurisdiction: Optional[str] = None,
-        details: Optional[str] = None,
-        status: str = "submitted",
-        resolved_at: Optional[datetime] = None,
-    ) -> DataRightsRequest:
-        row = DataRightsRequest(
-            user_id=user_id,
-            email=_normalize_email_key(email),
-            request_type=request_type,
-            jurisdiction=jurisdiction,
-            details=details,
-            status=status,
-            resolved_at=resolved_at,
-        )
-        self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
-    def list_data_rights_requests_for_user(
-        self,
-        user_id: int,
-        *,
-        limit: Optional[int] = None,
-    ) -> list[DataRightsRequest]:
-        query = (
-            self.db.query(DataRightsRequest)
-            .filter(DataRightsRequest.user_id == user_id)
-            .order_by(DataRightsRequest.submitted_at.desc())
-        )
-        if limit is not None:
-            query = query.limit(max(0, int(limit)))
-        return query.all()
-
-    def count_users(self) -> int:
-        return int(self.db.query(func.count(User.id)).scalar() or 0)
-
-    def count_workspaces(self) -> int:
-        return int(self.db.query(func.count(Workspace.id)).scalar() or 0)
-
-    def count_papers(self) -> int:
-        return int(self.db.query(func.count(Paper.id)).scalar() or 0)
-
-    def count_chats(self) -> int:
-        return int(self.db.query(func.count(Chat.id)).scalar() or 0)
-
-    def count_documents_for_user(self, user_id: int) -> int:
-        return int(
-            self.db.query(func.count(WorkspaceDocument.id))
-            .filter(WorkspaceDocument.user_id == user_id)
-            .scalar()
-            or 0
-        )
-
-    def delete_user_account(self, user_id: int) -> None:
-        workspace_ids = [
-            workspace_id
-            for (workspace_id,) in self.db.query(Workspace.id).filter(Workspace.user_id == user_id).all()
-        ]
-        for workspace_id in workspace_ids:
-            self.delete_workspace_graph(int(workspace_id))
-        self.db.query(WorkspaceDocument).filter(WorkspaceDocument.user_id == user_id).delete(synchronize_session=False)
-        self.db.query(WorkspaceFile).filter(WorkspaceFile.user_id == user_id).delete(synchronize_session=False)
-        self.db.query(SearchHistory).filter(SearchHistory.user_id == user_id).delete(synchronize_session=False)
-        self.db.query(DataRightsRequest).filter(DataRightsRequest.user_id == user_id).delete(synchronize_session=False)
-        self.db.query(UserSessionState).filter(UserSessionState.user_id == user_id).delete(synchronize_session=False)
-        row = self.get_user_by_id(user_id)
-        if row is not None:
-            self.db.delete(row)
-        self.db.commit()
-
-    def delete_workspace_graph(self, workspace_id: int) -> None:
-        self.db.query(Paper).filter(Paper.workspace_id == workspace_id).delete()
-        self.db.query(Chat).filter(Chat.workspace_id == workspace_id).delete()
-        self.db.query(WorkspaceDocument).filter(WorkspaceDocument.workspace_id == workspace_id).delete()
-        self.db.query(WorkspaceFile).filter(WorkspaceFile.workspace_id == workspace_id).delete()
-        workspace = self.db.query(Workspace).filter(Workspace.id == workspace_id).first()
-        if workspace:
-            self.db.delete(workspace)
-        self.db.commit()
-
-
-_FIREBASE_CLIENT = None
-_FIREBASE_LOCK = Lock()
-
-
-def _firestore_client():
-    global _FIREBASE_CLIENT
-    with _FIREBASE_LOCK:
-        if _FIREBASE_CLIENT is not None:
-            return _FIREBASE_CLIENT
-        if firestore is None:
-            raise HTTPException(
-                status_code=500,
-                detail="google-cloud-firestore is not installed. Add it to the backend environment first.",
-            )
-        project_id = (os.getenv("FIREBASE_PROJECT_ID") or "").strip() or None
-        credentials_path = (
-            _normalize_windows_env_path(os.getenv("FIREBASE_CREDENTIALS_PATH"))
-            or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-            or None
-        )
-        client_kwargs: Dict[str, Any] = {}
-        if project_id:
-            client_kwargs["project"] = project_id
-        if credentials_path:
-            if service_account is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="google-auth is not installed. Add it to the backend environment first.",
-                )
-            client_kwargs["credentials"] = service_account.Credentials.from_service_account_file(
-                credentials_path,
-            )
-        _FIREBASE_CLIENT = firestore.Client(**client_kwargs)
-        return _FIREBASE_CLIENT
 
 
 class FirebaseResearchRepository:
@@ -975,8 +368,8 @@ class FirebaseResearchRepository:
         return int(increment(transaction, counter_ref))
 
     @staticmethod
-    def _workspace_from_doc(doc: Dict[str, Any]) -> RepoWorkspace:
-        return RepoWorkspace(
+    def _workspace_from_doc(doc: Dict[str, Any]) -> Workspace:
+        return Workspace(
             id=int(doc["id"]),
             name=str(doc.get("name") or ""),
             description=doc.get("description"),
@@ -985,8 +378,10 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _user_from_doc(doc: Dict[str, Any]) -> RepoUser:
-        return RepoUser(
+    def _user_from_doc(doc: Dict[str, Any]) -> User:
+        raw_role = str(doc.get("role") or "user").strip().lower()
+        role = raw_role if raw_role in ("user", "pro", "admin") else "user"
+        return User(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             email=str(doc.get("email") or ""),
             hashed_password=doc.get("hashed_password"),
@@ -1000,11 +395,14 @@ class FirebaseResearchRepository:
             verification_token_expires=doc.get("verification_token_expires"),
             created_at=doc.get("created_at") or _utcnow(),
             updated_at=doc.get("updated_at") or _utcnow(),
+            role=role,
+            is_pro=bool(doc.get("is_pro", False)) or role in ("pro", "admin"),
+            feature_flags=dict(doc.get("feature_flags") or {}),
         )
 
     @staticmethod
-    def _paper_from_doc(doc: Dict[str, Any]) -> RepoPaper:
-        return RepoPaper(
+    def _paper_from_doc(doc: Dict[str, Any]) -> Paper:
+        return Paper(
             id=int(doc["id"]),
             title=str(doc.get("title") or ""),
             authors=str(doc.get("authors") or ""),
@@ -1021,8 +419,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _chat_from_doc(doc: Dict[str, Any]) -> RepoChat:
-        return RepoChat(
+    def _chat_from_doc(doc: Dict[str, Any]) -> Chat:
+        return Chat(
             id=int(doc["id"]),
             message=str(doc.get("message") or ""),
             response=str(doc.get("response") or ""),
@@ -1031,8 +429,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _search_history_from_doc(doc: Dict[str, Any]) -> RepoSearchHistory:
-        return RepoSearchHistory(
+    def _search_history_from_doc(doc: Dict[str, Any]) -> SearchHistory:
+        return SearchHistory(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             user_id=int(doc.get("user_id") or 0),
             query=str(doc.get("query") or ""),
@@ -1043,8 +441,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _state_from_doc(doc: Dict[str, Any]) -> RepoSessionState:
-        return RepoSessionState(
+    def _state_from_doc(doc: Dict[str, Any]) -> UserSessionState:
+        return UserSessionState(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             user_id=int(doc.get("user_id") or 0),
             page_path=str(doc.get("page_path") or "/home"),
@@ -1056,8 +454,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _document_from_doc(doc: Dict[str, Any]) -> RepoWorkspaceDocument:
-        return RepoWorkspaceDocument(
+    def _document_from_doc(doc: Dict[str, Any]) -> WorkspaceDocument:
+        return WorkspaceDocument(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             workspace_id=int(doc.get("workspace_id") or 0),
             user_id=int(doc.get("user_id") or 0),
@@ -1069,8 +467,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _workspace_file_from_doc(doc: Dict[str, Any]) -> RepoWorkspaceFile:
-        return RepoWorkspaceFile(
+    def _workspace_file_from_doc(doc: Dict[str, Any]) -> WorkspaceFile:
+        return WorkspaceFile(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             workspace_id=int(doc.get("workspace_id") or 0),
             user_id=int(doc.get("user_id") or 0),
@@ -1086,8 +484,8 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
-    def _data_rights_from_doc(doc: Dict[str, Any]) -> RepoDataRightsRequest:
-        return RepoDataRightsRequest(
+    def _data_rights_from_doc(doc: Dict[str, Any]) -> DataRightsRequest:
+        return DataRightsRequest(
             id=int(doc["id"]) if doc.get("id") is not None else None,
             user_id=int(doc["user_id"]) if doc.get("user_id") is not None else None,
             email=str(doc.get("email") or ""),
@@ -1099,19 +497,19 @@ class FirebaseResearchRepository:
             resolved_at=doc.get("resolved_at"),
         )
 
-    def get_user_by_id(self, user_id: int) -> Optional[RepoUser]:
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
         snapshot = self.users.document(str(user_id)).get()
         if not snapshot.exists:
             return None
         return self._user_from_doc(snapshot.to_dict() or {})
 
-    def get_user_by_email(self, email: str) -> Optional[RepoUser]:
+    def get_user_by_email(self, email: str) -> Optional[User]:
         normalized = _normalize_email_key(email)
         if not normalized:
             return None
         return next(iter(self.list_users_for_normalized_email(normalized)), None)
 
-    def get_user_by_google_id(self, google_id: str) -> Optional[RepoUser]:
+    def get_user_by_google_id(self, google_id: str) -> Optional[User]:
         target = str(google_id or "").strip()
         if not target:
             return None
@@ -1119,7 +517,15 @@ class FirebaseResearchRepository:
             return self._user_from_doc(snapshot.to_dict() or {})
         return None
 
-    def list_users_for_normalized_email(self, normalized_email: str) -> list[RepoUser]:
+    def get_user_by_verification_token(self, token: str) -> Optional[User]:
+        value = str(token or "").strip()
+        if not value:
+            return None
+        for snapshot in self.users.where("verification_token", "==", value).stream():
+            return self._user_from_doc(snapshot.to_dict() or {})
+        return None
+
+    def list_users_for_normalized_email(self, normalized_email: str) -> list[User]:
         normalized = _normalize_email_key(normalized_email)
         if not normalized:
             return []
@@ -1148,7 +554,7 @@ class FirebaseResearchRepository:
         query: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
-    ) -> list[RepoUser]:
+    ) -> list[User]:
         docs = [(snapshot.to_dict() or {}) for snapshot in self.users.stream()]
         trimmed = str(query or "").strip().lower()
         if trimmed:
@@ -1182,9 +588,9 @@ class FirebaseResearchRepository:
         is_verified: bool = False,
         verification_token: Optional[str] = None,
         verification_token_expires: Optional[datetime] = None,
-    ) -> RepoUser:
+    ) -> User:
         now = _utcnow()
-        user = RepoUser(
+        user = User(
             id=self._next_id("user_id"),
             email=_normalize_email_key(email),
             hashed_password=hashed_password,
@@ -1208,12 +614,21 @@ class FirebaseResearchRepository:
         secondary = self.get_user_by_id(secondary_user_id)
         if secondary is None:
             return
-        for snapshot in self.workspaces.where("user_id", "==", secondary_user_id).stream():
+        for snapshot in self.workspaces.where(
+            "user_id", "==", secondary_user_id
+        ).stream():
             doc = snapshot.to_dict() or {}
             doc["user_id"] = primary_user_id
             snapshot.reference.set(doc)
-        for collection in (self.search_history, self.workspace_documents, self.workspace_files, self.data_rights_requests):
-            for snapshot in collection.where("user_id", "==", secondary_user_id).stream():
+        for collection in (
+            self.search_history,
+            self.workspace_documents,
+            self.workspace_files,
+            self.data_rights_requests,
+        ):
+            for snapshot in collection.where(
+                "user_id", "==", secondary_user_id
+            ).stream():
                 doc = snapshot.to_dict() or {}
                 doc["user_id"] = primary_user_id
                 snapshot.reference.set(doc)
@@ -1223,8 +638,12 @@ class FirebaseResearchRepository:
             secondary_state.user_id = primary_user_id
             self.save(secondary_state)
         elif secondary_state and primary_state:
-            primary_updated = primary_state.updated_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
-            secondary_updated = secondary_state.updated_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
+            primary_updated = primary_state.updated_at or datetime(
+                1970, 1, 1, tzinfo=timezone.utc
+            )
+            secondary_updated = secondary_state.updated_at or datetime(
+                1970, 1, 1, tzinfo=timezone.utc
+            )
             if secondary_updated > primary_updated:
                 primary_state.page_path = secondary_state.page_path
                 primary_state.workspace_id = secondary_state.workspace_id
@@ -1237,9 +656,9 @@ class FirebaseResearchRepository:
                 self.user_session_state.document(str(secondary_state.id)).delete()
         self.users.document(str(secondary_user_id)).delete()
 
-    def list_workspaces_for_user(self, user_id: int) -> list[RepoWorkspace]:
+    def list_workspaces_for_user(self, user_id: int) -> list[Workspace]:
         paper_counts: Dict[int, int] = {}
-        for snapshot in self.papers.stream():
+        for snapshot in self.papers.where("user_id", "==", user_id).stream():
             doc = snapshot.to_dict() or {}
             workspace_id = doc.get("workspace_id")
             if workspace_id is None:
@@ -1259,14 +678,18 @@ class FirebaseResearchRepository:
         )
         return [self._workspace_from_doc(doc) for doc in docs]
 
-    def find_workspace_for_user(self, workspace_id: int, user_id: int) -> Optional[RepoWorkspace]:
+    def find_workspace_for_user(
+        self, workspace_id: int, user_id: int
+    ) -> Optional[Workspace]:
         for snapshot in self.workspaces.where("user_id", "==", user_id).stream():
             doc = snapshot.to_dict() or {}
             if int(doc.get("id") or 0) == workspace_id:
                 return self._workspace_from_doc(doc)
         return None
 
-    def find_workspace_by_name_for_user(self, user_id: int, name: str) -> Optional[RepoWorkspace]:
+    def find_workspace_by_name_for_user(
+        self, user_id: int, name: str
+    ) -> Optional[Workspace]:
         normalized = (name or "").strip()
         if not normalized:
             return None
@@ -1276,8 +699,10 @@ class FirebaseResearchRepository:
                 return self._workspace_from_doc(doc)
         return None
 
-    def create_workspace(self, user_id: int, name: str, description: Optional[str] = None) -> RepoWorkspace:
-        workspace = RepoWorkspace(
+    def create_workspace(
+        self, user_id: int, name: str, description: Optional[str] = None
+    ) -> Workspace:
+        workspace = Workspace(
             id=self._next_id("workspace_id"),
             name=name,
             description=description,
@@ -1286,7 +711,7 @@ class FirebaseResearchRepository:
         self.workspaces.document(str(workspace.id)).set(asdict(workspace))
         return workspace
 
-    def get_or_create_default_workspace(self, user_id: int) -> RepoWorkspace:
+    def get_or_create_default_workspace(self, user_id: int) -> Workspace:
         existing = self.find_workspace_by_name_for_user(user_id, "Default Workspace")
         if existing:
             return existing
@@ -1303,7 +728,7 @@ class FirebaseResearchRepository:
         self,
         workspace_id: int,
         paper_ids: Optional[Sequence[int]] = None,
-    ) -> list[RepoPaper]:
+    ) -> list[Paper]:
         allowed_ids = {int(paper_id) for paper_id in paper_ids} if paper_ids else None
         docs: list[Dict[str, Any]] = []
         for snapshot in self.papers.where("workspace_id", "==", workspace_id).stream():
@@ -1322,8 +747,8 @@ class FirebaseResearchRepository:
         abstract: str,
         url: Optional[str] = None,
         pdf_url: Optional[str] = None,
-    ) -> RepoPaper:
-        paper = RepoPaper(
+    ) -> Paper:
+        paper = Paper(
             id=self._next_id("paper_id"),
             title=title,
             authors=authors,
@@ -1335,7 +760,7 @@ class FirebaseResearchRepository:
         self.papers.document(str(paper.id)).set(asdict(paper))
         return paper
 
-    def find_paper_for_user(self, paper_id: int, user_id: int) -> Optional[RepoPaper]:
+    def find_paper_for_user(self, paper_id: int, user_id: int) -> Optional[Paper]:
         snapshot = self.papers.document(str(paper_id)).get()
         if not snapshot.exists:
             return None
@@ -1351,18 +776,22 @@ class FirebaseResearchRepository:
         *,
         ascending: bool = True,
         limit: Optional[int] = None,
-    ) -> list[RepoChat]:
+    ) -> list[Chat]:
         docs = [
             (snapshot.to_dict() or {})
-            for snapshot in self.chats.where("workspace_id", "==", workspace_id).stream()
+            for snapshot in self.chats.where(
+                "workspace_id", "==", workspace_id
+            ).stream()
         ]
-        docs.sort(key=lambda doc: doc.get("timestamp") or _utcnow(), reverse=not ascending)
+        docs.sort(
+            key=lambda doc: doc.get("timestamp") or _utcnow(), reverse=not ascending
+        )
         if limit is not None:
             docs = docs[: max(0, int(limit))]
         return [self._chat_from_doc(doc) for doc in docs]
 
-    def create_chat(self, workspace_id: int, message: str, response: str) -> RepoChat:
-        chat = RepoChat(
+    def create_chat(self, workspace_id: int, message: str, response: str) -> Chat:
+        chat = Chat(
             id=self._next_id("chat_id"),
             message=message,
             response=response,
@@ -1376,7 +805,7 @@ class FirebaseResearchRepository:
         user_id: int,
         *,
         limit: Optional[int] = None,
-    ) -> list[RepoSearchHistory]:
+    ) -> list[SearchHistory]:
         docs = [
             (snapshot.to_dict() or {})
             for snapshot in self.search_history.where("user_id", "==", user_id).stream()
@@ -1399,7 +828,7 @@ class FirebaseResearchRepository:
         filters_json: Optional[str] = None,
         dedupe_seconds: int = 240,
         max_items: int = 250,
-    ) -> RepoSearchHistory:
+    ) -> SearchHistory:
         trimmed_query = (query or "").strip()
         if not trimmed_query:
             raise ValueError("query is required")
@@ -1415,7 +844,7 @@ class FirebaseResearchRepository:
                 self.save(latest)
                 target = latest
             else:
-                target = RepoSearchHistory(
+                target = SearchHistory(
                     id=self._next_id("search_history_id"),
                     user_id=user_id,
                     query=trimmed_query[:300],
@@ -1426,7 +855,7 @@ class FirebaseResearchRepository:
                 )
                 self.search_history.document(str(target.id)).set(asdict(target))
         else:
-            target = RepoSearchHistory(
+            target = SearchHistory(
                 id=self._next_id("search_history_id"),
                 user_id=user_id,
                 query=trimmed_query[:300],
@@ -1459,19 +888,21 @@ class FirebaseResearchRepository:
             deleted += 1
         return deleted
 
-    def get_session_state_for_user(self, user_id: int) -> Optional[RepoSessionState]:
-        for snapshot in self.user_session_state.where("user_id", "==", user_id).stream():
+    def get_session_state_for_user(self, user_id: int) -> Optional[UserSessionState]:
+        for snapshot in self.user_session_state.where(
+            "user_id", "==", user_id
+        ).stream():
             doc = snapshot.to_dict() or {}
             return self._state_from_doc(doc)
         return None
 
-    def create_session_state(self, user_id: int) -> RepoSessionState:
-        state = RepoSessionState(id=self._next_id("session_state_id"), user_id=user_id)
+    def create_session_state(self, user_id: int) -> UserSessionState:
+        state = UserSessionState(id=self._next_id("session_state_id"), user_id=user_id)
         self.user_session_state.document(str(state.id)).set(asdict(state))
         return state
 
     def save(self, instance: object) -> object:
-        if isinstance(instance, RepoUser):
+        if isinstance(instance, User):
             if instance.id is None:
                 created = self.create_user(
                     email=instance.email,
@@ -1495,52 +926,62 @@ class FirebaseResearchRepository:
             instance.updated_at = _utcnow()
             self.users.document(str(instance.id)).set(asdict(instance))
             return instance
-        if isinstance(instance, RepoSearchHistory):
+        if isinstance(instance, SearchHistory):
             if instance.id is None:
                 instance.id = self._next_id("search_history_id")
             self.search_history.document(str(instance.id)).set(asdict(instance))
             return instance
-        if isinstance(instance, RepoSessionState):
+        if isinstance(instance, UserSessionState):
             if instance.id is None:
                 instance.id = self._next_id("session_state_id")
             payload = asdict(instance)
             self.user_session_state.document(str(instance.id)).set(payload)
             return instance
-        if isinstance(instance, RepoPaper):
+        if isinstance(instance, Paper):
             payload = asdict(instance)
             self.papers.document(str(instance.id)).set(payload)
             return instance
-        if isinstance(instance, RepoWorkspaceDocument):
+        if isinstance(instance, WorkspaceDocument):
             if instance.id is None:
                 instance.id = self._next_id("workspace_document_id")
             payload = asdict(instance)
             self.workspace_documents.document(str(instance.id)).set(payload)
             return instance
-        if isinstance(instance, RepoWorkspaceFile):
+        if isinstance(instance, WorkspaceFile):
             if instance.id is None:
                 instance.id = self._next_id("workspace_file_id")
             payload = asdict(instance)
             self.workspace_files.document(str(instance.id)).set(payload)
             return instance
-        if isinstance(instance, RepoDataRightsRequest):
+        if isinstance(instance, DataRightsRequest):
             if instance.id is None:
                 instance.id = self._next_id("data_rights_request_id")
             payload = asdict(instance)
             self.data_rights_requests.document(str(instance.id)).set(payload)
             return instance
-        raise TypeError(f"Firebase repository cannot persist instance type {type(instance)!r}")
+        raise TypeError(
+            f"Firebase repository cannot persist instance type {type(instance)!r}"
+        )
 
-    def get_docspace_document(self, workspace_id: int, user_id: int) -> Optional[RepoWorkspaceDocument]:
-        for snapshot in self.workspace_documents.where("workspace_id", "==", workspace_id).stream():
+    def get_docspace_document(
+        self, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceDocument]:
+        for snapshot in self.workspace_documents.where(
+            "workspace_id", "==", workspace_id
+        ).stream():
             doc = snapshot.to_dict() or {}
             if int(doc.get("user_id") or 0) == user_id:
                 return self._document_from_doc(doc)
         return None
 
-    def list_workspace_documents_for_user(self, user_id: int) -> list[RepoWorkspaceDocument]:
+    def list_workspace_documents_for_user(
+        self, user_id: int
+    ) -> list[WorkspaceDocument]:
         docs = [
             (snapshot.to_dict() or {})
-            for snapshot in self.workspace_documents.where("user_id", "==", user_id).stream()
+            for snapshot in self.workspace_documents.where(
+                "user_id", "==", user_id
+            ).stream()
         ]
         docs.sort(key=lambda doc: doc.get("updated_at") or _utcnow(), reverse=True)
         return [self._document_from_doc(doc) for doc in docs]
@@ -1552,9 +993,9 @@ class FirebaseResearchRepository:
         title: str,
         content: str = "",
         version: int = 1,
-    ) -> RepoWorkspaceDocument:
+    ) -> WorkspaceDocument:
         now = _utcnow()
-        document = RepoWorkspaceDocument(
+        document = WorkspaceDocument(
             id=self._next_id("workspace_document_id"),
             workspace_id=workspace_id,
             user_id=user_id,
@@ -1579,8 +1020,8 @@ class FirebaseResearchRepository:
         size_bytes: int = 0,
         download_url: Optional[str] = None,
         paper_id: Optional[int] = None,
-    ) -> RepoWorkspaceFile:
-        record = RepoWorkspaceFile(
+    ) -> WorkspaceFile:
+        record = WorkspaceFile(
             id=self._next_id("workspace_file_id"),
             workspace_id=workspace_id,
             user_id=user_id,
@@ -1596,9 +1037,13 @@ class FirebaseResearchRepository:
         self.workspace_files.document(str(record.id)).set(asdict(record))
         return record
 
-    def list_workspace_files_for_workspace(self, workspace_id: int, user_id: int) -> list[RepoWorkspaceFile]:
+    def list_workspace_files_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[WorkspaceFile]:
         docs = []
-        for snapshot in self.workspace_files.where("workspace_id", "==", workspace_id).stream():
+        for snapshot in self.workspace_files.where(
+            "workspace_id", "==", workspace_id
+        ).stream():
             doc = snapshot.to_dict() or {}
             if int(doc.get("user_id") or 0) != user_id:
                 continue
@@ -1606,20 +1051,30 @@ class FirebaseResearchRepository:
         docs.sort(key=lambda doc: doc.get("created_at") or _utcnow(), reverse=True)
         return [self._workspace_file_from_doc(doc) for doc in docs]
 
-    def get_workspace_file_for_user(self, file_id: int, workspace_id: int, user_id: int) -> Optional[RepoWorkspaceFile]:
+    def get_workspace_file_for_user(
+        self, file_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]:
         snapshot = self.workspace_files.document(str(file_id)).get()
         if not snapshot.exists:
             return None
         doc = snapshot.to_dict() or {}
-        if int(doc.get("workspace_id") or 0) != workspace_id or int(doc.get("user_id") or 0) != user_id:
+        if (
+            int(doc.get("workspace_id") or 0) != workspace_id
+            or int(doc.get("user_id") or 0) != user_id
+        ):
             return None
         return self._workspace_file_from_doc(doc)
 
-    def get_workspace_file_for_paper(self, paper_id: int, workspace_id: int, user_id: int) -> Optional[RepoWorkspaceFile]:
+    def get_workspace_file_for_paper(
+        self, paper_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]:
         docs = []
         for snapshot in self.workspace_files.where("paper_id", "==", paper_id).stream():
             doc = snapshot.to_dict() or {}
-            if int(doc.get("workspace_id") or 0) != workspace_id or int(doc.get("user_id") or 0) != user_id:
+            if (
+                int(doc.get("workspace_id") or 0) != workspace_id
+                or int(doc.get("user_id") or 0) != user_id
+            ):
                 continue
             docs.append(doc)
         docs.sort(key=lambda doc: doc.get("created_at") or _utcnow(), reverse=True)
@@ -1637,8 +1092,8 @@ class FirebaseResearchRepository:
         details: Optional[str] = None,
         status: str = "submitted",
         resolved_at: Optional[datetime] = None,
-    ) -> RepoDataRightsRequest:
-        row = RepoDataRightsRequest(
+    ) -> DataRightsRequest:
+        row = DataRightsRequest(
             id=self._next_id("data_rights_request_id"),
             user_id=user_id,
             email=_normalize_email_key(email),
@@ -1657,10 +1112,12 @@ class FirebaseResearchRepository:
         user_id: int,
         *,
         limit: Optional[int] = None,
-    ) -> list[RepoDataRightsRequest]:
+    ) -> list[DataRightsRequest]:
         docs = [
             (snapshot.to_dict() or {})
-            for snapshot in self.data_rights_requests.where("user_id", "==", user_id).stream()
+            for snapshot in self.data_rights_requests.where(
+                "user_id", "==", user_id
+            ).stream()
         ]
         docs.sort(key=lambda doc: doc.get("submitted_at") or _utcnow(), reverse=True)
         if limit is not None:
@@ -1685,7 +1142,12 @@ class FirebaseResearchRepository:
     def delete_user_account(self, user_id: int) -> None:
         for workspace in self.list_workspaces_for_user(user_id):
             self.delete_workspace_graph(workspace.id)
-        for collection in (self.workspace_documents, self.workspace_files, self.search_history, self.data_rights_requests):
+        for collection in (
+            self.workspace_documents,
+            self.workspace_files,
+            self.search_history,
+            self.data_rights_requests,
+        ):
             for snapshot in collection.where("user_id", "==", user_id).stream():
                 snapshot.reference.delete()
         state = self.get_session_state_for_user(user_id)
@@ -1694,16 +1156,18 @@ class FirebaseResearchRepository:
         self.users.document(str(user_id)).delete()
 
     def delete_workspace_graph(self, workspace_id: int) -> None:
-        for collection in (self.papers, self.chats, self.workspace_documents, self.workspace_files):
-            for snapshot in collection.where("workspace_id", "==", workspace_id).stream():
+        for collection in (
+            self.papers,
+            self.chats,
+            self.workspace_documents,
+            self.workspace_files,
+        ):
+            for snapshot in collection.where(
+                "workspace_id", "==", workspace_id
+            ).stream():
                 snapshot.reference.delete()
         self.workspaces.document(str(workspace_id)).delete()
 
 
-def get_research_repository(db: Session = Depends(get_db)) -> ResearchRepository:
-    backend = (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower()
-    if backend == "firebase":
-        return FirebaseResearchRepository()
-    if backend != "sqlalchemy":
-        raise HTTPException(status_code=500, detail=f"Unsupported STORAGE_BACKEND '{backend}'.")
-    return SqlAlchemyResearchRepository(db)
+def get_research_repository() -> ResearchRepository:
+    return FirebaseResearchRepository()  # type: ignore[return-value]

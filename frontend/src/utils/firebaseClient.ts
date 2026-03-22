@@ -92,7 +92,13 @@ export const getFirebaseAuthClient = async (): Promise<Auth | null> => {
   }
   if (!auth) {
     auth = getAuth(firebaseApp);
-    await setPersistence(auth, browserLocalPersistence);
+    try {
+      const persistPromise = setPersistence(auth, browserLocalPersistence);
+      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Persistence timeout')), 1000));
+      await Promise.race([persistPromise, timeoutPromise]);
+    } catch {
+      // Ignore persistence failures (e.g. strict browser blocking IndexedDB).
+    }
   }
   return auth;
 };
@@ -231,7 +237,12 @@ export const getAppCheckTokenValue = async (): Promise<string | null> => {
     return null;
   }
   try {
-    const token = await getAppCheckToken(instance, false);
+    // Add a 2s timeout. Firebase App Check sometimes hangs indefinitely on localhost.
+    const tokenPromise = getAppCheckToken(instance, false);
+    const timeoutPromise = new Promise<{ token: string | null }>((_, reject) => 
+      setTimeout(() => reject(new Error('AppCheck token fetch timed out')), 2000)
+    );
+    const token = await Promise.race([tokenPromise, timeoutPromise]);
     return token.token || null;
   } catch {
     return null;

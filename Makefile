@@ -5,13 +5,13 @@ NPM=npm
 .PHONY: start-backend start-frontend test build-frontend lint
 
 start-backend:
-	cd backend && $(PYTHON) -m uvicorn main:app --reload --port 8000
+	cd backend && $(PYTHON) -m uvicorn main:app --reload --port 8010
 
 start-frontend:
 	cd frontend && $(NPM) run dev
 
 test:
-	cd backend && $(PYTHON) -m pytest -q
+	cd backend && FIRESTORE_EMULATOR_HOST=localhost:8080 $(PYTHON) -m pytest -q
 
 build-frontend:
 	cd frontend && $(NPM) run build

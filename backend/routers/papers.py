@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from database import SessionLocal, get_db
-from models import SearchHistory, User, Paper, Workspace
-from repositories import FirebaseResearchRepository, ResearchRepository, SqlAlchemyResearchRepository, get_research_repository
+from fastapi import APIRouter, Depends, HTTPException, Request
+from repositories.research import SearchHistory, User, Paper, Workspace
+from repositories import (
+    FirebaseResearchRepository,
+    ResearchRepository,
+    get_research_repository,
+)
 from routers.auth import get_current_user
 from pydantic import BaseModel, Field
 from typing import List, Optional, Tuple
@@ -239,9 +240,31 @@ GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE: Dict[str, float] = {
 }
 
 GLOBAL_SEARCH_RANK_STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-    "in", "into", "is", "of", "on", "or", "that", "the", "their",
-    "these", "this", "to", "using", "via", "with",
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "these",
+    "this",
+    "to",
+    "using",
+    "via",
+    "with",
 }
 
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -297,6 +320,7 @@ OPEN_ACCESS_SOURCES = {
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
 
 class PaperImport(BaseModel):
     title: str
@@ -368,87 +392,39 @@ def _record_search_history(
     }
 
     try:
-        backend = (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower()
-        if backend == "firebase":
-            FirebaseResearchRepository().record_search_history(
-                user_id=user_id,
-                query=trimmed_query,
-                source="global_merged",
-                result_count=max(0, int(result_count or 0)),
-                filters_json=json.dumps(payload),
-                dedupe_seconds=240,
-                max_items=250,
-            )
-            return
-
-        db = SessionLocal()
-        try:
-            SqlAlchemyResearchRepository(db).record_search_history(
-                user_id=user_id,
-                query=trimmed_query,
-                source="global_merged",
-                result_count=max(0, int(result_count or 0)),
-                filters_json=json.dumps(payload),
-                dedupe_seconds=240,
-                max_items=250,
-            )
-        finally:
-            db.close()
+        FirebaseResearchRepository().record_search_history(
+            user_id=user_id,
+            query=trimmed_query,
+            source="global_merged",
+            result_count=max(0, int(result_count or 0)),
+            filters_json=json.dumps(payload),
+            dedupe_seconds=240,
+            max_items=250,
+        )
     except Exception:
         logging.exception("Failed to record search history")
 
 
 def _get_nasa_token() -> str:
-    """Resolve NASA token from process env, then backend/.env fallback."""
-    token = (os.getenv("NASA_ADS_TOKEN") or "").strip()
-    if token:
-        return token
-    env_path = Path(__file__).resolve().parents[1] / '.env'
-    vals = dotenv_values(env_path)
-    token = (vals.get('NASA_ADS_TOKEN') or '').strip()
-    if token:
-        os.environ['NASA_ADS_TOKEN'] = token
-    return token
+    """Resolve NASA ADS token from process environment (loaded at startup via dotenv)."""
+    return (os.getenv("NASA_ADS_TOKEN") or "").strip()
 
 
 def _get_springer_key() -> str:
-    """Resolve Springer key from process env, then backend/.env fallback."""
-    key = (os.getenv("SPRINGER_META_KEY") or os.getenv("SPRINGER_OPEN_ACCESS_KEY") or "").strip()
-    if key:
-        return key
-    env_path = Path(__file__).resolve().parents[1] / '.env'
-    vals = dotenv_values(env_path)
-    key = (vals.get('SPRINGER_META_KEY') or vals.get('SPRINGER_OPEN_ACCESS_KEY') or '').strip()
-    if key:
-        if not os.getenv("SPRINGER_META_KEY"):
-            os.environ["SPRINGER_META_KEY"] = key
-    return key
+    """Resolve Springer key from process environment."""
+    return (
+        os.getenv("SPRINGER_META_KEY") or os.getenv("SPRINGER_OPEN_ACCESS_KEY") or ""
+    ).strip()
 
 
 def _get_groq_key() -> str:
-    """Resolve Groq key from process env, then backend/.env fallback."""
-    key = (os.getenv("GROQ_API_KEY") or "").strip()
-    if key:
-        return key
-    env_path = Path(__file__).resolve().parents[1] / '.env'
-    vals = dotenv_values(env_path)
-    key = (vals.get('GROQ_API_KEY') or '').strip()
-    if key:
-        os.environ['GROQ_API_KEY'] = key
-    return key
+    """Resolve Groq key from process environment."""
+    return (os.getenv("GROQ_API_KEY") or "").strip()
 
 
 def _get_semantic_key() -> str:
-    """Resolve Semantic Scholar key from env, then backend/.env fallback."""
-    key = (os.getenv("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
-    if key:
-        return key
-    env_path = Path(__file__).resolve().parents[1] / '.env'
-    vals = dotenv_values(env_path)
-    key = (vals.get('SEMANTIC_SCHOLAR_API_KEY') or '').strip()
-    if key:
-        os.environ['SEMANTIC_SCHOLAR_API_KEY'] = key
-    return key
+    """Resolve Semantic Scholar key from process environment."""
+    return (os.getenv("SEMANTIC_SCHOLAR_API_KEY") or "").strip()
 
 
 def _decode_openalex_abstract(abstract_index: Any) -> str:
@@ -468,7 +444,10 @@ def _decode_openalex_abstract(abstract_index: Any) -> str:
         return "No abstract available."
 
     positioned_tokens.sort(key=lambda x: x[0])
-    return " ".join(token for _, token in positioned_tokens).strip() or "No abstract available."
+    return (
+        " ".join(token for _, token in positioned_tokens).strip()
+        or "No abstract available."
+    )
 
 
 def _normalize_title(title: str) -> str:
@@ -523,7 +502,11 @@ def _paper_has_real_abstract(paper: Dict[str, Any]) -> bool:
 
 def _search_rank_tokens(text: str) -> List[str]:
     normalized = _normalize_title(text)
-    tokens = [token for token in normalized.split() if token and token not in GLOBAL_SEARCH_RANK_STOP_WORDS]
+    tokens = [
+        token
+        for token in normalized.split()
+        if token and token not in GLOBAL_SEARCH_RANK_STOP_WORDS
+    ]
     return tokens[:24]
 
 
@@ -542,11 +525,11 @@ def _paper_ranking_score(paper: Dict[str, Any], query: str) -> float:
     normalized_query = _normalize_title(query)
     title = str(paper.get("title") or "")
     abstract = str(paper.get("abstract") or "")
-    categories_text = " ".join(str(item or "") for item in (paper.get("categories") or []))
+    categories_text = " ".join(
+        str(item or "") for item in (paper.get("categories") or [])
+    )
     publication_text = str(
-        paper.get("publication_name")
-        or paper.get("publication_title")
-        or ""
+        paper.get("publication_name") or paper.get("publication_title") or ""
     )
 
     title_norm = _normalize_title(title)
@@ -576,7 +559,9 @@ def _paper_ranking_score(paper: Dict[str, Any], query: str) -> float:
         )
     )
     year_bonus = min(2.5, max(0, _paper_year_sort_value(paper) - 2019) * 0.25)
-    access_bonus = 1.0 if _has_pdf(paper) else (0.45 if paper.get("full_text_available") else 0.0)
+    access_bonus = (
+        1.0 if _has_pdf(paper) else (0.45 if paper.get("full_text_available") else 0.0)
+    )
     abstract_bonus = 0.35 if _paper_has_real_abstract(paper) else 0.0
     doi_bonus = 0.15 if paper.get("doi") else 0.0
 
@@ -603,10 +588,14 @@ def _diversify_ranked_papers(
     if not papers:
         return []
 
-    soft_cap_ratio = float(GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE.get(search_mode, 0.35))
+    soft_cap_ratio = float(
+        GLOBAL_SEARCH_SOURCE_SOFT_CAP_RATIO_BY_MODE.get(search_mode, 0.35)
+    )
     soft_cap_min = int(GLOBAL_SEARCH_SOURCE_SOFT_CAP_MIN_BY_MODE.get(search_mode, 4))
     soft_cap = max(soft_cap_min, int(page_size * soft_cap_ratio))
-    repeat_penalty = float(GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE.get(search_mode, 2.0))
+    repeat_penalty = float(
+        GLOBAL_SEARCH_SOURCE_REPEAT_PENALTY_BY_MODE.get(search_mode, 2.0)
+    )
 
     source_buckets: Dict[str, List[Dict[str, Any]]] = {}
     for index, paper in enumerate(papers):
@@ -642,7 +631,9 @@ def _diversify_ranked_papers(
                 continue
             paper = bucket[position]
             selected_for_source = int(selected_counts.get(source_key, 0))
-            effective_score = float(paper.get("_ranking_score") or 0.0) - (selected_for_source * repeat_penalty)
+            effective_score = float(paper.get("_ranking_score") or 0.0) - (
+                selected_for_source * repeat_penalty
+            )
             if selected_for_source >= soft_cap:
                 effective_score -= 4.0 + ((selected_for_source - soft_cap) * 1.25)
             if selected_for_source == 0:
@@ -714,7 +705,16 @@ def _osti_is_publication(product_type: Any) -> bool:
     blocked_terms = ("software", "dataset", "data package", "patent", "code")
     if any(term in label for term in blocked_terms):
         return False
-    allowed_terms = ("article", "conference", "report", "thesis", "dissertation", "preprint", "manuscript", "paper")
+    allowed_terms = (
+        "article",
+        "conference",
+        "report",
+        "thesis",
+        "dissertation",
+        "preprint",
+        "manuscript",
+        "paper",
+    )
     return any(term in label for term in allowed_terms)
 
 
@@ -722,7 +722,9 @@ def _xml_local_name(tag: str) -> str:
     return str(tag or "").split("}")[-1]
 
 
-def _xml_text_values(node: ET.Element, local_name: str, max_items: int = 50) -> List[str]:
+def _xml_text_values(
+    node: ET.Element, local_name: str, max_items: int = 50
+) -> List[str]:
     out: List[str] = []
     expected = str(local_name or "").strip().lower()
     if not expected:
@@ -748,7 +750,9 @@ def _xml_itertext_lines(node: ET.Element) -> List[str]:
     return lines
 
 
-def _xml_primary_text_values(node: ET.Element, local_name: str, max_items: int = 50) -> List[str]:
+def _xml_primary_text_values(
+    node: ET.Element, local_name: str, max_items: int = 50
+) -> List[str]:
     out: List[str] = []
     expected = str(local_name or "").strip().lower()
     if not expected:
@@ -815,15 +819,10 @@ def _extract_pubmed_doi(articleids: Any) -> str:
 
 
 def _get_unpaywall_email() -> Optional[str]:
-    """Return contact email for Unpaywall requests."""
-    mailto = (os.getenv("UNPAYWALL_MAILTO") or os.getenv("CROSSREF_MAILTO") or "").strip()
-    if mailto:
-        return mailto
-    env_path = Path(__file__).resolve().parents[1] / '.env'
-    vals = dotenv_values(env_path)
-    mailto = (vals.get("UNPAYWALL_MAILTO") or vals.get("CROSSREF_MAILTO") or "").strip()
-    if mailto:
-        os.environ.setdefault("UNPAYWALL_MAILTO", mailto)
+    """Return contact email for Unpaywall/Crossref requests from process environment."""
+    mailto = (
+        os.getenv("UNPAYWALL_MAILTO") or os.getenv("CROSSREF_MAILTO") or ""
+    ).strip()
     return mailto or None
 
 
@@ -850,7 +849,9 @@ def _normalize_doi(doi: str) -> str:
     cleaned = str(doi or "").strip()
     if not cleaned:
         return ""
-    cleaned = cleaned.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+    cleaned = (
+        cleaned.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+    )
     cleaned = re.sub(r"^doi:\s*", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
@@ -884,10 +885,16 @@ def _annotate_access_metadata(paper: Dict[str, Any]) -> Dict[str, Any]:
     pdf_url = str(paper.get("pdf_url") or "").strip()
     institutional_url = str(paper.get("institutional_url") or "").strip()
 
-    resolved_full_text_url = _paper_full_text_url_from_fields(full_text_url, pdf_url, institutional_url, url)
+    resolved_full_text_url = _paper_full_text_url_from_fields(
+        full_text_url, pdf_url, institutional_url, url
+    )
     full_text_available = bool(resolved_full_text_url)
 
-    if institutional_url and resolved_full_text_url == institutional_url and not pdf_url:
+    if (
+        institutional_url
+        and resolved_full_text_url == institutional_url
+        and not pdf_url
+    ):
         access_type = "institutional"
         access_label = "Institutional Full Text"
     elif full_text_available and (source in OPEN_ACCESS_SOURCES or bool(pdf_url)):
@@ -928,7 +935,9 @@ def _entry_title_from_url(url: str) -> str:
     value = str(url or "").strip()
     if not value:
         return ""
-    candidate = value.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
+    candidate = (
+        value.rstrip("/").split("/")[-1].replace("-", " ").replace("_", " ").strip()
+    )
     if not candidate:
         return "Imported paper"
     return candidate[:220]
@@ -943,7 +952,11 @@ def _parse_institutional_raw_text(raw_text: str) -> List[InstitutionalPaperEntry
         if line.startswith("#"):
             continue
 
-        parts = [segment.strip() for segment in re.split(r"\s*\|\s*|\t", line) if segment.strip()]
+        parts = [
+            segment.strip()
+            for segment in re.split(r"\s*\|\s*|\t", line)
+            if segment.strip()
+        ]
         if not parts:
             continue
 
@@ -992,7 +1005,9 @@ def _parse_institutional_raw_text(raw_text: str) -> List[InstitutionalPaperEntry
     return entries
 
 
-def _global_cache_key(query: str, max_results: int, offset: int, search_mode: str = "balanced") -> str:
+def _global_cache_key(
+    query: str, max_results: int, offset: int, search_mode: str = "balanced"
+) -> str:
     """Build a stable cache key for a global search request."""
     mode = _normalize_search_mode(search_mode)
     normalized_query = re.sub(r"\s+", " ", str(query or "").strip().lower())
@@ -1021,7 +1036,9 @@ def _global_cache_put(cache_key: str, payload: Dict[str, Any]) -> None:
     }
     if len(_GLOBAL_SEARCH_CACHE) <= GLOBAL_SEARCH_CACHE_MAX_ITEMS:
         return
-    oldest_key = min(_GLOBAL_SEARCH_CACHE.items(), key=lambda kv: kv[1].get("stored_at", 0))[0]
+    oldest_key = min(
+        _GLOBAL_SEARCH_CACHE.items(), key=lambda kv: kv[1].get("stored_at", 0)
+    )[0]
     _GLOBAL_SEARCH_CACHE.pop(oldest_key, None)
 
 
@@ -1031,7 +1048,9 @@ def _log_search_event(event: str, **fields: Any) -> None:
     try:
         logging.getLogger(__name__).info(json.dumps(payload, default=str))
     except Exception:
-        logging.getLogger(__name__).info("search_event=%s fields=%s", event, str(fields))
+        logging.getLogger(__name__).info(
+            "search_event=%s fields=%s", event, str(fields)
+        )
 
 
 def _normalize_search_mode(value: str) -> str:
@@ -1046,7 +1065,7 @@ def _get_core_key() -> str:
     key = (os.getenv("CORE_API_KEY") or "").strip()
     if key:
         return key
-    env_path = Path(__file__).resolve().parents[1] / '.env'
+    env_path = Path(__file__).resolve().parents[1] / ".env"
     vals = dotenv_values(env_path)
     key = (vals.get("CORE_API_KEY") or "").strip()
     if key:
@@ -1064,7 +1083,9 @@ async def _fetch_unpaywall_pdf(doi: str) -> Optional[str]:
     url = f"{UNPAYWALL_API}{doi_clean}"
     try:
         async with httpx.AsyncClient(timeout=4) as client:
-            resp = await client.get(url, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
+            resp = await client.get(
+                url, params=params, headers={"User-Agent": "Soyog-AI/1.0"}
+            )
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
@@ -1087,6 +1108,7 @@ async def _fetch_unpaywall_pdf(doi: str) -> Optional[str]:
 # ArXiv helpers
 # ---------------------------------------------------------------------------
 
+
 def parse_arxiv_feed(xml_text: str) -> Tuple[list, Optional[int]]:
     """Parse ArXiv Atom feed into papers and total matches."""
     ns = {
@@ -1105,8 +1127,12 @@ def parse_arxiv_feed(xml_text: str) -> Tuple[list, Optional[int]]:
             total_results = None
     for entry in root.findall("atom:entry", ns):
         title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
-        abstract = (entry.findtext("atom:summary", "", ns) or "").strip().replace("\n", " ")
-        authors = [a.findtext("atom:name", "", ns) for a in entry.findall("atom:author", ns)]
+        abstract = (
+            (entry.findtext("atom:summary", "", ns) or "").strip().replace("\n", " ")
+        )
+        authors = [
+            a.findtext("atom:name", "", ns) for a in entry.findall("atom:author", ns)
+        ]
         url = ""
         for link in entry.findall("atom:link", ns):
             if link.get("rel") == "alternate" or link.get("type") == "text/html":
@@ -1116,21 +1142,24 @@ def parse_arxiv_feed(xml_text: str) -> Tuple[list, Optional[int]]:
             url = entry.findtext("atom:id", "", ns) or ""
         published = (entry.findtext("atom:published", "", ns) or "")[:10]
         categories = [cat.get("term", "") for cat in entry.findall("atom:category", ns)]
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "source": "arxiv",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "source": "arxiv",
+            }
+        )
     return papers, total_results
 
 
 # ---------------------------------------------------------------------------
 # ArXiv search
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search")
 async def search_papers(
@@ -1171,7 +1200,11 @@ async def search_papers(
             papers, total = parse_arxiv_feed(response.text)
             returned = len(papers)
             next_offset = start_offset + returned
-            has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+            has_more = (
+                (next_offset < total)
+                if isinstance(total, int)
+                else (returned == page_size)
+            )
             return {
                 "papers": papers,
                 "total": total,
@@ -1222,6 +1255,7 @@ async def search_papers(
 # Semantic Scholar search  (200M+ papers, all disciplines, free — no key)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/search-semantic")
 async def search_semantic(
     query: str,
@@ -1253,7 +1287,9 @@ async def search_semantic(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Semantic Scholar timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Semantic Scholar timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
             if allow_fallback_arxiv:
@@ -1268,12 +1304,18 @@ async def search_semantic(
                 }
                 try:
                     async with httpx.AsyncClient(timeout=20) as client:
-                        fallback_response = await client.get(ARXIV_API, params=fallback_params)
+                        fallback_response = await client.get(
+                            ARXIV_API, params=fallback_params
+                        )
                         fallback_response.raise_for_status()
                     papers, total = parse_arxiv_feed(fallback_response.text)
                     returned = len(papers)
                     next_offset = start_offset + returned
-                    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+                    has_more = (
+                        (next_offset < total)
+                        if isinstance(total, int)
+                        else (returned == page_size)
+                    )
                     return {
                         "papers": papers,
                         "total": total,
@@ -1298,7 +1340,9 @@ async def search_semantic(
                 status_code=401,
                 detail="Semantic Scholar API key rejected. Check SEMANTIC_SCHOLAR_API_KEY.",
             )
-        raise HTTPException(status_code=502, detail="Semantic Scholar API upstream error.")
+        raise HTTPException(
+            status_code=502, detail="Semantic Scholar API upstream error."
+        )
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Semantic Scholar API error.")
 
@@ -1324,21 +1368,25 @@ async def search_semantic(
         # Derive simple category tags from publicationTypes
         categories = item.get("publicationTypes") or []
 
-        papers.append({
-            "title": item.get("title") or "",
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "doi": doi or "",
-            "source": "semantic_scholar",
-        })
+        papers.append(
+            {
+                "title": item.get("title") or "",
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi or "",
+                "source": "semantic_scholar",
+            }
+        )
 
     total = data.get("total")
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -1353,6 +1401,7 @@ async def search_semantic(
 # ---------------------------------------------------------------------------
 # OpenAlex search (250M+ works, broad multi-discipline index)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-openalex")
 async def search_openalex(
@@ -1386,7 +1435,9 @@ async def search_openalex(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="OpenAlex timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="OpenAlex timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
             raise HTTPException(
@@ -1421,7 +1472,11 @@ async def search_openalex(
         url = ""
         primary_location = item.get("primary_location") or {}
         if isinstance(primary_location, dict):
-            url = primary_location.get("landing_page_url") or primary_location.get("pdf_url") or ""
+            url = (
+                primary_location.get("landing_page_url")
+                or primary_location.get("pdf_url")
+                or ""
+            )
         if not url and doi:
             url = f"https://doi.org/{doi}"
 
@@ -1437,22 +1492,26 @@ async def search_openalex(
             if len(categories) >= 3:
                 break
 
-        papers.append({
-            "title": item.get("display_name") or "",
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "doi": doi,
-            "source": "openalex",
-        })
+        papers.append(
+            {
+                "title": item.get("display_name") or "",
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi,
+                "source": "openalex",
+            }
+        )
 
     meta = data.get("meta") or {}
     total = meta.get("count")
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -1467,6 +1526,7 @@ async def search_openalex(
 # ---------------------------------------------------------------------------
 # Europe PMC search (open access biomedical literature)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-europepmc")
 async def search_europepmc(
@@ -1498,7 +1558,9 @@ async def search_europepmc(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Europe PMC timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Europe PMC timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
             raise HTTPException(
@@ -1516,14 +1578,22 @@ async def search_europepmc(
         author_list = item.get("authorList") or {}
         if isinstance(author_list, dict):
             for author in author_list.get("author") or []:
-                name = (author or {}).get("fullName") or (author or {}).get("collectiveName") or ""
+                name = (
+                    (author or {}).get("fullName")
+                    or (author or {}).get("collectiveName")
+                    or ""
+                )
                 if name:
                     authors.append(name)
 
         if not authors:
             raw_author = (item.get("authorString") or "").strip()
             if raw_author:
-                authors = [a.strip() for a in raw_author.replace(";", ",").split(",") if a.strip()][:10]
+                authors = [
+                    a.strip()
+                    for a in raw_author.replace(";", ",").split(",")
+                    if a.strip()
+                ][:10]
 
         abstract = item.get("abstractText") or "No abstract available."
         published = (
@@ -1559,16 +1629,18 @@ async def search_europepmc(
         if journal_title:
             categories.append(journal_title)
 
-        papers.append({
-            "title": (item.get("title") or "").strip(),
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories[:3],
-            "doi": doi,
-            "source": "europe_pmc",
-        })
+        papers.append(
+            {
+                "title": (item.get("title") or "").strip(),
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories[:3],
+                "doi": doi,
+                "source": "europe_pmc",
+            }
+        )
 
     total = data.get("hitCount")
     try:
@@ -1578,7 +1650,9 @@ async def search_europepmc(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -1593,6 +1667,7 @@ async def search_europepmc(
 # ---------------------------------------------------------------------------
 # Crossref search (large DOI registry metadata index)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-crossref")
 async def search_crossref(
@@ -1629,10 +1704,15 @@ async def search_crossref(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Crossref timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Crossref timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Crossref rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="Crossref rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="Crossref API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Crossref API error.")
@@ -1643,7 +1723,11 @@ async def search_crossref(
 
     for item in items:
         title_raw = item.get("title") or []
-        title = title_raw[0] if isinstance(title_raw, list) and title_raw else str(title_raw or "")
+        title = (
+            title_raw[0]
+            if isinstance(title_raw, list) and title_raw
+            else str(title_raw or "")
+        )
 
         authors = []
         for author in item.get("author") or []:
@@ -1667,21 +1751,25 @@ async def search_crossref(
             url = f"https://doi.org/{doi}"
 
         container = item.get("container-title") or []
-        journal_title = container[0] if isinstance(container, list) and container else ""
+        journal_title = (
+            container[0] if isinstance(container, list) and container else ""
+        )
         work_type = str(item.get("type") or "").strip()
         categories = [x for x in [work_type, journal_title] if x][:3]
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": _extract_crossref_published(item),
-            "categories": categories,
-            "doi": doi,
-            "publication_name": journal_title,
-            "source": "crossref",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": _extract_crossref_published(item),
+                "categories": categories,
+                "doi": doi,
+                "publication_name": journal_title,
+                "source": "crossref",
+            }
+        )
 
     total = message.get("total-results")
     try:
@@ -1691,7 +1779,9 @@ async def search_crossref(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -1706,6 +1796,7 @@ async def search_crossref(
 # ---------------------------------------------------------------------------
 # PubMed search (NCBI E-utilities)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-pubmed")
 async def search_pubmed(
@@ -1736,10 +1827,15 @@ async def search_pubmed(
             search_response.raise_for_status()
         search_data = search_response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="PubMed timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="PubMed timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="PubMed rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="PubMed rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="PubMed API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="PubMed API error.")
@@ -1773,15 +1869,24 @@ async def search_pubmed(
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            summary_response = await client.get(PUBMED_ESUMMARY_API, params=summary_params)
+            summary_response = await client.get(
+                PUBMED_ESUMMARY_API, params=summary_params
+            )
             summary_response.raise_for_status()
         summary_data = summary_response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="PubMed summary timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="PubMed summary timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="PubMed rate limit reached. Please retry shortly.")
-        raise HTTPException(status_code=502, detail="PubMed summary API upstream error.")
+            raise HTTPException(
+                status_code=429,
+                detail="PubMed rate limit reached. Please retry shortly.",
+            )
+        raise HTTPException(
+            status_code=502, detail="PubMed summary API upstream error."
+        )
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="PubMed summary API error.")
 
@@ -1826,21 +1931,25 @@ async def search_pubmed(
         if journal:
             categories.append(journal)
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": "No abstract available.",
-            "url": url,
-            "published": pubdate,
-            "categories": categories[:3],
-            "doi": doi,
-            "publication_name": journal,
-            "source": "pubmed",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": "No abstract available.",
+                "url": url,
+                "published": pubdate,
+                "categories": categories[:3],
+                "doi": doi,
+                "publication_name": journal,
+                "source": "pubmed",
+            }
+        )
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -1855,6 +1964,7 @@ async def search_pubmed(
 # ---------------------------------------------------------------------------
 # PMC search (PubMed Central full-text archive)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-pmc")
 async def search_pmc(
@@ -1888,7 +1998,9 @@ async def search_pmc(
         raise HTTPException(status_code=504, detail="PMC timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="PMC rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="PMC rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="PMC API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="PMC API error.")
@@ -1922,14 +2034,20 @@ async def search_pmc(
 
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            summary_response = await client.get(PUBMED_ESUMMARY_API, params=summary_params)
+            summary_response = await client.get(
+                PUBMED_ESUMMARY_API, params=summary_params
+            )
             summary_response.raise_for_status()
         summary_data = summary_response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="PMC summary timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="PMC summary timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="PMC rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="PMC rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="PMC summary API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="PMC summary API error.")
@@ -1957,9 +2075,13 @@ async def search_pmc(
         doi = _extract_pubmed_doi(article_ids)
         pmcid = _extract_article_id(article_ids, "pmcid")
         pmcid = pmcid.upper().replace("PMC", "")
-        article_url = f"https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcid}/" if pmcid else ""
+        article_url = (
+            f"https://pmc.ncbi.nlm.nih.gov/articles/PMC{pmcid}/" if pmcid else ""
+        )
         journal = str(item.get("fulljournalname") or item.get("source") or "").strip()
-        pubdate = str(item.get("epubdate") or item.get("pubdate") or item.get("sortdate") or "").strip()
+        pubdate = str(
+            item.get("epubdate") or item.get("pubdate") or item.get("sortdate") or ""
+        ).strip()
         if len(pubdate) > 10 and re.match(r"^\d{4}-\d{2}-\d{2}", pubdate):
             pubdate = pubdate[:10]
 
@@ -1987,7 +2109,9 @@ async def search_pmc(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2002,6 +2126,7 @@ async def search_pmc(
 # ---------------------------------------------------------------------------
 # DOAJ search (Directory of Open Access Journals)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-doaj")
 async def search_doaj(
@@ -2030,7 +2155,9 @@ async def search_doaj(
         raise HTTPException(status_code=504, detail="DOAJ timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="DOAJ rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="DOAJ rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="DOAJ API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="DOAJ API error.")
@@ -2079,20 +2206,24 @@ async def search_doaj(
             url = f"https://doi.org/{doi}"
 
         journal = str((bib.get("journal") or {}).get("title") or "").strip()
-        keywords = [str(k).strip() for k in (bib.get("keywords") or []) if str(k).strip()]
+        keywords = [
+            str(k).strip() for k in (bib.get("keywords") or []) if str(k).strip()
+        ]
         categories = [x for x in [journal, *keywords[:2]] if x][:3]
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "doi": doi,
-            "publication_name": journal,
-            "source": "doaj",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi,
+                "publication_name": journal,
+                "source": "doaj",
+            }
+        )
 
     total = data.get("total")
     try:
@@ -2102,7 +2233,9 @@ async def search_doaj(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2144,7 +2277,9 @@ async def search_eric(
         raise HTTPException(status_code=504, detail="ERIC timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="ERIC rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="ERIC rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="ERIC API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="ERIC API error.")
@@ -2166,7 +2301,9 @@ async def search_eric(
 
         raw_authors = row.get("author") or row.get("authors") or []
         if isinstance(raw_authors, str):
-            author_items = [segment.strip() for segment in raw_authors.split(";") if segment.strip()]
+            author_items = [
+                segment.strip() for segment in raw_authors.split(";") if segment.strip()
+            ]
         elif isinstance(raw_authors, list):
             author_items = raw_authors
         else:
@@ -2181,23 +2318,19 @@ async def search_eric(
                 break
 
         abstract = _strip_xml_html_tags(
-            row.get("description")
-            or row.get("abstractor")
-            or row.get("summary")
-            or ""
+            row.get("description") or row.get("abstractor") or row.get("summary") or ""
         )
         if not abstract:
             abstract = "No abstract available."
 
         doi = _normalize_doi(str(row.get("doi") or ""))
         if not doi:
-            doi = _looks_like_doi(" ".join(str(row.get(key) or "") for key in ("identifier", "notes")))
+            doi = _looks_like_doi(
+                " ".join(str(row.get(key) or "") for key in ("identifier", "notes"))
+            )
 
         record_id = str(
-            row.get("id")
-            or row.get("eric_number")
-            or row.get("accessionnumber")
-            or ""
+            row.get("id") or row.get("eric_number") or row.get("accessionnumber") or ""
         ).strip()
         url = f"https://eric.ed.gov/?id={record_id}" if record_id else ""
 
@@ -2257,7 +2390,9 @@ async def search_eric(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2299,7 +2434,9 @@ async def search_osti(
         raise HTTPException(status_code=504, detail="OSTI timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="OSTI rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="OSTI rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="OSTI API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="OSTI API error.")
@@ -2344,7 +2481,9 @@ async def search_osti(
             if len(authors) >= 12:
                 break
 
-        description = _strip_xml_html_tags(row.get("description") or row.get("abstract") or "")
+        description = _strip_xml_html_tags(
+            row.get("description") or row.get("abstract") or ""
+        )
         if not description:
             description = "No abstract available."
 
@@ -2393,7 +2532,9 @@ async def search_osti(
             "doi": doi,
             "pdf_url": full_text_url if _is_pdf_url(full_text_url) else None,
             "full_text_url": full_text_url or None,
-            "publication_name": str(row.get("journal_name") or row.get("publisher") or "").strip(),
+            "publication_name": str(
+                row.get("journal_name") or row.get("publisher") or ""
+            ).strip(),
             "source": "osti",
         }
         _annotate_access_metadata(paper_row)
@@ -2439,10 +2580,15 @@ async def search_econbiz(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="EconBiz timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="EconBiz timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="EconBiz rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="EconBiz rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="EconBiz API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="EconBiz API error.")
@@ -2476,7 +2622,11 @@ async def search_econbiz(
         identifier_urls = row.get("identifier_url") or []
         if not isinstance(identifier_urls, list):
             identifier_urls = [identifier_urls]
-        identifier_urls = [str(item or "").strip() for item in identifier_urls if str(item or "").strip()]
+        identifier_urls = [
+            str(item or "").strip()
+            for item in identifier_urls
+            if str(item or "").strip()
+        ]
 
         pdf_url = next((item for item in identifier_urls if _is_pdf_url(item)), "")
         doi = ""
@@ -2499,7 +2649,9 @@ async def search_econbiz(
             publication_name = is_part_of.strip()
 
         categories: List[str] = []
-        for item in [row.get("type")] + (row.get("type_genre") if isinstance(row.get("type_genre"), list) else []):
+        for item in [row.get("type")] + (
+            row.get("type_genre") if isinstance(row.get("type_genre"), list) else []
+        ):
             label = str(item or "").strip()
             if not label or label in categories:
                 continue
@@ -2550,7 +2702,9 @@ async def search_econbiz(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2589,10 +2743,15 @@ async def search_jstage(
             response.raise_for_status()
         root = ET.fromstring(response.text)
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="J-STAGE timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="J-STAGE timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="J-STAGE rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="J-STAGE rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="J-STAGE API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="J-STAGE API error.")
@@ -2621,8 +2780,12 @@ async def search_jstage(
             if len(authors) >= 12:
                 break
 
-        doi = _normalize_doi(_first_nonempty(_xml_primary_text_values(entry, "doi", max_items=3)))
-        article_url = _first_nonempty(_xml_primary_text_values(entry, "article_link", max_items=2))
+        doi = _normalize_doi(
+            _first_nonempty(_xml_primary_text_values(entry, "doi", max_items=3))
+        )
+        article_url = _first_nonempty(
+            _xml_primary_text_values(entry, "article_link", max_items=2)
+        )
         if not article_url and doi:
             article_url = f"https://doi.org/{doi}"
 
@@ -2630,7 +2793,9 @@ async def search_jstage(
             _xml_primary_text_values(entry, "material_title", max_items=2)
             + _xml_primary_text_values(entry, "cdjournal", max_items=2)
         )
-        published = _first_nonempty(_xml_primary_text_values(entry, "pubyear", max_items=2))
+        published = _first_nonempty(
+            _xml_primary_text_values(entry, "pubyear", max_items=2)
+        )
 
         categories: List[str] = []
         for item in [
@@ -2670,7 +2835,9 @@ async def search_jstage(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2712,7 +2879,9 @@ async def search_orkg(
         raise HTTPException(status_code=504, detail="ORKG timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="ORKG rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="ORKG rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="ORKG API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="ORKG API error.")
@@ -2739,14 +2908,26 @@ async def search_orkg(
             if len(authors) >= 12:
                 break
 
-        identifiers = row.get("identifiers") if isinstance(row.get("identifiers"), dict) else {}
-        doi_values = identifiers.get("doi") if isinstance(identifiers.get("doi"), list) else []
+        identifiers = (
+            row.get("identifiers") if isinstance(row.get("identifiers"), dict) else {}
+        )
+        doi_values = (
+            identifiers.get("doi") if isinstance(identifiers.get("doi"), list) else []
+        )
         doi = _normalize_doi(str(doi_values[0] or "").strip()) if doi_values else ""
 
-        publication_info = row.get("publication_info") if isinstance(row.get("publication_info"), dict) else {}
+        publication_info = (
+            row.get("publication_info")
+            if isinstance(row.get("publication_info"), dict)
+            else {}
+        )
         published_year = publication_info.get("published_year")
         published_month = publication_info.get("published_month")
-        if isinstance(published_year, int) and isinstance(published_month, int) and 1 <= published_month <= 12:
+        if (
+            isinstance(published_year, int)
+            and isinstance(published_month, int)
+            and 1 <= published_month <= 12
+        ):
             published = f"{published_year:04d}-{published_month:02d}-01"
         elif published_year:
             published = str(published_year)
@@ -2776,7 +2957,9 @@ async def search_orkg(
             article_url = f"https://doi.org/{doi}"
         if not article_url:
             resource_id = str(row.get("id") or "").strip()
-            article_url = f"https://orkg.org/resources/{resource_id}" if resource_id else ""
+            article_url = (
+                f"https://orkg.org/resources/{resource_id}" if resource_id else ""
+            )
 
         abstract = "No abstract available."
         if publication_name:
@@ -2805,7 +2988,9 @@ async def search_orkg(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2820,6 +3005,7 @@ async def search_orkg(
 # ---------------------------------------------------------------------------
 # HAL (French open archive) search
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-hal")
 async def search_hal(
@@ -2842,14 +3028,18 @@ async def search_hal(
     }
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(HAL_API_SEARCH, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
+            resp = await client.get(
+                HAL_API_SEARCH, params=params, headers={"User-Agent": "Soyog-AI/1.0"}
+            )
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="HAL timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="HAL rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="HAL rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="HAL API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="HAL API error.")
@@ -2904,20 +3094,24 @@ async def search_hal(
         year = doc.get("publicationDateY_i") or ""
         published = str(year) if year else ""
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": [],
-            "doi": doi,
-            "source": "hal",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": [],
+                "doi": doi,
+                "source": "hal",
+            }
+        )
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -2933,7 +3127,10 @@ async def search_hal(
 # bioRxiv / medRxiv search (keyword filter over recent preprints)
 # ---------------------------------------------------------------------------
 
-async def _search_rxiv(server: str, query: str, max_results: int, lookback_days: int = 365):
+
+async def _search_rxiv(
+    server: str, query: str, max_results: int, lookback_days: int = 365
+):
     """Search bioRxiv or medRxiv by pulling recent preprints and keyword-filtering."""
     page_size = max(1, min(max_results, 60))
     start_date = (date.today() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -2963,22 +3160,33 @@ async def _search_rxiv(server: str, query: str, max_results: int, lookback_days:
                 continue
             if query_l not in title.lower() and query_l not in abstract.lower():
                 continue
-            authors = [a.strip() for a in (rec.get("authors") or "").split(";") if a.strip()]
-            doi = (rec.get("doi") or "").replace("http://dx.doi.org/", "").replace("https://doi.org/", "").strip()
-            url_full = f"https://doi.org/{doi}" if doi else (rec.get("link") or "").strip()
+            authors = [
+                a.strip() for a in (rec.get("authors") or "").split(";") if a.strip()
+            ]
+            doi = (
+                (rec.get("doi") or "")
+                .replace("http://dx.doi.org/", "")
+                .replace("https://doi.org/", "")
+                .strip()
+            )
+            url_full = (
+                f"https://doi.org/{doi}" if doi else (rec.get("link") or "").strip()
+            )
             published = (rec.get("date") or "")[:10]
             source_label = "biorxiv" if server == "biorxiv" else "medrxiv"
-            collected.append({
-                "title": title,
-                "authors": authors,
-                "abstract": abstract or "No abstract available.",
-                "url": url_full,
-                "pdf_url": rec.get("link"),
-                "published": published,
-                "categories": [rec.get("category") or ""],
-                "doi": doi,
-                "source": source_label,
-            })
+            collected.append(
+                {
+                    "title": title,
+                    "authors": authors,
+                    "abstract": abstract or "No abstract available.",
+                    "url": url_full,
+                    "pdf_url": rec.get("link"),
+                    "published": published,
+                    "categories": [rec.get("category") or ""],
+                    "doi": doi,
+                    "source": source_label,
+                }
+            )
             if len(collected) >= max_results:
                 break
 
@@ -3033,6 +3241,7 @@ async def search_medrxiv(
 # PLOS search (open access journals)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/search-plos")
 async def search_plos(
     query: str,
@@ -3051,14 +3260,18 @@ async def search_plos(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(PLOS_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
+            resp = await client.get(
+                PLOS_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"}
+            )
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="PLOS timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="PLOS rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="PLOS rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="PLOS API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="PLOS API error.")
@@ -3071,11 +3284,17 @@ async def search_plos(
         total = None
 
     papers = []
+
     def _first_text(value: Any) -> str:
         if isinstance(value, list):
             value = value[0] if value else ""
         elif isinstance(value, dict):
-            value = value.get("value") or value.get("name") or value.get("display_name") or ""
+            value = (
+                value.get("value")
+                or value.get("name")
+                or value.get("display_name")
+                or ""
+            )
         return str(value or "").strip()
 
     for doc in docs:
@@ -3083,7 +3302,7 @@ async def search_plos(
         if not title:
             continue
         authors = [a for a in doc.get("author") or []]
-        abstract = (doc.get("abstract") or "")
+        abstract = doc.get("abstract") or ""
         if isinstance(abstract, list):
             abstract = abstract[0] if abstract else ""
         abstract = (abstract or "No abstract available.").strip()
@@ -3091,21 +3310,25 @@ async def search_plos(
         doi = _first_text(doc.get("doi"))
         url = f"https://doi.org/{doi}" if doi else ""
         journal = _first_text(doc.get("journal"))
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": pub_date,
-            "categories": [journal] if journal else [],
-            "doi": doi,
-            "publication_name": journal,
-            "source": "plos",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": pub_date,
+                "categories": [journal] if journal else [],
+                "doi": doi,
+                "publication_name": journal,
+                "source": "plos",
+            }
+        )
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3121,6 +3344,7 @@ async def search_plos(
 # eLife search (via Europe PMC journal filter)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/search-elife")
 async def search_elife(
     query: str,
@@ -3133,7 +3357,7 @@ async def search_elife(
     start_offset = max(0, offset)
     page = (start_offset // page_size) + 1
     params = {
-        "query": f"{query} JOURNAL:\"eLife\"",
+        "query": f'{query} JOURNAL:"eLife"',
         "format": "json",
         "pageSize": page_size,
         "page": page,
@@ -3141,14 +3365,22 @@ async def search_elife(
     }
     try:
         async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(EUROPE_PMC_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"})
+            resp = await client.get(
+                EUROPE_PMC_API, params=params, headers={"User-Agent": "Soyog-AI/1.0"}
+            )
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="eLife (via Europe PMC) timed out. Please try again.")
+        raise HTTPException(
+            status_code=504,
+            detail="eLife (via Europe PMC) timed out. Please try again.",
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Europe PMC rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="Europe PMC rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="eLife upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="eLife API error.")
@@ -3163,7 +3395,11 @@ async def search_elife(
         author_list = item.get("authorList") or {}
         if isinstance(author_list, dict):
             for author in author_list.get("author") or []:
-                nm = (author or {}).get("fullName") or (author or {}).get("collectiveName") or ""
+                nm = (
+                    (author or {}).get("fullName")
+                    or (author or {}).get("collectiveName")
+                    or ""
+                )
                 if nm:
                     authors.append(nm)
         abstract = item.get("abstractText") or "No abstract available."
@@ -3178,19 +3414,27 @@ async def search_elife(
         else:
             published = str(published)
         doi = (item.get("doi") or "").strip()
-        url = f"https://doi.org/{doi}" if doi else (item.get("fullTextUrlList") or {}).get("fullTextUrl", [{}])[0].get("url", "")
+        url = (
+            f"https://doi.org/{doi}"
+            if doi
+            else (item.get("fullTextUrlList") or {})
+            .get("fullTextUrl", [{}])[0]
+            .get("url", "")
+        )
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": ["eLife"],
-            "doi": doi,
-            "publication_name": "eLife",
-            "source": "elife",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": ["eLife"],
+                "doi": doi,
+                "publication_name": "eLife",
+                "source": "elife",
+            }
+        )
 
     total = data.get("hitCount")
     try:
@@ -3200,7 +3444,9 @@ async def search_elife(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3215,6 +3461,7 @@ async def search_elife(
 # ---------------------------------------------------------------------------
 # DataCite search (open metadata for DOI-registered research outputs)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-datacite")
 async def search_datacite(
@@ -3244,10 +3491,15 @@ async def search_datacite(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="DataCite timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="DataCite timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="DataCite rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="DataCite rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="DataCite API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="DataCite API error.")
@@ -3282,24 +3534,30 @@ async def search_datacite(
         if not url and doi:
             url = f"https://doi.org/{doi}"
 
-        published_raw = str(attrs.get("published") or attrs.get("registered") or "").strip()
+        published_raw = str(
+            attrs.get("published") or attrs.get("registered") or ""
+        ).strip()
         published = published_raw[:10] if len(published_raw) >= 10 else published_raw
 
         container = str(attrs.get("container-title") or "").strip()
-        resource_type = str(attrs.get("resource-type-subtype") or attrs.get("resource-type-id") or "").strip()
+        resource_type = str(
+            attrs.get("resource-type-subtype") or attrs.get("resource-type-id") or ""
+        ).strip()
         categories = [x for x in [resource_type, container] if x][:3]
 
-        papers.append({
-            "title": title,
-            "authors": authors,
-            "abstract": description,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "doi": doi,
-            "publication_name": container,
-            "source": "datacite",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors,
+                "abstract": description,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi,
+                "publication_name": container,
+                "source": "datacite",
+            }
+        )
 
     meta = data.get("meta") or {}
     total = meta.get("total")
@@ -3310,7 +3568,9 @@ async def search_datacite(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3335,7 +3595,9 @@ def _extract_dblp_author_names(raw_authors: Any) -> List[str]:
     authors: List[str] = []
     for item in raw_authors:
         if isinstance(item, dict):
-            name = str(item.get("text") or item.get("@text") or item.get("name") or "").strip()
+            name = str(
+                item.get("text") or item.get("@text") or item.get("name") or ""
+            ).strip()
         else:
             name = str(item or "").strip()
         if not name or name in authors:
@@ -3349,6 +3611,7 @@ def _extract_dblp_author_names(raw_authors: Any) -> List[str]:
 # ---------------------------------------------------------------------------
 # DBLP search (computer science bibliography)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-dblp")
 async def search_dblp(
@@ -3380,7 +3643,9 @@ async def search_dblp(
         raise HTTPException(status_code=504, detail="DBLP timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="DBLP rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="DBLP rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="DBLP API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="DBLP API error.")
@@ -3440,7 +3705,9 @@ async def search_dblp(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3455,6 +3722,7 @@ async def search_dblp(
 # ---------------------------------------------------------------------------
 # Zenodo search (open repository records)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-zenodo")
 async def search_zenodo(
@@ -3484,10 +3752,15 @@ async def search_zenodo(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Zenodo timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Zenodo timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Zenodo rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="Zenodo rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="Zenodo API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Zenodo API error.")
@@ -3523,7 +3796,12 @@ async def search_zenodo(
 
         doi = _normalize_doi(str(row.get("doi") or metadata.get("doi") or ""))
         links = row.get("links") if isinstance(row.get("links"), dict) else {}
-        url = str(links.get("html") or links.get("self_html") or links.get("record_html") or "").strip()
+        url = str(
+            links.get("html")
+            or links.get("self_html")
+            or links.get("record_html")
+            or ""
+        ).strip()
         if not url:
             rec_id = row.get("id")
             if rec_id is not None:
@@ -3535,13 +3813,19 @@ async def search_zenodo(
         for file_obj in row.get("files") or []:
             if not isinstance(file_obj, dict):
                 continue
-            file_links = file_obj.get("links") if isinstance(file_obj.get("links"), dict) else {}
-            candidate = str(file_links.get("self") or file_links.get("download") or "").strip()
+            file_links = (
+                file_obj.get("links") if isinstance(file_obj.get("links"), dict) else {}
+            )
+            candidate = str(
+                file_links.get("self") or file_links.get("download") or ""
+            ).strip()
             key = str(file_obj.get("key") or "").strip()
             if not candidate and key.endswith(".pdf"):
                 rec_id = row.get("id")
                 if rec_id is not None:
-                    candidate = f"https://zenodo.org/records/{rec_id}/files/{key}?download=1"
+                    candidate = (
+                        f"https://zenodo.org/records/{rec_id}/files/{key}?download=1"
+                    )
             if candidate and _is_pdf_url(candidate):
                 pdf_url = candidate
                 break
@@ -3550,11 +3834,13 @@ async def search_zenodo(
         resource_type = ""
         if isinstance(resource_type_obj, dict):
             resource_type = str(
-                resource_type_obj.get("title")
-                or resource_type_obj.get("type")
-                or ""
+                resource_type_obj.get("title") or resource_type_obj.get("type") or ""
             ).strip()
-        keywords = metadata.get("keywords") if isinstance(metadata.get("keywords"), list) else []
+        keywords = (
+            metadata.get("keywords")
+            if isinstance(metadata.get("keywords"), list)
+            else []
+        )
         categories = [resource_type] if resource_type else []
         for keyword in keywords:
             k = str(keyword or "").strip()
@@ -3596,7 +3882,9 @@ async def search_zenodo(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3635,10 +3923,15 @@ async def search_openaire(
             response.raise_for_status()
         root = ET.fromstring(response.text)
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="OpenAIRE timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="OpenAIRE timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="OpenAIRE rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="OpenAIRE rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="OpenAIRE API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="OpenAIRE API error.")
@@ -3670,7 +3963,10 @@ async def search_openaire(
         )
         source_values = _xml_text_values(row, "source", max_items=3)
 
-        description = _first_nonempty([_strip_xml_html_tags(item) for item in descriptions], "No abstract available.")
+        description = _first_nonempty(
+            [_strip_xml_html_tags(item) for item in descriptions],
+            "No abstract available.",
+        )
         if not description:
             description = "No abstract available."
 
@@ -3682,7 +3978,9 @@ async def search_openaire(
                 break
 
         full_text_url = _first_nonempty(fulltexts)
-        first_url = _first_nonempty([item for item in urls if str(item).startswith("http")])
+        first_url = _first_nonempty(
+            [item for item in urls if str(item).startswith("http")]
+        )
         url = full_text_url or first_url
         if not url and doi:
             url = f"https://doi.org/{doi}"
@@ -3722,7 +4020,9 @@ async def search_openaire(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -3761,10 +4061,15 @@ async def search_figshare(
             response.raise_for_status()
         rows = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Figshare timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Figshare timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Figshare rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="Figshare rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="Figshare API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Figshare API error.")
@@ -3798,7 +4103,9 @@ async def search_figshare(
             "abstract": "No abstract available.",
             "url": url,
             "published": published,
-            "categories": [item for item in [defined_type_name, resource_title] if item][:3],
+            "categories": [
+                item for item in [defined_type_name, resource_title] if item
+            ][:3],
             "doi": doi,
             "source": "figshare",
         }
@@ -3849,7 +4156,9 @@ async def search_osf(
         raise HTTPException(status_code=504, detail="OSF timed out. Please try again.")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="OSF rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429, detail="OSF rate limit reached. Please retry shortly."
+            )
         raise HTTPException(status_code=502, detail="OSF API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="OSF API error.")
@@ -3870,13 +4179,17 @@ async def search_osf(
         doi = _normalize_doi(str(attrs.get("doi") or ""))
         if not doi:
             doi = _looks_like_doi(str(links.get("preprint_doi") or ""))
-        url = str(links.get("html") or links.get("preprint_doi") or links.get("self") or "").strip()
+        url = str(
+            links.get("html") or links.get("preprint_doi") or links.get("self") or ""
+        ).strip()
         if not url and doi:
             url = f"https://doi.org/{doi}"
         description = _strip_xml_html_tags(attrs.get("description") or "")
         if not description:
             description = "No abstract available."
-        published_raw = str(attrs.get("date_published") or attrs.get("original_publication_date") or "").strip()
+        published_raw = str(
+            attrs.get("date_published") or attrs.get("original_publication_date") or ""
+        ).strip()
         published = published_raw[:10] if len(published_raw) >= 10 else published_raw
 
         subject_tags: List[str] = []
@@ -3912,7 +4225,11 @@ async def search_osf(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = bool((data.get("links") or {}).get("next")) if isinstance(data, dict) else (returned == page_size)
+    has_more = (
+        bool((data.get("links") or {}).get("next"))
+        if isinstance(data, dict)
+        else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": None,
@@ -3951,10 +4268,15 @@ async def search_dryad(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Dryad timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Dryad timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="Dryad rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="Dryad rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="Dryad API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Dryad API error.")
@@ -3995,7 +4317,9 @@ async def search_dryad(
                 continue
             first = str(author.get("firstName") or "").strip()
             last = str(author.get("lastName") or "").strip()
-            full_name = f"{first} {last}".strip() or str(author.get("name") or "").strip()
+            full_name = (
+                f"{first} {last}".strip() or str(author.get("name") or "").strip()
+            )
             if not full_name:
                 continue
             authors.append(full_name)
@@ -4032,7 +4356,9 @@ async def search_dryad(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -4071,10 +4397,15 @@ async def search_inspire(
             response.raise_for_status()
         data = response.json()
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="INSPIRE-HEP timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="INSPIRE-HEP timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="INSPIRE-HEP rate limit reached. Please retry shortly.")
+            raise HTTPException(
+                status_code=429,
+                detail="INSPIRE-HEP rate limit reached. Please retry shortly.",
+            )
         raise HTTPException(status_code=502, detail="INSPIRE-HEP API upstream error.")
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="INSPIRE-HEP API error.")
@@ -4091,14 +4422,22 @@ async def search_inspire(
         if not isinstance(row, dict):
             continue
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        titles = metadata.get("titles") if isinstance(metadata.get("titles"), list) else []
+        titles = (
+            metadata.get("titles") if isinstance(metadata.get("titles"), list) else []
+        )
         first_title = titles[0] if titles and isinstance(titles[0], dict) else {}
         title = str(first_title.get("title") or "").strip()
         if not title:
             continue
 
-        abstracts = metadata.get("abstracts") if isinstance(metadata.get("abstracts"), list) else []
-        first_abstract = abstracts[0] if abstracts and isinstance(abstracts[0], dict) else {}
+        abstracts = (
+            metadata.get("abstracts")
+            if isinstance(metadata.get("abstracts"), list)
+            else []
+        )
+        first_abstract = (
+            abstracts[0] if abstracts and isinstance(abstracts[0], dict) else {}
+        )
         description = _strip_xml_html_tags(first_abstract.get("value") or "")
         if not description:
             description = "No abstract available."
@@ -4122,10 +4461,16 @@ async def search_inspire(
             if doi:
                 break
 
-        published_raw = str(metadata.get("earliest_date") or metadata.get("preprint_date") or "").strip()
+        published_raw = str(
+            metadata.get("earliest_date") or metadata.get("preprint_date") or ""
+        ).strip()
         published = published_raw[:10] if len(published_raw) >= 10 else published_raw
         control_number = metadata.get("control_number") or row.get("id")
-        url = f"https://inspirehep.net/literature/{control_number}" if control_number else ""
+        url = (
+            f"https://inspirehep.net/literature/{control_number}"
+            if control_number
+            else ""
+        )
         if not url and doi:
             url = f"https://doi.org/{doi}"
 
@@ -4163,7 +4508,9 @@ async def search_inspire(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -4175,10 +4522,10 @@ async def search_inspire(
     }
 
 
-
 # ---------------------------------------------------------------------------
 # Global merged search (query all sources and merge)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-global")
 async def search_global(
@@ -4191,7 +4538,9 @@ async def search_global(
 ):
     """Search all sources together and return merged, de-duplicated results."""
     started_at = time.perf_counter()
-    _GLOBAL_SEARCH_METRICS["requests_total"] = int(_GLOBAL_SEARCH_METRICS.get("requests_total", 0)) + 1
+    _GLOBAL_SEARCH_METRICS["requests_total"] = (
+        int(_GLOBAL_SEARCH_METRICS.get("requests_total", 0)) + 1
+    )
     resolved_mode = _normalize_search_mode(search_mode)
     max_cap = int(GLOBAL_SEARCH_MAX_RESULTS_BY_MODE.get(resolved_mode, 140))
     page_size = max(10, min(max_results, max_cap))
@@ -4205,10 +4554,14 @@ async def search_global(
     cached = _global_cache_get(cache_key)
     if cached:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        _GLOBAL_SEARCH_METRICS["cache_hits_total"] = int(_GLOBAL_SEARCH_METRICS.get("cache_hits_total", 0)) + 1
+        _GLOBAL_SEARCH_METRICS["cache_hits_total"] = (
+            int(_GLOBAL_SEARCH_METRICS.get("cache_hits_total", 0)) + 1
+        )
         _GLOBAL_SEARCH_METRICS["last_duration_ms"] = elapsed_ms
         _GLOBAL_SEARCH_METRICS["last_cached"] = True
-        _GLOBAL_SEARCH_METRICS["last_checked_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _GLOBAL_SEARCH_METRICS["last_checked_at"] = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
         _log_search_event(
             "search_global_cache_hit",
             user_id=current_user.id,
@@ -4231,14 +4584,22 @@ async def search_global(
             )
         return cached
 
-    source_order = list(GLOBAL_SEARCH_SOURCE_PRESETS.get(resolved_mode, GLOBAL_SEARCH_SOURCE_PRESETS["balanced"]))
+    source_order = list(
+        GLOBAL_SEARCH_SOURCE_PRESETS.get(
+            resolved_mode, GLOBAL_SEARCH_SOURCE_PRESETS["balanced"]
+        )
+    )
     if resolved_mode == "fast":
         per_source_limit = max(6, min(20, (page_size // max(1, len(source_order))) + 6))
     elif resolved_mode == "deep":
-        per_source_limit = max(10, min(40, (page_size // max(1, len(source_order))) + 12))
+        per_source_limit = max(
+            10, min(40, (page_size // max(1, len(source_order))) + 12)
+        )
     else:
         per_source_limit = max(8, min(30, (page_size // max(1, len(source_order))) + 8))
-    source_concurrency = int(GLOBAL_SOURCE_CONCURRENCY_BY_MODE.get(resolved_mode, GLOBAL_SOURCE_CONCURRENCY))
+    source_concurrency = int(
+        GLOBAL_SOURCE_CONCURRENCY_BY_MODE.get(resolved_mode, GLOBAL_SOURCE_CONCURRENCY)
+    )
     source_semaphore = asyncio.Semaphore(max(3, source_concurrency))
 
     def _source_limit(name: str) -> int:
@@ -4459,8 +4820,12 @@ async def search_global(
             return source_name, None, str(exc)
 
     async def _run_with_cap(name: str):
-        base_timeout = float(GLOBAL_SOURCE_TIMEOUT_OVERRIDES.get(name, GLOBAL_SOURCE_TIMEOUT_SECONDS))
-        timeout_factor = float(GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE.get(resolved_mode, 1.0))
+        base_timeout = float(
+            GLOBAL_SOURCE_TIMEOUT_OVERRIDES.get(name, GLOBAL_SOURCE_TIMEOUT_SECONDS)
+        )
+        timeout_factor = float(
+            GLOBAL_SOURCE_TIMEOUT_FACTOR_BY_MODE.get(resolved_mode, 1.0)
+        )
         timeout_budget = max(2.5, base_timeout * timeout_factor)
         try:
             async with source_semaphore:
@@ -4482,8 +4847,12 @@ async def search_global(
         fast_path_target = max(26, min(page_size + 10, 72))
 
     try:
-        wait_budget = float(GLOBAL_SEARCH_WAIT_BY_MODE.get(resolved_mode, GLOBAL_SEARCH_WAIT_SECONDS))
-        for finished in asyncio.as_completed(list(task_map.keys()), timeout=wait_budget):
+        wait_budget = float(
+            GLOBAL_SEARCH_WAIT_BY_MODE.get(resolved_mode, GLOBAL_SEARCH_WAIT_SECONDS)
+        )
+        for finished in asyncio.as_completed(
+            list(task_map.keys()), timeout=wait_budget
+        ):
             result = await finished
             source_results.append(result)
             source_name, data, error = result
@@ -4512,7 +4881,9 @@ async def search_global(
                 source_results.append((source_name, None, str(exc)))
         else:
             task.cancel()
-            pending_reason = "skipped_fast_path" if fast_path_reached else "global_timeout"
+            pending_reason = (
+                "skipped_fast_path" if fast_path_reached else "global_timeout"
+            )
             source_results.append((source_name, None, pending_reason))
 
     seen_keys = set()
@@ -4562,7 +4933,10 @@ async def search_global(
     # Recovery pass: if the parallel run produced zero papers (for example during
     # transient upstream latency spikes), retry a few high-yield sources directly.
     if not merged_papers:
-        async def _run_recovery(source_name: str) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
+
+        async def _run_recovery(
+            source_name: str,
+        ) -> Tuple[str, Optional[Dict[str, Any]], Optional[str]]:
             try:
                 if source_name == "openalex":
                     payload = await asyncio.wait_for(
@@ -4621,7 +4995,9 @@ async def search_global(
                 continue
 
             recovered_papers = (recovered or {}).get("papers") or []
-            source_counts[source_name] = max(source_counts.get(source_name, 0), len(recovered_papers))
+            source_counts[source_name] = max(
+                source_counts.get(source_name, 0), len(recovered_papers)
+            )
             if recovered_papers:
                 source_status[source_name] = {
                     "status": "ok",
@@ -4646,21 +5022,23 @@ async def search_global(
             source_status[name] = {
                 "status": "skipped" if fast_path_reached else "error",
                 "count": 0,
-                "detail": "Deferred after enough merged results." if fast_path_reached else "no response",
+                "detail": "Deferred after enough merged results."
+                if fast_path_reached
+                else "no response",
             }
             source_counts[name] = source_counts.get(name, 0)
 
     # Enrich missing PDFs via Unpaywall for a small bounded set only.
     max_unpaywall_lookups = int(
-        GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE.get(resolved_mode, GLOBAL_UNPAYWALL_MAX_LOOKUPS)
+        GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE.get(
+            resolved_mode, GLOBAL_UNPAYWALL_MAX_LOOKUPS
+        )
     )
     if start_offset > 0:
         # Keep "load more" fast and avoid repeated DOI enrichment costs on later pages.
         max_unpaywall_lookups = 0
     enrich_candidates = [
-        paper
-        for paper in merged_papers
-        if (paper.get("doi") and not _has_pdf(paper))
+        paper for paper in merged_papers if (paper.get("doi") and not _has_pdf(paper))
     ][:max_unpaywall_lookups]
 
     async def _enrich_pdf(paper: Dict[str, Any]) -> None:
@@ -4678,7 +5056,9 @@ async def search_global(
             paper["url"] = pdf_url
 
     if enrich_candidates:
-        await asyncio.gather(*[_enrich_pdf(p) for p in enrich_candidates], return_exceptions=True)
+        await asyncio.gather(
+            *[_enrich_pdf(p) for p in enrich_candidates], return_exceptions=True
+        )
 
     for paper in merged_papers:
         _annotate_access_metadata(paper)
@@ -4720,20 +5100,35 @@ async def search_global(
         "duration_ms": 0,
     }
 
-    timeout_count = sum(1 for item in source_status.values() if str(item.get("status")) == "timeout")
-    error_count = sum(1 for item in source_status.values() if str(item.get("status")) == "error")
-    partial = any(str(item.get("status")) in {"timeout", "error", "warning"} for item in source_status.values())
+    timeout_count = sum(
+        1 for item in source_status.values() if str(item.get("status")) == "timeout"
+    )
+    error_count = sum(
+        1 for item in source_status.values() if str(item.get("status")) == "error"
+    )
+    partial = any(
+        str(item.get("status")) in {"timeout", "error", "warning"}
+        for item in source_status.values()
+    )
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
     response_payload["duration_ms"] = elapsed_ms
 
-    _GLOBAL_SEARCH_METRICS["timeouts_total"] = int(_GLOBAL_SEARCH_METRICS.get("timeouts_total", 0)) + timeout_count
-    _GLOBAL_SEARCH_METRICS["errors_total"] = int(_GLOBAL_SEARCH_METRICS.get("errors_total", 0)) + error_count
+    _GLOBAL_SEARCH_METRICS["timeouts_total"] = (
+        int(_GLOBAL_SEARCH_METRICS.get("timeouts_total", 0)) + timeout_count
+    )
+    _GLOBAL_SEARCH_METRICS["errors_total"] = (
+        int(_GLOBAL_SEARCH_METRICS.get("errors_total", 0)) + error_count
+    )
     if partial:
-        _GLOBAL_SEARCH_METRICS["partial_results_total"] = int(_GLOBAL_SEARCH_METRICS.get("partial_results_total", 0)) + 1
+        _GLOBAL_SEARCH_METRICS["partial_results_total"] = (
+            int(_GLOBAL_SEARCH_METRICS.get("partial_results_total", 0)) + 1
+        )
     _GLOBAL_SEARCH_METRICS["last_duration_ms"] = elapsed_ms
     _GLOBAL_SEARCH_METRICS["last_cached"] = False
     _GLOBAL_SEARCH_METRICS["last_source_status"] = source_status
-    _GLOBAL_SEARCH_METRICS["last_checked_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    _GLOBAL_SEARCH_METRICS["last_checked_at"] = (
+        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
 
     _log_search_event(
         "search_global_complete",
@@ -4790,7 +5185,9 @@ def get_search_history(
                 "source": row.source,
                 "result_count": row.result_count,
                 "created_at": (
-                    row.created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                    row.created_at.astimezone(timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
                     if row.created_at
                     else None
                 ),
@@ -4821,7 +5218,11 @@ def get_search_history_insights(
             continue
         key = query_text.lower()
         query_counts[key] = query_counts.get(key, 0) + 1
-        weighted_counts[key] = weighted_counts.get(key, 0.0) + max(0, int(row.result_count or 0)) / 10.0 + 1.0
+        weighted_counts[key] = (
+            weighted_counts.get(key, 0.0)
+            + max(0, int(row.result_count or 0)) / 10.0
+            + 1.0
+        )
         if key not in display_queries:
             display_queries[key] = query_text
         src = str(row.source or "unknown").lower()
@@ -4866,7 +5267,9 @@ def delete_search_history(
     if item_id is not None:
         deleted = repo.delete_search_history(current_user.id, item_id=item_id)
         if not deleted:
-            raise HTTPException(status_code=404, detail="Search history item not found.")
+            raise HTTPException(
+                status_code=404, detail="Search history item not found."
+            )
         return {"message": "Search history item deleted."}
 
     deleted = repo.delete_search_history(current_user.id)
@@ -4877,7 +5280,11 @@ def delete_search_history(
 async def papers_metrics(current_user: User = Depends(get_current_user)):
     """Expose lightweight runtime metrics for papers search reliability."""
     now = time.time()
-    live_cache_items = sum(1 for item in _GLOBAL_SEARCH_CACHE.values() if now <= float(item.get("expires_at", 0)))
+    live_cache_items = sum(
+        1
+        for item in _GLOBAL_SEARCH_CACHE.values()
+        if now <= float(item.get("expires_at", 0))
+    )
     return {
         "global_search": {
             **_GLOBAL_SEARCH_METRICS,
@@ -4887,9 +5294,11 @@ async def papers_metrics(current_user: User = Depends(get_current_user)):
         }
     }
 
+
 # ---------------------------------------------------------------------------
 # Springer Nature search  (Meta API — broad science/engineering coverage)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/search-springer")
 async def search_springer(
@@ -4901,7 +5310,9 @@ async def search_springer(
     """Search Springer Nature Meta API (~12M articles, science & engineering)."""
     springer_key = _get_springer_key()
     if not springer_key:
-        raise HTTPException(status_code=503, detail="Springer Nature API key not configured.")
+        raise HTTPException(
+            status_code=503, detail="Springer Nature API key not configured."
+        )
 
     # Springer Meta API rejects larger page sizes on some plans (often above 25).
     page_size = max(1, min(max_results, 25))
@@ -4925,7 +5336,9 @@ async def search_springer(
                         file_key = _get_springer_key()
                         if file_key and file_key != springer_key:
                             params["api_key"] = file_key
-                            response = await client.get(SPRINGER_META_API, params=params)
+                            response = await client.get(
+                                SPRINGER_META_API, params=params
+                            )
                             response.raise_for_status()
                             os.environ["SPRINGER_META_KEY"] = file_key
                             break
@@ -4938,9 +5351,14 @@ async def search_springer(
         try:
             data = response.json()
         except ValueError:
-            raise HTTPException(status_code=502, detail=f"Springer returned non-JSON response: {response.text[:300]}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Springer returned non-JSON response: {response.text[:300]}",
+            )
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Springer API timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="Springer API timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 401:
             raise HTTPException(status_code=401, detail="Springer API key invalid.")
@@ -4951,7 +5369,9 @@ async def search_springer(
                     status_code=403,
                     detail="Springer plan limit reached for requested page size. Use 25 results or fewer.",
                 )
-            raise HTTPException(status_code=403, detail="Springer access forbidden by upstream service.")
+            raise HTTPException(
+                status_code=403, detail="Springer access forbidden by upstream service."
+            )
         raise HTTPException(status_code=502, detail="Springer API upstream error.")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail="Springer API error.")
@@ -4963,7 +5383,9 @@ async def search_springer(
             authors = [c.get("creator", "") for c in creators]
 
             abstract = item.get("abstract") or "No abstract available."
-            published = (item.get("publicationDate") or item.get("onlineDate") or "")[:10]
+            published = (item.get("publicationDate") or item.get("onlineDate") or "")[
+                :10
+            ]
 
             # URL — prefer DOI. Springer may return `url` as a list, dict, or plain string;
             # handle all shapes defensively to avoid runtime 500s when upstream data
@@ -4993,7 +5415,10 @@ async def search_springer(
             raw_subjects = item.get("subjects") or []
             subjects = []
             if isinstance(raw_subjects, list):
-                subjects = [s.get("term", "") if isinstance(s, dict) else str(s) for s in raw_subjects]
+                subjects = [
+                    s.get("term", "") if isinstance(s, dict) else str(s)
+                    for s in raw_subjects
+                ]
             elif isinstance(raw_subjects, dict):
                 subjects = [raw_subjects.get("term", "")]
             elif isinstance(raw_subjects, str):
@@ -5004,20 +5429,24 @@ async def search_springer(
             pub_name = item.get("publicationName") or ""
             categories = ([pub_name] if pub_name else []) + subjects[:2]
 
-            papers.append({
-                "title": item.get("title") or "",
-                "authors": authors,
-                "abstract": abstract,
-                "url": url,
-                "published": published,
-                "categories": categories[:3],
-                "doi": doi or "",
-                "publication_name": pub_name or "",
-                "source": "springer",
-            })
+            papers.append(
+                {
+                    "title": item.get("title") or "",
+                    "authors": authors,
+                    "abstract": abstract,
+                    "url": url,
+                    "published": published,
+                    "categories": categories[:3],
+                    "doi": doi or "",
+                    "publication_name": pub_name or "",
+                    "source": "springer",
+                }
+            )
     except Exception as e:
         logging.exception("Springer: error processing records")
-        raise HTTPException(status_code=502, detail=f"Springer processing error: {str(e)[:200]}")
+        raise HTTPException(
+            status_code=502, detail=f"Springer processing error: {str(e)[:200]}"
+        )
 
     total = None
     try:
@@ -5031,7 +5460,9 @@ async def search_springer(
 
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -5050,15 +5481,15 @@ async def search_springer(
 # Development-only debug handler to verify the running process sees the token.
 # Do NOT enable in production environments.
 if os.getenv("APP_ENV", "development") == "development":
-    @router.get('/debug/nasa-token')
+
+    @router.get("/debug/nasa-token")
     def _debug_nasa_token():
         try:
-            t = (os.getenv("NASA_ADS_TOKEN") or "")
+            t = os.getenv("NASA_ADS_TOKEN") or ""
             masked = f"{t[:4]}...{t[-4:]}" if t else "(not-set)"
         except Exception:
             masked = "(error)"
         return {"nasa_ads_token_masked": masked}
-
 
 
 @router.get("/search-nasa")
@@ -5102,7 +5533,9 @@ async def search_nasa_ads(
         data = response.json()
     except httpx.TimeoutException:
         logging.warning("NASA ADS timeout url=%s", NASA_ADS_API)
-        raise HTTPException(status_code=504, detail="NASA ADS timed out. Please try again.")
+        raise HTTPException(
+            status_code=504, detail="NASA ADS timed out. Please try again."
+        )
     except httpx.HTTPStatusError as e:
         # If ADS rejected the token, attempt one retry using the token from
         # `backend/.env` (if different). This often fixes cases where process
@@ -5119,10 +5552,12 @@ async def search_nasa_ads(
                             headers={"Authorization": f"Bearer {file_token}"},
                         )
                         response.raise_for_status()
-                    os.environ['NASA_ADS_TOKEN'] = file_token
+                    os.environ["NASA_ADS_TOKEN"] = file_token
                     data = response.json()
                 except Exception:
-                    raise HTTPException(status_code=401, detail="NASA ADS token invalid.")
+                    raise HTTPException(
+                        status_code=401, detail="NASA ADS token invalid."
+                    )
             else:
                 raise HTTPException(status_code=401, detail="NASA ADS token invalid.")
         else:
@@ -5131,7 +5566,12 @@ async def search_nasa_ads(
                 body = e.response.text[:200].replace("\n", " ")
             except Exception:
                 body = "(unavailable)"
-            logging.warning("NASA ADS http_status=%s url=%s body=%s", e.response.status_code, NASA_ADS_API, body)
+            logging.warning(
+                "NASA ADS http_status=%s url=%s body=%s",
+                e.response.status_code,
+                NASA_ADS_API,
+                body,
+            )
             raise HTTPException(status_code=502, detail="NASA ADS upstream error.")
     except httpx.HTTPError as e:
         logging.warning("NASA ADS http_error url=%s err=%s", NASA_ADS_API, str(e)[:200])
@@ -5150,27 +5590,35 @@ async def search_nasa_ads(
 
         doi_list = item.get("doi") or []
         doi = doi_list[0] if doi_list else ""
-        url = f"https://doi.org/{doi}" if doi else f"https://ui.adsabs.harvard.edu/abs/{item.get('bibcode', '')}"
+        url = (
+            f"https://doi.org/{doi}"
+            if doi
+            else f"https://ui.adsabs.harvard.edu/abs/{item.get('bibcode', '')}"
+        )
 
         doctype = item.get("doctype") or ""
         categories = [doctype] if doctype else []
 
-        papers.append({
-            "title": title,
-            "authors": authors[:8],
-            "abstract": abstract,
-            "url": url,
-            "published": published,
-            "categories": categories,
-            "doi": doi or "",
-            "bibcode": item.get('bibcode', '') or "",
-            "source": "nasa_ads",
-        })
+        papers.append(
+            {
+                "title": title,
+                "authors": authors[:8],
+                "abstract": abstract,
+                "url": url,
+                "published": published,
+                "categories": categories,
+                "doi": doi or "",
+                "bibcode": item.get("bibcode", "") or "",
+                "source": "nasa_ads",
+            }
+        )
 
     total = (data.get("response") or {}).get("numFound")
     returned = len(papers)
     next_offset = start_offset + returned
-    has_more = (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    has_more = (
+        (next_offset < total) if isinstance(total, int) else (returned == page_size)
+    )
     return {
         "papers": papers,
         "total": total,
@@ -5200,32 +5648,45 @@ async def source_health(current_user: User = Depends(get_current_user)):
             async with httpx.AsyncClient(timeout=12) as client:
                 response = await client.get(
                     SPRINGER_META_API,
-                    params={"q": "machine learning", "p": 1, "s": 1, "api_key": springer_key},
+                    params={
+                        "q": "machine learning",
+                        "p": 1,
+                        "s": 1,
+                        "api_key": springer_key,
+                    },
                 )
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             if response.status_code == 200:
-                springer_info.update({
-                    "reachable": True,
-                    "status": "ok",
-                    "detail": "Access verified",
-                    "latency_ms": elapsed,
-                })
+                springer_info.update(
+                    {
+                        "reachable": True,
+                        "status": "ok",
+                        "detail": "Access verified",
+                        "latency_ms": elapsed,
+                    }
+                )
             elif response.status_code in (401, 403):
-                springer_info.update({
-                    "status": "auth_error",
-                    "detail": "API key rejected",
-                    "latency_ms": elapsed,
-                })
+                springer_info.update(
+                    {
+                        "status": "auth_error",
+                        "detail": "API key rejected",
+                        "latency_ms": elapsed,
+                    }
+                )
             else:
-                springer_info.update({
-                    "status": "upstream_error",
-                    "detail": f"HTTP {response.status_code}",
-                    "latency_ms": elapsed,
-                })
+                springer_info.update(
+                    {
+                        "status": "upstream_error",
+                        "detail": f"HTTP {response.status_code}",
+                        "latency_ms": elapsed,
+                    }
+                )
         except httpx.TimeoutException:
             springer_info.update({"status": "timeout", "detail": "Request timed out"})
         except httpx.HTTPError:
-            springer_info.update({"status": "network_error", "detail": "Network/API error"})
+            springer_info.update(
+                {"status": "network_error", "detail": "Network/API error"}
+            )
     sources["springer"] = springer_info
 
     nasa_token = _get_nasa_token()
@@ -5241,29 +5702,41 @@ async def source_health(current_user: User = Depends(get_current_user)):
             async with httpx.AsyncClient(timeout=12) as client:
                 response = await client.get(
                     NASA_ADS_API,
-                    params={"q": "machine learning", "fl": "title", "rows": 1, "start": 0, "sort": "score desc"},
+                    params={
+                        "q": "machine learning",
+                        "fl": "title",
+                        "rows": 1,
+                        "start": 0,
+                        "sort": "score desc",
+                    },
                     headers={"Authorization": f"Bearer {nasa_token}"},
                 )
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             if response.status_code == 200:
-                nasa_info.update({
-                    "reachable": True,
-                    "status": "ok",
-                    "detail": "Access verified",
-                    "latency_ms": elapsed,
-                })
+                nasa_info.update(
+                    {
+                        "reachable": True,
+                        "status": "ok",
+                        "detail": "Access verified",
+                        "latency_ms": elapsed,
+                    }
+                )
             elif response.status_code in (401, 403):
-                nasa_info.update({
-                    "status": "auth_error",
-                    "detail": "Token rejected",
-                    "latency_ms": elapsed,
-                })
+                nasa_info.update(
+                    {
+                        "status": "auth_error",
+                        "detail": "Token rejected",
+                        "latency_ms": elapsed,
+                    }
+                )
             else:
-                nasa_info.update({
-                    "status": "upstream_error",
-                    "detail": f"HTTP {response.status_code}",
-                    "latency_ms": elapsed,
-                })
+                nasa_info.update(
+                    {
+                        "status": "upstream_error",
+                        "detail": f"HTTP {response.status_code}",
+                        "latency_ms": elapsed,
+                    }
+                )
         except httpx.TimeoutException:
             nasa_info.update({"status": "timeout", "detail": "Request timed out"})
         except httpx.HTTPError:
@@ -5287,24 +5760,30 @@ async def source_health(current_user: User = Depends(get_current_user)):
                 )
             elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
             if response.status_code == 200:
-                groq_info.update({
-                    "reachable": True,
-                    "status": "ok",
-                    "detail": "Access verified",
-                    "latency_ms": elapsed,
-                })
+                groq_info.update(
+                    {
+                        "reachable": True,
+                        "status": "ok",
+                        "detail": "Access verified",
+                        "latency_ms": elapsed,
+                    }
+                )
             elif response.status_code in (401, 403):
-                groq_info.update({
-                    "status": "auth_error",
-                    "detail": "API key rejected",
-                    "latency_ms": elapsed,
-                })
+                groq_info.update(
+                    {
+                        "status": "auth_error",
+                        "detail": "API key rejected",
+                        "latency_ms": elapsed,
+                    }
+                )
             else:
-                groq_info.update({
-                    "status": "upstream_error",
-                    "detail": f"HTTP {response.status_code}",
-                    "latency_ms": elapsed,
-                })
+                groq_info.update(
+                    {
+                        "status": "upstream_error",
+                        "detail": f"HTTP {response.status_code}",
+                        "latency_ms": elapsed,
+                    }
+                )
         except httpx.TimeoutException:
             groq_info.update({"status": "timeout", "detail": "Request timed out"})
         except httpx.HTTPError:
@@ -5332,39 +5811,50 @@ async def source_health(current_user: User = Depends(get_current_user)):
             )
         elapsed = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         if response.status_code == 200:
-            europepmc_info.update({
-                "reachable": True,
-                "status": "ok",
-                "detail": "Access verified",
-                "latency_ms": elapsed,
-            })
+            europepmc_info.update(
+                {
+                    "reachable": True,
+                    "status": "ok",
+                    "detail": "Access verified",
+                    "latency_ms": elapsed,
+                }
+            )
         elif response.status_code == 429:
-            europepmc_info.update({
-                "status": "rate_limited",
-                "detail": "Rate limited by upstream service",
-                "latency_ms": elapsed,
-            })
+            europepmc_info.update(
+                {
+                    "status": "rate_limited",
+                    "detail": "Rate limited by upstream service",
+                    "latency_ms": elapsed,
+                }
+            )
         else:
-            europepmc_info.update({
-                "status": "upstream_error",
-                "detail": f"HTTP {response.status_code}",
-                "latency_ms": elapsed,
-            })
+            europepmc_info.update(
+                {
+                    "status": "upstream_error",
+                    "detail": f"HTTP {response.status_code}",
+                    "latency_ms": elapsed,
+                }
+            )
     except httpx.TimeoutException:
         europepmc_info.update({"status": "timeout", "detail": "Request timed out"})
     except httpx.HTTPError:
-        europepmc_info.update({"status": "network_error", "detail": "Network/API error"})
+        europepmc_info.update(
+            {"status": "network_error", "detail": "Network/API error"}
+        )
     sources["europepmc"] = europepmc_info
 
-    return {"checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "sources": sources}
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "sources": sources,
+    }
 
 
-def _research_repo(db: Session) -> ResearchRepository:
-    return get_research_repository(db)
+def _research_repo(request: Request) -> ResearchRepository:
+    return getattr(request.app.state, "_repo", None) or get_research_repository()
 
 
-def _owned_workspace_or_404(db: Session, workspace_id: int, user_id: int):
-    workspace = _research_repo(db).find_workspace_for_user(workspace_id, user_id)
+def _owned_workspace_or_404(request: Request, workspace_id: int, user_id: int):
+    workspace = _research_repo(request).find_workspace_for_user(workspace_id, user_id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return workspace
@@ -5384,7 +5874,9 @@ def _find_existing_workspace_paper(
                 return paper
     if normalized_title:
         for paper in papers:
-            current_title = re.sub(r"\s+", " ", str(getattr(paper, "title", "") or "").strip().lower())
+            current_title = re.sub(
+                r"\s+", " ", str(getattr(paper, "title", "") or "").strip().lower()
+            )
             if current_title == normalized_title:
                 return paper
     return None
@@ -5407,10 +5899,13 @@ async def _resolve_access_payload(
 
     if not resolved_pdf and normalized_doi:
         try:
-            resolved_pdf = await asyncio.wait_for(
-                _fetch_unpaywall_pdf(normalized_doi),
-                timeout=GLOBAL_UNPAYWALL_TIMEOUT_SECONDS,
-            ) or ""
+            resolved_pdf = (
+                await asyncio.wait_for(
+                    _fetch_unpaywall_pdf(normalized_doi),
+                    timeout=GLOBAL_UNPAYWALL_TIMEOUT_SECONDS,
+                )
+                or ""
+            )
             if resolved_pdf:
                 resolution_source = "unpaywall"
         except asyncio.TimeoutError:
@@ -5432,12 +5927,12 @@ async def _resolve_access_payload(
 
 @router.post("/import-institutional")
 async def import_institutional_papers(
+    request: Request,
     payload: InstitutionalImportRequest,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = _research_repo(db)
-    workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+    repo = _research_repo(request)
+    workspace = _owned_workspace_or_404(request, payload.workspace_id, current_user.id)
     entries: List[InstitutionalPaperEntry] = []
     if payload.entries:
         entries.extend(payload.entries)
@@ -5445,7 +5940,9 @@ async def import_institutional_papers(
         entries.extend(_parse_institutional_raw_text(payload.raw_text))
 
     if not entries:
-        raise HTTPException(status_code=400, detail="No institutional entries provided.")
+        raise HTTPException(
+            status_code=400, detail="No institutional entries provided."
+        )
 
     imported = 0
     updated = 0
@@ -5488,12 +5985,24 @@ async def import_institutional_papers(
             existing.url = str(entry.url or existing.url or "").strip() or existing.url
             if doi_norm:
                 existing.doi = doi_norm
-            existing.source = str(resolved.get("source") or existing.source or "institutional_portal")
-            existing.pdf_url = str(resolved.get("pdf_url") or existing.pdf_url or "").strip() or existing.pdf_url
-            existing.institutional_url = str(
-                resolved.get("institutional_url") or existing.institutional_url or ""
-            ).strip() or existing.institutional_url
-            existing.access_type = str(resolved.get("access_type") or existing.access_type or "institutional")
+            existing.source = str(
+                resolved.get("source") or existing.source or "institutional_portal"
+            )
+            existing.pdf_url = (
+                str(resolved.get("pdf_url") or existing.pdf_url or "").strip()
+                or existing.pdf_url
+            )
+            existing.institutional_url = (
+                str(
+                    resolved.get("institutional_url")
+                    or existing.institutional_url
+                    or ""
+                ).strip()
+                or existing.institutional_url
+            )
+            existing.access_type = str(
+                resolved.get("access_type") or existing.access_type or "institutional"
+            )
             existing.full_text_available = bool(
                 resolved.get("full_text_available") or existing.full_text_available
             )
@@ -5511,7 +6020,9 @@ async def import_institutional_papers(
         paper.doi = doi_norm or None
         paper.source = str(resolved.get("source") or "institutional_portal")
         paper.pdf_url = str(resolved.get("pdf_url") or "").strip() or None
-        paper.institutional_url = str(resolved.get("institutional_url") or "").strip() or None
+        paper.institutional_url = (
+            str(resolved.get("institutional_url") or "").strip() or None
+        )
         paper.access_type = str(resolved.get("access_type") or "institutional")
         paper.full_text_available = bool(resolved.get("full_text_available"))
         repo.save(paper)
@@ -5531,14 +6042,16 @@ async def import_institutional_papers(
 
 @router.post("/resolve-access")
 async def resolve_access(
+    request: Request,
     payload: AccessResolveRequest,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = _research_repo(db)
+    repo = _research_repo(request)
     paper = None
     if payload.workspace_id and payload.paper_id:
-        workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+        workspace = _owned_workspace_or_404(
+            request, payload.workspace_id, current_user.id
+        )
         paper = repo.find_paper_for_user(payload.paper_id, current_user.id)
         if paper and int(getattr(paper, "workspace_id", 0) or 0) != int(workspace.id):
             paper = None
@@ -5549,7 +6062,9 @@ async def resolve_access(
     doi = payload.doi or (paper.doi if paper else "")
     url = payload.url or (paper.url if paper else "")
     pdf_url = payload.pdf_url or (paper.pdf_url if paper else "")
-    institutional_url = payload.institutional_url or (paper.institutional_url if paper else "")
+    institutional_url = payload.institutional_url or (
+        paper.institutional_url if paper else ""
+    )
 
     resolved = await _resolve_access_payload(
         source=str(source),
@@ -5582,12 +6097,12 @@ async def resolve_access(
 
 @router.post("/resolve-workspace-access")
 async def resolve_workspace_access(
+    request: Request,
     payload: WorkspaceAccessResolveRequest,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = _research_repo(db)
-    workspace = _owned_workspace_or_404(db, payload.workspace_id, current_user.id)
+    repo = _research_repo(request)
+    workspace = _owned_workspace_or_404(request, payload.workspace_id, current_user.id)
     rows = repo.list_papers_for_workspace(workspace.id)
     if not rows:
         return {
@@ -5600,8 +6115,7 @@ async def resolve_workspace_access(
         }
 
     unresolved = [
-        row for row in rows
-        if payload.refresh_all or not bool(row.full_text_available)
+        row for row in rows if payload.refresh_all or not bool(row.full_text_available)
     ]
     max_unpaywall = max(2, min(payload.max_unpaywall_lookups, 80))
     doi_lookups_used = 0
@@ -5654,13 +6168,18 @@ async def resolve_workspace_access(
                         row.pdf_url,
                         row.institutional_url,
                         row.url,
-                    ) or None,
+                    )
+                    or None,
                 }
             )
 
         repo.save(row)
 
-    full_text_count = sum(1 for row in repo.list_papers_for_workspace(workspace.id) if bool(row.full_text_available))
+    full_text_count = sum(
+        1
+        for row in repo.list_papers_for_workspace(workspace.id)
+        if bool(row.full_text_available)
+    )
 
     return {
         "workspace_id": workspace.id,
@@ -5677,13 +6196,14 @@ async def resolve_workspace_access(
 # Import a paper into a workspace
 # ---------------------------------------------------------------------------
 
+
 @router.post("/import")
 async def import_paper(
+    request: Request,
     paper_data: PaperImport,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    repo = _research_repo(db)
+    repo = _research_repo(request)
     workspace = repo.find_workspace_for_user(paper_data.workspace_id, current_user.id)
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -5698,10 +6218,15 @@ async def import_paper(
         normalized_title=normalized_title,
     )
 
-    source_name = str(paper_data.source or "manual_import").strip().lower()[:120] or "manual_import"
+    source_name = (
+        str(paper_data.source or "manual_import").strip().lower()[:120]
+        or "manual_import"
+    )
     pdf_url = str(paper_data.pdf_url or "").strip()
     institutional_url = str(paper_data.institutional_url or "").strip()
-    full_text_url = _paper_full_text_url_from_fields(None, pdf_url, institutional_url, paper_data.url)
+    full_text_url = _paper_full_text_url_from_fields(
+        None, pdf_url, institutional_url, paper_data.url
+    )
     full_text_available = (
         bool(paper_data.full_text_available)
         if paper_data.full_text_available is not None
@@ -5710,23 +6235,33 @@ async def import_paper(
 
     if existing:
         existing.title = paper_data.title.strip()[:600] or existing.title
-        existing.authors = ", ".join(paper_data.authors or []).strip() or existing.authors
+        existing.authors = (
+            ", ".join(paper_data.authors or []).strip() or existing.authors
+        )
         existing.abstract = (paper_data.abstract or "").strip() or existing.abstract
         existing.url = (paper_data.url or existing.url or "").strip() or None
         if normalized_doi:
             existing.doi = normalized_doi
-        existing.bibcode = (paper_data.bibcode or existing.bibcode or "").strip() or None
+        existing.bibcode = (
+            paper_data.bibcode or existing.bibcode or ""
+        ).strip() or None
         existing.source = source_name or existing.source
         existing.pdf_url = pdf_url or existing.pdf_url
         existing.institutional_url = institutional_url or existing.institutional_url
-        existing.full_text_available = bool(full_text_available or existing.full_text_available)
+        existing.full_text_available = bool(
+            full_text_available or existing.full_text_available
+        )
         existing.access_type = (
             str(paper_data.access_type or "").strip().lower()
             or existing.access_type
             or ("open_access" if full_text_available else "metadata_only")
         )
         repo.save(existing)
-        return {"message": "Paper updated successfully", "paper_id": existing.id, "updated": True}
+        return {
+            "message": "Paper updated successfully",
+            "paper_id": existing.id,
+            "updated": True,
+        }
 
     new_paper = repo.create_paper(
         workspace_id=paper_data.workspace_id,
@@ -5740,10 +6275,13 @@ async def import_paper(
     new_paper.bibcode = paper_data.bibcode
     new_paper.source = source_name
     new_paper.institutional_url = institutional_url or None
-    new_paper.access_type = (
-        str(paper_data.access_type or "").strip().lower()
-        or ("open_access" if full_text_available else "metadata_only")
+    new_paper.access_type = str(paper_data.access_type or "").strip().lower() or (
+        "open_access" if full_text_available else "metadata_only"
     )
     new_paper.full_text_available = bool(full_text_available)
     repo.save(new_paper)
-    return {"message": "Paper imported successfully", "paper_id": new_paper.id, "updated": False}
+    return {
+        "message": "Paper imported successfully",
+        "paper_id": new_paper.id,
+        "updated": False,
+    }

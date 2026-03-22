@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode } from 'lucide-react';
+import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3 } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 import { toAppPath } from '../utils/routing';
 import { clearAuthSession } from '../utils/authSession';
@@ -25,6 +25,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile
     { path: '/docs', label: 'DocSpace', icon: FileText },
     { path: '/mindmap', label: 'Mindmap', icon: Workflow },
     { path: '/account', label: 'Account', icon: UserCog },
+    { path: '/analytics', label: 'AI Analytics', icon: BarChart3 },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 

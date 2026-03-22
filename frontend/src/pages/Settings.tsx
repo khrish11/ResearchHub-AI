@@ -39,7 +39,7 @@ const settingMeta: Record<
 > = {
   emailNotifications: {
     title: 'Email notifications',
-    copy: 'Local preference only until backend delivery rules are wired.',
+    copy: 'Receive email updates about workspace activity, research agent completions, and paper imports.',
     icon: <Bell className="h-4.5 w-4.5" />,
   },
   compactSidebar: {

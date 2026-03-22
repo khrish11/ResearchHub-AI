@@ -3,8 +3,33 @@ import { toAppPath } from './utils/routing';
 import { getAppCheckTokenValue } from './utils/firebaseClient';
 import { clearAuthSession, getBackendToken } from './utils/authSession';
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8010';
+export const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8010';
 export const GOOGLE_LOGIN_URL = `${API_URL}/auth/google/login`;
+
+export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getBackendToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> || {})
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${API_URL}${path}`, {
+    credentials: "include", // IMPORTANT for cookies
+    headers,
+    ...options
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "API request failed");
+  }
+
+  return res.json();
+}
 
 const getFrontendRedirectBase = () => {
     const origin = window.location.origin;
@@ -26,12 +51,22 @@ export const getGoogleLoginUrl = () => {
 const api = axios.create({
     baseURL: API_URL,
     withCredentials: true,
+    timeout: 10000,
 });
 
-api.interceptors.request.use((config) => {
+// Single combined request interceptor — merges auth token + Firebase App Check.
+api.interceptors.request.use(async (config) => {
     const token = getBackendToken();
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
+    }
+    try {
+        const appCheckToken = await getAppCheckTokenValue();
+        if (appCheckToken) {
+            config.headers['X-Firebase-AppCheck'] = appCheckToken;
+        }
+    } catch {
+        // App Check token failure must never block the request.
     }
     return config;
 });
@@ -42,6 +77,9 @@ const shouldSkipAutoAuthHandling = (path: string) =>
     path.includes('/auth/token') ||
     path.includes('/auth/register') ||
     path.includes('/auth/oauth/exchange') ||
+    path.includes('/auth/firebase/session') ||  // never auto-refresh during session exchange
+    path.includes('/auth/forgot-password') ||
+    path.includes('/auth/reset-password') ||
     path.includes('/auth/refresh') ||
     path.includes('/auth/logout') ||
     path.includes('/auth/me');
@@ -80,11 +118,3 @@ api.interceptors.response.use(
 );
 
 export default api;
-
-api.interceptors.request.use(async (config) => {
-    const appCheckToken = await getAppCheckTokenValue();
-    if (appCheckToken) {
-        config.headers['X-Firebase-AppCheck'] = appCheckToken;
-    }
-    return config;
-});

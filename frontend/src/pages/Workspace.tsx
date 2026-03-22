@@ -788,7 +788,7 @@ const Workspace: React.FC = () => {
                                   href={selectedPaper.url}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1.5 rounded-xl bg-slate-700 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                                  className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 shadow-sm"
                                 >
                                   View paper
                                   <ExternalLink className="h-4 w-4" />

@@ -162,7 +162,7 @@ const DataRights: React.FC = () => {
               <button
                 type="submit"
                 disabled={submitting}
-                className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-900 disabled:opacity-60"
+                className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60 shadow-sm"
               >
                 {submitting ? 'Submitting...' : 'Submit Request'}
               </button>

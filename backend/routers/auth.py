@@ -22,9 +22,8 @@ from email_service import (
     send_verification_email,
     send_password_reset_email,
 )
-from repositories import RepoUser, ResearchRepository, get_research_repository
-from database import SessionLocal
-from models import RefreshSession
+from repositories import ResearchRepository, get_research_repository
+from repositories.research import User
 from utils.firebase_admin_client import (
     firebase_admin_is_configured,
     firebase_sign_in_provider,
@@ -37,18 +36,17 @@ APP_ENV = (os.getenv("APP_ENV") or "production").strip().lower()
 SECRET_KEY = os.getenv("SECRET_KEY") or "secret"
 if APP_ENV != "development" and SECRET_KEY == "secret":
     # In production, main.py enforces a proper SECRET_KEY. This warning is only relevant to development.
-    logging.warning("SECRET_KEY not set; using a development fallback. Set SECRET_KEY in backend/.env.")
+    logging.warning(
+        "SECRET_KEY not set; using a development fallback. Set SECRET_KEY in backend/.env."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 14
 BACKEND_URL = (os.getenv("BACKEND_URL") or "http://localhost:8010").rstrip("/")
 FRONTEND_URL = (os.getenv("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
-EMAIL_VERIFICATION_REQUIRED = (
-    os.getenv("REQUIRE_EMAIL_VERIFICATION", "1" if APP_ENV == "production" else "0")
-    .strip()
-    .lower()
-    in {"1", "true", "yes"}
-)
+EMAIL_VERIFICATION_REQUIRED = os.getenv(
+    "REQUIRE_EMAIL_VERIFICATION", "1" if APP_ENV == "production" else "0"
+).strip().lower() in {"1", "true", "yes"}
 GOOGLE_REDIRECT_URI = (
     os.getenv("GOOGLE_REDIRECT_URI") or f"{BACKEND_URL}/auth/google/callback"
 ).rstrip("/")
@@ -63,11 +61,136 @@ REFRESH_TOKEN_COOKIE_NAME = "researchhub_refresh_token"
 COOKIE_SAMESITE = (os.getenv("AUTH_COOKIE_SAMESITE") or "lax").strip().lower() or "lax"
 COOKIE_DOMAIN = (os.getenv("AUTH_COOKIE_DOMAIN") or "").strip() or None
 DEFAULT_AUTH_COOKIE_SECURE = "1" if APP_ENV in {"production", "staging"} else "0"
-COOKIE_SECURE = (
-    os.getenv("AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE).strip().lower() in {"1", "true", "yes"}
-)
+COOKIE_SECURE = os.getenv(
+    "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE
+).strip().lower() in {"1", "true", "yes"}
 _INMEM_REFRESH_STORE: dict[str, dict[str, Any]] = {}
 _INMEM_REFRESH_LOCK = Lock()
+
+
+# ---------------------------------------------------------------------------
+# Firebase Firestore refresh-token helpers
+# ---------------------------------------------------------------------------
+
+
+def _firebase_firestore_db():
+    """Return a Firestore client, or None if Firebase is not configured."""
+    try:
+        from utils.firebase_admin_client import get_firebase_admin_app
+        import firebase_admin.firestore as _fs
+
+        return _fs.client(app=get_firebase_admin_app())
+    except Exception:
+        return None
+
+
+def _firebase_persist_refresh_token(
+    user_id: int, token_hash: str, expires_at: datetime
+) -> None:
+    db = _firebase_firestore_db()
+    if db is None:
+        with _INMEM_REFRESH_LOCK:
+            _INMEM_REFRESH_STORE[token_hash] = {
+                "user_id": int(user_id),
+                "expires_at": _normalize_dt(expires_at),
+                "revoked_at": None,
+                "replaced_by_hash": None,
+            }
+        return
+    db.collection("refresh_sessions").document(token_hash).set(
+        {
+            "user_id": int(user_id),
+            "token_hash": token_hash,
+            "expires_at": _normalize_dt(expires_at),
+            "revoked_at": None,
+            "replaced_by_hash": None,
+            "created_at": _now_utc(),
+        }
+    )
+
+
+def _firebase_mark_refresh_token_revoked(
+    token_hash: str, replaced_by_hash: Optional[str] = None
+) -> bool:
+    db = _firebase_firestore_db()
+    if db is None:
+        with _INMEM_REFRESH_LOCK:
+            row = _INMEM_REFRESH_STORE.get(token_hash)
+            if not row:
+                return False
+            row["revoked_at"] = _now_utc()
+            row["replaced_by_hash"] = replaced_by_hash
+        return True
+    ref = db.collection("refresh_sessions").document(token_hash)
+    doc = ref.get()
+    if not doc.exists:
+        return False
+    ref.update({"revoked_at": _now_utc(), "replaced_by_hash": replaced_by_hash})
+    return True
+
+
+def _firebase_rotate_refresh_token(
+    token_hash: str,
+) -> Optional[Tuple[int, str, datetime]]:
+    db = _firebase_firestore_db()
+    if db is None:
+        with _INMEM_REFRESH_LOCK:
+            row = _INMEM_REFRESH_STORE.get(token_hash)
+            if not row:
+                return None
+            if row.get("revoked_at") is not None:
+                return None
+            now = _now_utc()
+            if _normalize_dt(row.get("expires_at")) <= now:
+                row["revoked_at"] = now
+                return None
+            user_id = int(row["user_id"])
+            new_raw = secrets.token_urlsafe(48)
+            new_hash = _hash_refresh_token(new_raw)
+            new_expires = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+            row["revoked_at"] = now
+            row["replaced_by_hash"] = new_hash
+            _INMEM_REFRESH_STORE[new_hash] = {
+                "user_id": user_id,
+                "expires_at": new_expires,
+                "revoked_at": None,
+                "replaced_by_hash": None,
+            }
+            return user_id, new_raw, new_expires
+
+    ref = db.collection("refresh_sessions").document(token_hash)
+    doc = ref.get()
+    if not doc.exists:
+        return None
+    row = doc.to_dict() or {}
+    if row.get("revoked_at") is not None:
+        return None
+    now = _now_utc()
+    stored_expires = row.get("expires_at")
+    if stored_expires is not None:
+        if hasattr(stored_expires, "tzinfo") and stored_expires.tzinfo is None:
+            stored_expires = stored_expires.replace(tzinfo=timezone.utc)
+        if stored_expires <= now:
+            ref.update({"revoked_at": now})
+            return None
+    user_id = int(row.get("user_id", 0))
+    new_raw = secrets.token_urlsafe(48)
+    new_hash = _hash_refresh_token(new_raw)
+    new_expires = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    ref.update({"revoked_at": now, "replaced_by_hash": new_hash})
+    db.collection("refresh_sessions").document(new_hash).set(
+        {
+            "user_id": user_id,
+            "token_hash": new_hash,
+            "expires_at": new_expires,
+            "revoked_at": None,
+            "replaced_by_hash": None,
+            "created_at": now,
+        }
+    )
+    return user_id, new_raw, new_expires
+
+
 _PASSWORD_LETTER_RE = re.compile(r"[A-Za-z]")
 _PASSWORD_NUMBER_RE = re.compile(r"\d")
 _OAUTH_HANDOFF_STORE: dict[str, tuple[float, str]] = {}
@@ -85,7 +208,9 @@ if os.getenv("USE_BCRYPT", "0") in {"1", "true", "True"}:
         try:
             # short test hash to ensure the backend behaves as expected
             tmp.hash("test-short")
-            pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
+            pwd_context = CryptContext(
+                schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto"
+            )
         except Exception:
             pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     except Exception:
@@ -93,6 +218,49 @@ if os.getenv("USE_BCRYPT", "0") in {"1", "true", "True"}:
 else:
     pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token", auto_error=False)
+
+
+# ---------------------------------------------------------------------------
+# Public JWT helpers (importable by tests and other modules)
+# ---------------------------------------------------------------------------
+
+
+def create_access_token(
+    data: dict, expires_delta: Optional[timedelta] = None
+) -> str:
+    """Create a signed JWT access token.
+
+    Args:
+        data: Payload dict; must include ``"sub"`` (subject / email).
+        expires_delta: Lifetime override; defaults to ACCESS_TOKEN_EXPIRE_MINUTES.
+
+    Returns:
+        Encoded JWT string.
+    """
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (
+        expires_delta if expires_delta is not None
+        else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_token(token: str) -> Optional[dict]:
+    """Decode and verify a JWT access token.
+
+    Returns:
+        The decoded payload dict, or ``None`` on any error (expired,
+        malformed, bad signature, etc.).
+    """
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except Exception:
+        return None
+
+
 
 
 def _parse_developer_emails() -> set[str]:
@@ -117,7 +285,9 @@ def _normalize_email(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
-def _merge_duplicate_users_for_email(repo: ResearchRepository, normalized_email: str) -> Optional[Any]:
+def _merge_duplicate_users_for_email(
+    repo: ResearchRepository, normalized_email: str
+) -> Optional[Any]:
     if not normalized_email:
         return None
 
@@ -128,19 +298,33 @@ def _merge_duplicate_users_for_email(repo: ResearchRepository, normalized_email:
         user = users[0]
         if _normalize_email(user.email) != normalized_email:
             user.email = normalized_email
-        if user.google_email and _normalize_email(user.google_email) != normalized_email:
+        if (
+            user.google_email
+            and _normalize_email(user.google_email) != normalized_email
+        ):
             user.google_email = normalized_email
         return repo.save(user)
 
     def _score(candidate: Any) -> Tuple[int, int, int, int, int]:
         workspaces = repo.list_workspaces_for_user(candidate.id)
         workspace_count = len(workspaces)
-        paper_count = sum(len(repo.list_papers_for_workspace(workspace.id)) for workspace in workspaces)
+        paper_count = sum(
+            len(repo.list_papers_for_workspace(workspace.id))
+            for workspace in workspaces
+        )
         search_count = repo.count_search_history_for_user(candidate.id)
         doc_count = repo.count_documents_for_user(candidate.id)
-        auth_score = int(bool(candidate.google_id)) + int(bool(candidate.hashed_password))
+        auth_score = int(bool(candidate.google_id)) + int(
+            bool(candidate.hashed_password)
+        )
         # Higher score wins; for tie use smaller id.
-        return int(paper_count), int(workspace_count), int(search_count + doc_count), int(auth_score), -int(candidate.id)
+        return (
+            int(paper_count),
+            int(workspace_count),
+            int(search_count + doc_count),
+            int(auth_score),
+            -int(candidate.id),
+        )
 
     primary = sorted(users, key=_score, reverse=True)[0]
     primary.email = normalized_email
@@ -152,7 +336,9 @@ def _merge_duplicate_users_for_email(repo: ResearchRepository, normalized_email:
             continue
         if not primary.google_id and other.google_id:
             primary.google_id = other.google_id
-            primary.google_email = _normalize_email(other.google_email) or normalized_email
+            primary.google_email = (
+                _normalize_email(other.google_email) or normalized_email
+            )
             primary.profile_pic = primary.profile_pic or other.profile_pic
         if not primary.hashed_password and other.hashed_password:
             primary.hashed_password = other.hashed_password
@@ -166,10 +352,12 @@ def _merge_duplicate_users_for_email(repo: ResearchRepository, normalized_email:
 
     return repo.save(primary)
 
+
 class UserCreate(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
+
 
 class Token(BaseModel):
     access_token: str
@@ -183,8 +371,22 @@ class FirebaseSessionIn(BaseModel):
 class OAuthExchangeIn(BaseModel):
     code: str
 
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
+
+
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 60  # 1 hour
+
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
+
 
 def get_password_hash(password):
     return pwd_context.hash(password)
@@ -203,8 +405,12 @@ def _validate_password_or_400(password: str) -> str:
             detail=f"Password must be at most {MAX_PASSWORD_LENGTH} characters long.",
         )
     if candidate.isspace():
-        raise HTTPException(status_code=400, detail="Password cannot be blank or whitespace only.")
-    if not _PASSWORD_LETTER_RE.search(candidate) or not _PASSWORD_NUMBER_RE.search(candidate):
+        raise HTTPException(
+            status_code=400, detail="Password cannot be blank or whitespace only."
+        )
+    if not _PASSWORD_LETTER_RE.search(candidate) or not _PASSWORD_NUMBER_RE.search(
+        candidate
+    ):
         raise HTTPException(
             status_code=400,
             detail="Password must include at least one letter and one number.",
@@ -216,8 +422,7 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _is_sqlalchemy_runtime() -> bool:
-    return (os.getenv("STORAGE_BACKEND") or "sqlalchemy").strip().lower() == "sqlalchemy"
+
 
 
 def _hash_refresh_token(raw_token: str) -> str:
@@ -235,11 +440,15 @@ def _normalize_dt(value: Optional[datetime]) -> datetime:
 def _cookie_secure(request: Request) -> bool:
     if COOKIE_SECURE:
         return True
-    forwarded = str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    forwarded = (
+        str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    )
     return request.url.scheme == "https" or forwarded == "https"
 
 
-def _set_auth_cookies(response: Response, request: Request, access_token: str, refresh_token: str) -> None:
+def _set_auth_cookies(
+    response: Response, request: Request, access_token: str, refresh_token: str
+) -> None:
     response.set_cookie(
         ACCESS_TOKEN_COOKIE_NAME,
         access_token,
@@ -267,54 +476,27 @@ def _clear_auth_cookies(response: Response, request: Request) -> None:
     response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME, path="/", domain=COOKIE_DOMAIN)
 
 
-def _persist_refresh_token(user_id: int, refresh_token: str, expires_at: datetime) -> None:
+def _persist_refresh_token(
+    user_id: int, refresh_token: str, expires_at: datetime
+) -> None:
     token_hash = _hash_refresh_token(refresh_token)
-    if _is_sqlalchemy_runtime():
-        with SessionLocal() as db:
-            db.add(
-                RefreshSession(
-                    user_id=int(user_id),
-                    token_hash=token_hash,
-                    expires_at=_normalize_dt(expires_at),
-                )
-            )
-            db.commit()
-        return
-    with _INMEM_REFRESH_LOCK:
-        _INMEM_REFRESH_STORE[token_hash] = {
-            "user_id": int(user_id),
-            "expires_at": _normalize_dt(expires_at),
-            "revoked_at": None,
-            "replaced_by_hash": None,
-        }
+    _firebase_persist_refresh_token(int(user_id), token_hash, expires_at)
 
 
 def _create_refresh_token_for_user(user_id: int) -> tuple[str, datetime]:
     raw_refresh = secrets.token_urlsafe(48)
     expires_at = _now_utc() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    _persist_refresh_token(user_id=int(user_id), refresh_token=raw_refresh, expires_at=expires_at)
+    _persist_refresh_token(
+        user_id=int(user_id), refresh_token=raw_refresh, expires_at=expires_at
+    )
     return raw_refresh, expires_at
 
 
-def _mark_refresh_token_revoked(raw_refresh_token: str, replaced_by_hash: Optional[str] = None) -> bool:
+def _mark_refresh_token_revoked(
+    raw_refresh_token: str, replaced_by_hash: Optional[str] = None
+) -> bool:
     token_hash = _hash_refresh_token(raw_refresh_token)
-    now = _now_utc()
-    if _is_sqlalchemy_runtime():
-        with SessionLocal() as db:
-            row = db.query(RefreshSession).filter(RefreshSession.token_hash == token_hash).first()
-            if not row:
-                return False
-            row.revoked_at = now
-            row.replaced_by_hash = replaced_by_hash
-            db.commit()
-            return True
-    with _INMEM_REFRESH_LOCK:
-        row = _INMEM_REFRESH_STORE.get(token_hash)
-        if not row:
-            return False
-        row["revoked_at"] = now
-        row["replaced_by_hash"] = replaced_by_hash
-    return True
+    return _firebase_mark_refresh_token_revoked(token_hash, replaced_by_hash)
 
 
 def _decode_access_token_or_401(token: str) -> dict:
@@ -347,54 +529,11 @@ def _resolve_access_token(
     return None
 
 
-def _rotate_refresh_token(raw_refresh_token: str) -> Optional[tuple[int, str, datetime]]:
+def _rotate_refresh_token(
+    raw_refresh_token: str,
+) -> Optional[tuple[int, str, datetime]]:
     token_hash = _hash_refresh_token(raw_refresh_token)
-    now = _now_utc()
-    if _is_sqlalchemy_runtime():
-        with SessionLocal() as db:
-            row = db.query(RefreshSession).filter(RefreshSession.token_hash == token_hash).first()
-            if not row:
-                return None
-            if row.revoked_at is not None:
-                return None
-            if _normalize_dt(row.expires_at) <= now:
-                row.revoked_at = now
-                db.commit()
-                return None
-            new_refresh_token = secrets.token_urlsafe(48)
-            new_hash = _hash_refresh_token(new_refresh_token)
-            row.revoked_at = now
-            row.replaced_by_hash = new_hash
-            db.add(
-                RefreshSession(
-                    user_id=int(row.user_id),
-                    token_hash=new_hash,
-                    expires_at=now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-                )
-            )
-            db.commit()
-            return int(row.user_id), new_refresh_token, now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    with _INMEM_REFRESH_LOCK:
-        row = _INMEM_REFRESH_STORE.get(token_hash)
-        if not row:
-            return None
-        if row.get("revoked_at") is not None:
-            return None
-        if _normalize_dt(row.get("expires_at")) <= now:
-            row["revoked_at"] = now
-            return None
-        user_id = int(row["user_id"])
-        new_refresh_token = secrets.token_urlsafe(48)
-        new_hash = _hash_refresh_token(new_refresh_token)
-        row["revoked_at"] = now
-        row["replaced_by_hash"] = new_hash
-        _INMEM_REFRESH_STORE[new_hash] = {
-            "user_id": user_id,
-            "expires_at": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
-            "revoked_at": None,
-            "replaced_by_hash": None,
-        }
-        return user_id, new_refresh_token, now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    return _firebase_rotate_refresh_token(token_hash)
 
 
 def _resolve_google_redirect_uri(request: Optional[Request] = None) -> str:
@@ -419,12 +558,18 @@ def _resolve_frontend_redirect(frontend_redirect: Optional[str]) -> str:
             return FRONTEND_URL
         parsed_host = (parsed.hostname or "").lower()
         configured_host = (configured.hostname or "").lower()
-        same_host = bool(parsed_host and configured_host and parsed_host == configured_host)
-        local_host_pair = _is_local_host(parsed_host) and _is_local_host(configured_host)
+        same_host = bool(
+            parsed_host and configured_host and parsed_host == configured_host
+        )
+        local_host_pair = _is_local_host(parsed_host) and _is_local_host(
+            configured_host
+        )
         if not (same_host or local_host_pair):
             return FRONTEND_URL
         parsed_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        configured_port = configured.port or (443 if configured.scheme == "https" else 80)
+        configured_port = configured.port or (
+            443 if configured.scheme == "https" else 80
+        )
         # In local development users often switch between localhost ports
         # (e.g., :5173, :3000, or reverse-proxy path on :80).
         if not local_host_pair and parsed_port != configured_port:
@@ -435,6 +580,7 @@ def _resolve_frontend_redirect(frontend_redirect: Optional[str]) -> str:
     except Exception:
         return FRONTEND_URL
 
+
 def _encode_google_oauth_state(frontend_redirect: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -442,7 +588,9 @@ def _encode_google_oauth_state(frontend_redirect: str) -> str:
         "frontend_redirect": frontend_redirect,
         "nonce": os.urandom(12).hex(),
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=GOOGLE_OAUTH_STATE_TTL_SECONDS)).timestamp()),
+        "exp": int(
+            (now + timedelta(seconds=GOOGLE_OAUTH_STATE_TTL_SECONDS)).timestamp()
+        ),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -455,11 +603,15 @@ def _decode_google_oauth_state(raw_state: str) -> dict:
 
 
 def _is_https_request(request: Request) -> bool:
-    forwarded = str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    forwarded = (
+        str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    )
     return request.url.scheme == "https" or forwarded == "https"
 
 
-def _set_google_state_cookie(response: RedirectResponse, request: Request, state: str) -> None:
+def _set_google_state_cookie(
+    response: RedirectResponse, request: Request, state: str
+) -> None:
     response.set_cookie(
         GOOGLE_OAUTH_STATE_COOKIE_NAME,
         state,
@@ -477,7 +629,11 @@ def _clear_google_state_cookie(response: RedirectResponse) -> None:
 
 def _cleanup_oauth_handoffs(now_ts: Optional[float] = None) -> None:
     now_value = float(now_ts if now_ts is not None else time.time())
-    expired_codes = [code for code, (expires_at, _token) in _OAUTH_HANDOFF_STORE.items() if expires_at <= now_value]
+    expired_codes = [
+        code
+        for code, (expires_at, _token) in _OAUTH_HANDOFF_STORE.items()
+        if expires_at <= now_value
+    ]
     for code in expired_codes:
         _OAUTH_HANDOFF_STORE.pop(code, None)
 
@@ -505,7 +661,9 @@ def _consume_oauth_handoff_token(code: str) -> Optional[str]:
     return access_token
 
 
-def _build_frontend_oauth_handoff_redirect(frontend_redirect: str, code: str) -> RedirectResponse:
+def _build_frontend_oauth_handoff_redirect(
+    frontend_redirect: str, code: str
+) -> RedirectResponse:
     return RedirectResponse(f"{frontend_redirect}#oauth_code={quote(code)}")
 
 
@@ -551,6 +709,7 @@ def _friendly_google_oauth_error(exc: Exception) -> str:
         )
     return "Google sign-in failed. Verify Google OAuth credentials and redirect URI, then try again."
 
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     if expires_delta:
@@ -575,25 +734,63 @@ async def get_current_user(
     token: Optional[str] = Depends(_resolve_access_token),
     repo: ResearchRepository = Depends(get_research_repository),
 ):
-    credentials_exception = HTTPException(
+    """FastAPI dependency — resolves the current authenticated user.
+
+    Always returns 401 for missing/invalid/expired tokens.
+    Returns 403 for inactive (disabled) accounts.
+    NEVER returns 500 for auth errors.
+    """
+    _401 = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    # ── 1. Token presence check ─────────────────────────────────────────
     if not token:
-        raise credentials_exception
+        raise _401
+
+    # ── 2. JWT decode — all token errors → 401 ─────────────────────────
     try:
         payload = _decode_access_token_or_401(token)
         email: str = str(payload.get("sub") or "").strip()
         if not email:
-            raise credentials_exception
+            raise _401
     except HTTPException:
-        raise credentials_exception
-    normalized_email = _normalize_email(email)
-    user = _merge_duplicate_users_for_email(repo, normalized_email)
+        raise _401
+    except Exception as exc:
+        # Defensive: any unexpected decode error must never become a 500
+        logging.warning("get_current_user: token decode error: %s", exc)
+        raise _401
+
+    # ── 3. User lookup — Firestore errors → 401 ─────────────────────────
+    try:
+        from utils.user_cache import get_cached_user, invalidate_user_cache  # noqa: F401
+
+        normalized_email = _normalize_email(email)
+
+        def _fetch(em: str):
+            return _merge_duplicate_users_for_email(repo, em)
+
+        user = get_cached_user(normalized_email, _fetch)
+    except Exception as exc:
+        logging.warning("get_current_user: user lookup error for %s: %s", email, exc)
+        raise _401
+
     if user is None:
-        raise credentials_exception
+        raise _401
+
+    # ── 4. Account status check — inactive accounts → 403 ──────────────
+    if not getattr(user, "is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is disabled. Contact support.",
+        )
+
     return user
+
+
+
 
 @router.post("/register")
 async def register(
@@ -613,8 +810,12 @@ async def register(
     # Create user
     password = _validate_password_or_400(user_data.password)
     hashed_password = get_password_hash(password)
-    verification_token = generate_verification_token() if EMAIL_VERIFICATION_REQUIRED else None
-    verification_expires = get_verification_token_expiry() if EMAIL_VERIFICATION_REQUIRED else None
+    verification_token = (
+        generate_verification_token() if EMAIL_VERIFICATION_REQUIRED else None
+    )
+    verification_expires = (
+        get_verification_token_expiry() if EMAIL_VERIFICATION_REQUIRED else None
+    )
 
     user = repo.create_user(
         email=normalized_email,
@@ -644,14 +845,29 @@ async def register(
             logging.error(f"Failed to send verification email: {e}")
             # Do not fail registration if email delivery fails.
 
-    return {"message": "User registered successfully. Please check your email to verify your account."}
+    return {
+        "message": "User registered successfully. Please check your email to verify your account."
+    }
+
 
 @router.post("/verify-email")
 async def verify_email(
     token: str,
     repo: ResearchRepository = Depends(get_research_repository),
 ):
-    user = next((row for row in repo.list_users() if row.verification_token == token), None)
+    # Use indexed lookup if available, fall back to scan only as a last resort.
+    user = None
+    if hasattr(repo, "get_user_by_verification_token"):
+        user = repo.get_user_by_verification_token(str(token or "").strip())
+    else:
+        user = next(
+            (
+                row
+                for row in repo.list_users()
+                if getattr(row, "verification_token", None) == token
+            ),
+            None,
+        )
     if not user:
         raise HTTPException(status_code=400, detail="Invalid verification token")
 
@@ -669,6 +885,7 @@ async def verify_email(
     repo.save(user)
 
     return {"message": "Email verified successfully"}
+
 
 @router.post("/resend-verification-email")
 async def resend_verification_email(
@@ -698,6 +915,7 @@ async def resend_verification_email(
 
     return {"message": "Verification email resent successfully"}
 
+
 @router.post("/token", response_model=Token)
 def login_for_access_token(
     request: Request,
@@ -719,7 +937,9 @@ def login_for_access_token(
             detail="This account uses Google sign-in. Please use Sign in with Google.",
         )
     try:
-        password_ok = bool(user.hashed_password) and verify_password(form_data.password, user.hashed_password)
+        password_ok = bool(user.hashed_password) and verify_password(
+            form_data.password, user.hashed_password
+        )
     except Exception:
         password_ok = False
     if not password_ok:
@@ -746,6 +966,7 @@ def login_for_access_token(
         "access_token_expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
 
+
 class UserOut(BaseModel):
     id: int
     email: str
@@ -759,22 +980,30 @@ class UserOut(BaseModel):
     auth_provider: Optional[str] = None
     managed_auth: bool = False
 
+
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
+
 
 class PasswordChange(BaseModel):
     current_password: str
     new_password: str
 
+
 class DeleteAccountRequest(BaseModel):
     confirm_email: str
     password: Optional[str] = None
 
+
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: Any = Depends(get_current_user)):
-    auth_provider = "google" if current_user.google_id else ("firebase" if not current_user.hashed_password else "password")
+    auth_provider = (
+        "google"
+        if current_user.google_id
+        else ("firebase" if not current_user.hashed_password else "password")
+    )
     return {
-        "id": current_user.id, 
+        "id": current_user.id,
         "email": current_user.email,
         "name": current_user.name,
         "google_id": current_user.google_id,
@@ -809,7 +1038,9 @@ async def get_me_overview(
     recent_search_rows = repo.list_search_history_for_user(current_user.id, limit=8)
     recent_workspace_rows = sorted(
         workspace_rows,
-        key=lambda row: (row.created_at or datetime(1970, 1, 1, tzinfo=timezone.utc)).timestamp(),
+        key=lambda row: (
+            row.created_at or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        ).timestamp(),
         reverse=True,
     )[:6]
     state = repo.get_session_state_for_user(current_user.id)
@@ -819,9 +1050,7 @@ async def get_me_overview(
     if created_at and created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
     account_age_days = (
-        max(0, int((now - created_at).total_seconds() // 86400))
-        if created_at
-        else 0
+        max(0, int((now - created_at).total_seconds() // 86400)) if created_at else 0
     )
 
     recent_searches = [
@@ -871,14 +1100,16 @@ async def get_me_overview(
     }
 
 
-@router.get('/google/login')
+@router.get("/google/login")
 async def google_login(request: Request):
     client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
     if not client_id or not os.getenv("GOOGLE_CLIENT_SECRET"):
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
 
     redirect_uri = _resolve_google_redirect_uri(request)
-    frontend_redirect = _resolve_frontend_redirect(request.query_params.get("frontend_redirect"))
+    frontend_redirect = _resolve_frontend_redirect(
+        request.query_params.get("frontend_redirect")
+    )
     state = _encode_google_oauth_state(frontend_redirect)
     authorization_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(
         {
@@ -895,9 +1126,12 @@ async def google_login(request: Request):
     _set_google_state_cookie(response, request, state)
     return response
 
-@router.get('/google/status')
+
+@router.get("/google/status")
 async def google_status():
-    configured = bool(os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET"))
+    configured = bool(
+        os.getenv("GOOGLE_CLIENT_ID") and os.getenv("GOOGLE_CLIENT_SECRET")
+    )
     client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
     client_id_hint = f"{client_id[:14]}..." if client_id else None
     return {
@@ -909,18 +1143,19 @@ async def google_status():
     }
 
 
-@router.get('/firebase/status')
+@router.get("/firebase/status")
 async def firebase_status():
     return {
         "configured": firebase_admin_is_configured(),
         "project_id": (os.getenv("FIREBASE_PROJECT_ID") or "").strip() or None,
         "app_check_enforced": (
-            os.getenv("FIREBASE_APPCHECK_ENFORCED", "0").strip().lower() in {"1", "true", "yes"}
+            os.getenv("FIREBASE_APPCHECK_ENFORCED", "0").strip().lower()
+            in {"1", "true", "yes"}
         ),
     }
 
 
-@router.post('/firebase/session', response_model=Token)
+@router.post("/firebase/session", response_model=Token)
 async def firebase_session_exchange(
     payload: FirebaseSessionIn,
     request: Request,
@@ -928,17 +1163,23 @@ async def firebase_session_exchange(
     repo: ResearchRepository = Depends(get_research_repository),
 ):
     if not firebase_admin_is_configured():
-        raise HTTPException(status_code=503, detail="Firebase Authentication is not configured")
+        raise HTTPException(
+            status_code=503, detail="Firebase Authentication is not configured"
+        )
 
     try:
         decoded = verify_firebase_id_token(payload.id_token)
     except Exception as exc:
         logging.exception("Firebase token verification failed")
-        raise HTTPException(status_code=401, detail=f"Invalid Firebase session token: {exc}") from exc
+        raise HTTPException(
+            status_code=401, detail=f"Invalid Firebase session token: {exc}"
+        ) from exc
 
     email = _normalize_email(decoded.get("email"))
     if not email:
-        raise HTTPException(status_code=400, detail="Firebase token does not contain an email address")
+        raise HTTPException(
+            status_code=400, detail="Firebase token does not contain an email address"
+        )
 
     if decoded.get("email_verified") is False:
         raise HTTPException(status_code=403, detail="Firebase email is not verified")
@@ -975,17 +1216,23 @@ async def firebase_session_exchange(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@router.post('/oauth/exchange', response_model=Token)
-async def oauth_exchange(payload: OAuthExchangeIn, request: Request, response: Response):
+@router.post("/oauth/exchange", response_model=Token)
+async def oauth_exchange(
+    payload: OAuthExchangeIn, request: Request, response: Response
+):
     code = str(payload.code or "").strip()
     access_token = _consume_oauth_handoff_token(code)
     if not access_token:
-        raise HTTPException(status_code=400, detail="OAuth sign-in session is invalid or has expired.")
+        raise HTTPException(
+            status_code=400, detail="OAuth sign-in session is invalid or has expired."
+        )
     payload_decoded = _decode_access_token_or_401(access_token)
     email = str(payload_decoded.get("sub") or "").strip()
     user_id = int(payload_decoded.get("uid") or 0)
     if not email or user_id <= 0:
-        raise HTTPException(status_code=400, detail="OAuth sign-in session payload is invalid.")
+        raise HTTPException(
+            status_code=400, detail="OAuth sign-in session payload is invalid."
+        )
     refresh_token, _expires_at = _create_refresh_token_for_user(user_id)
     _set_auth_cookies(response, request, access_token, refresh_token)
     return {"access_token": access_token, "token_type": "bearer"}
@@ -997,18 +1244,24 @@ async def refresh_session(
     response: Response,
     repo: ResearchRepository = Depends(get_research_repository),
 ):
-    raw_refresh_token = str(request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or "").strip()
+    raw_refresh_token = str(
+        request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or ""
+    ).strip()
     if not raw_refresh_token:
         raise HTTPException(status_code=401, detail="Missing refresh token.")
     rotated = _rotate_refresh_token(raw_refresh_token)
     if not rotated:
         _clear_auth_cookies(response, request)
-        raise HTTPException(status_code=401, detail="Refresh token is invalid or expired.")
+        raise HTTPException(
+            status_code=401, detail="Refresh token is invalid or expired."
+        )
     user_id, new_refresh_token, _expires_at = rotated
     user = repo.get_user_by_id(user_id)
     if not user:
         _clear_auth_cookies(response, request)
-        raise HTTPException(status_code=401, detail="Refresh token user no longer exists.")
+        raise HTTPException(
+            status_code=401, detail="Refresh token user no longer exists."
+        )
     access_token = create_access_token(
         data={"sub": str(user.email), "uid": int(user.id)},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
@@ -1019,26 +1272,32 @@ async def refresh_session(
 
 @router.post("/logout")
 async def logout(request: Request, response: Response):
-    raw_refresh_token = str(request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or "").strip()
+    raw_refresh_token = str(
+        request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or ""
+    ).strip()
     if raw_refresh_token:
         _mark_refresh_token_revoked(raw_refresh_token)
     _clear_auth_cookies(response, request)
     return {"message": "Logged out"}
 
 
-@router.get('/google/callback')
+@router.get("/google/callback")
 async def google_callback(
     request: Request,
     repo: ResearchRepository = Depends(get_research_repository),
 ):
     raw_state = str(request.query_params.get("state") or "").strip()
-    cookie_state = str(request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE_NAME) or "").strip()
+    cookie_state = str(
+        request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE_NAME) or ""
+    ).strip()
     frontend_redirect = FRONTEND_URL
     try:
         if not raw_state or not cookie_state or raw_state != cookie_state:
             raise InvalidTokenError("Google OAuth state mismatch.")
         state_payload = _decode_google_oauth_state(raw_state)
-        frontend_redirect = _resolve_frontend_redirect(state_payload.get("frontend_redirect"))
+        frontend_redirect = _resolve_frontend_redirect(
+            state_payload.get("frontend_redirect")
+        )
     except Exception:
         return _google_error_redirect(
             "Google sign-in state was invalid or expired. Please retry.",
@@ -1051,7 +1310,9 @@ async def google_callback(
         message = "Google sign-in was cancelled or denied."
         if error_description:
             message = f"Google sign-in failed: {error_description}"
-        return _google_error_redirect(message, frontend_redirect, clear_state_cookie=True)
+        return _google_error_redirect(
+            message, frontend_redirect, clear_state_cookie=True
+        )
 
     code = request.query_params.get("code")
     if not code:
@@ -1077,7 +1338,11 @@ async def google_callback(
             )
             token_resp.raise_for_status()
             token_payload = token_resp.json()
-            access_token = token_payload.get("access_token") if isinstance(token_payload, dict) else None
+            access_token = (
+                token_payload.get("access_token")
+                if isinstance(token_payload, dict)
+                else None
+            )
             if not access_token:
                 raise RuntimeError("Google OAuth token response missing access_token")
 
@@ -1087,8 +1352,8 @@ async def google_callback(
             )
             userinfo_resp.raise_for_status()
             user_info = userinfo_resp.json()
-        google_id = user_info.get('sub')
-        email = _normalize_email(user_info.get('email'))
+        google_id = user_info.get("sub")
+        email = _normalize_email(user_info.get("email"))
         if not google_id or not email:
             logging.warning("Google userinfo missing required fields: %s", user_info)
             return _google_error_redirect(
@@ -1102,8 +1367,8 @@ async def google_callback(
                 frontend_redirect,
                 clear_state_cookie=True,
             )
-        name = user_info.get('name')
-        picture = user_info.get('picture')
+        name = user_info.get("name")
+        picture = user_info.get("picture")
     except Exception as exc:
         logging.exception("Google OAuth callback failed")
         return _google_error_redirect(
@@ -1117,7 +1382,11 @@ async def google_callback(
     merged_email_user = _merge_duplicate_users_for_email(repo, email)
     user_by_google = repo.get_user_by_google_id(google_id)
 
-    if user_by_google and merged_email_user and user_by_google.id != merged_email_user.id:
+    if (
+        user_by_google
+        and merged_email_user
+        and user_by_google.id != merged_email_user.id
+    ):
         # Keep the richer merged-email account as primary and move Google identity to it.
         merged_email_user.google_id = google_id
         merged_email_user.google_email = email
@@ -1136,7 +1405,7 @@ async def google_callback(
         user.google_email = email
         user.email = email
     else:
-        user = RepoUser(
+        user = User(
             id=None,
             email=email,
             google_id=google_id,
@@ -1161,7 +1430,7 @@ async def google_callback(
             frontend_redirect,
             clear_state_cookie=True,
         )
-    
+
     access_token = create_access_token(
         data={"sub": user.email, "uid": int(user.id)},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
@@ -1170,6 +1439,7 @@ async def google_callback(
     response = _build_frontend_oauth_handoff_redirect(frontend_redirect, handoff_code)
     _clear_google_state_cookie(response)
     return response
+
 
 @router.patch("/me")
 async def update_profile(
@@ -1182,6 +1452,7 @@ async def update_profile(
     repo.save(current_user)
     return {"message": "Profile updated successfully"}
 
+
 @router.post("/change-password")
 async def change_password(
     password_data: PasswordChange,
@@ -1190,15 +1461,21 @@ async def change_password(
 ):
     # Only allow password change for non-Google users
     if not current_user.hashed_password:
-        raise HTTPException(status_code=400, detail="Password changes are managed by your identity provider")
-    
-    if not verify_password(password_data.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password changes are managed by your identity provider",
+        )
+
+    if not verify_password(
+        password_data.current_password, current_user.hashed_password
+    ):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    
+
     new_password = _validate_password_or_400(password_data.new_password)
     current_user.hashed_password = get_password_hash(new_password)
     repo.save(current_user)
     return {"message": "Password changed successfully"}
+
 
 @router.delete("/me")
 async def delete_account(
@@ -1207,12 +1484,109 @@ async def delete_account(
     current_user: Any = Depends(get_current_user),
 ):
     if delete_data.confirm_email.strip().lower() != current_user.email.lower():
-        raise HTTPException(status_code=400, detail="Confirmation email does not match your account")
+        raise HTTPException(
+            status_code=400, detail="Confirmation email does not match your account"
+        )
 
     if current_user.hashed_password:
         if not delete_data.password:
-            raise HTTPException(status_code=400, detail="Password is required to delete account")
+            raise HTTPException(
+                status_code=400, detail="Password is required to delete account"
+            )
         if not verify_password(delete_data.password, current_user.hashed_password):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
     repo.delete_user_account(current_user.id)
     return {"message": "Account deleted successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Password reset endpoints (forgot-password / reset-password)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    payload: ForgotPasswordIn,
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Send a password-reset email.  Always returns 200 to prevent user enumeration."""
+    normalized = _normalize_email(payload.email)
+    user = repo.get_user_by_email(normalized)
+
+    # Don't reveal whether the email exists; fire-and-forget email send.
+    if user and getattr(user, "hashed_password", None):
+        reset_token = generate_verification_token()
+        reset_expires = _now_utc() + timedelta(
+            minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+        )
+        # Reuse verification_token fields for password reset (same lifecycle).
+        user.verification_token = reset_token
+        user.verification_token_expires = reset_expires
+        try:
+            repo.save(user)
+            await send_password_reset_email(
+                normalized, reset_token, getattr(user, "name", None)
+            )
+        except Exception:
+            logging.exception("Failed to send password reset email for %s", normalized)
+
+    return {
+        "message": "If an account with that email exists, a password reset link has been sent."
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(
+    payload: ResetPasswordIn,
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Consume a password-reset token and update the user's password."""
+    token = str(payload.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Reset token is required.")
+
+    # Find user by reset token — use indexed lookup via get_user_by_verification_token
+    # if the repository supports it, otherwise fall back to list scan (small result set
+    # because tokens expire in 1 hour and are one-time-use).
+    user = None
+    if hasattr(repo, "get_user_by_verification_token"):
+        user = repo.get_user_by_verification_token(token)
+    else:
+        # Fallback: scan all users (safe only for small user bases or Firebase where
+        # collection is queried with a where clause by the repository).
+        user = next(
+            (
+                u
+                for u in repo.list_users()
+                if getattr(u, "verification_token", None) == token
+            ),
+            None,
+        )
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+    expires_at = getattr(user, "verification_token_expires", None)
+    if not expires_at:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < _now_utc():
+        raise HTTPException(
+            status_code=400, detail="Reset token has expired. Please request a new one."
+        )
+
+    if not getattr(user, "hashed_password", None):
+        raise HTTPException(
+            status_code=400,
+            detail="This account uses Google sign-in and does not have a password to reset.",
+        )
+
+    new_password = _validate_password_or_400(payload.new_password)
+    user.hashed_password = get_password_hash(new_password)
+    user.verification_token = None
+    user.verification_token_expires = None
+    repo.save(user)
+    return {
+        "message": "Password has been reset successfully. You can now sign in with your new password."
+    }

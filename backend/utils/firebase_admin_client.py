@@ -19,7 +19,34 @@ _APP = None
 
 
 def firebase_admin_is_configured() -> bool:
-    return bool(os.getenv("FIREBASE_PROJECT_ID") and (os.getenv("FIREBASE_CREDENTIALS_PATH") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+    return bool(
+        os.getenv("FIREBASE_PROJECT_ID")
+        and (
+            os.getenv("FIREBASE_CREDENTIALS_PATH")
+            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        )
+    )
+
+
+def _make_emulator_credential():
+    """
+    Return a minimal fake credential that firebase-admin accepts for emulator use.
+    The emulator doesn't validate auth tokens, so any token works.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    class _FakeCred:
+        token = "owner"
+        expiry = datetime.now(timezone.utc) + timedelta(hours=24)
+        valid = True
+
+        def refresh(self, request):
+            pass
+
+        def before_request(self, request, method, url, headers):
+            headers["Authorization"] = f"Bearer {self.token}"
+
+    return _FakeCred()
 
 
 def get_firebase_admin_app():
@@ -29,12 +56,34 @@ def get_firebase_admin_app():
     if firebase_admin is None or credentials is None:
         raise RuntimeError("firebase-admin is not installed.")
 
-    cert_path = (
-        _normalize_windows_env_path(os.getenv("FIREBASE_CREDENTIALS_PATH"))
-        or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-    )
+    # ── Emulator short-circuit: skip ADC entirely ──────────────────────
+    # When FIRESTORE_EMULATOR_HOST is set, the Firestore emulator ignores
+    # auth tokens completely.  We must not call ApplicationDefault() or
+    # credentials.Certificate() because there are no real credentials in
+    # the test / CI environment.
+    if os.getenv("FIRESTORE_EMULATOR_HOST"):
+        try:
+            _APP = firebase_admin.get_app()
+            return _APP
+        except ValueError:
+            pass
+        project_id = (
+            os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "demo-test"
+        ).strip()
+        _APP = firebase_admin.initialize_app(
+            credential=None,
+            options={"projectId": project_id},
+        )
+        return _APP
+    # ── Production / staging path ──────────────────────────────────────
+
+    cert_path = _normalize_windows_env_path(
+        os.getenv("FIREBASE_CREDENTIALS_PATH")
+    ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
     options: dict[str, Any] = {}
-    project_id = (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    project_id = (
+        os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
     bucket_name = storage_bucket_name()
     if project_id:
         options["projectId"] = project_id
@@ -47,16 +96,23 @@ def get_firebase_admin_app():
     except ValueError:
         pass
 
-    cred = credentials.Certificate(cert_path) if cert_path else credentials.ApplicationDefault()
+    cred = (
+        credentials.Certificate(cert_path)
+        if cert_path
+        else credentials.ApplicationDefault()
+    )
     _APP = firebase_admin.initialize_app(cred, options=options or None)
     return _APP
+
 
 
 def verify_firebase_id_token(id_token: str) -> dict[str, Any]:
     if auth is None:
         raise RuntimeError("firebase-admin auth support is unavailable.")
     app = get_firebase_admin_app()
-    return auth.verify_id_token(id_token, app=app)
+    # Allow up to 10 seconds of clock skew to handle minor system time drift
+    # between the client (browser) and the server.
+    return auth.verify_id_token(id_token, app=app, clock_skew_seconds=10)
 
 
 def revoke_firebase_refresh_tokens(uid: str) -> None:
