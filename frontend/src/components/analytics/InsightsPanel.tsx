@@ -1,7 +1,8 @@
+import { cn } from '../../utils/cn';
 import { AlertCircle, CheckCircle2, Zap, Activity } from 'lucide-react';
 import { SEVERITY_COLORS, SeverityBadge } from './RouteTable';
-import { InsightsSummary } from '../../types/api';
-import { cn } from '../../utils/cn';
+import type { InsightsSummary } from '../../types/api';
+;
 
 const SEVERITY_ICON = {
   CRITICAL: AlertCircle,

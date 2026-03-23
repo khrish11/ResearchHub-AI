@@ -1,5 +1,5 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { TimeseriesPoint } from '../../types/api';
+import type { TimeseriesPoint } from '../../types/api';
 import { motion } from 'framer-motion';
 
 // Custom Tooltip

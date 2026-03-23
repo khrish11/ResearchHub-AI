@@ -1,5 +1,6 @@
-import { RouteStat } from '../../types/api';
 import { cn } from '../../utils/cn';
+import type { RouteStat } from '../../types/api';
+;
 
 // Formatters
 const formatPct = (num: number | undefined) => `${((num || 0) * 100).toFixed(1)}%`;

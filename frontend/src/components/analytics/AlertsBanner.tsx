@@ -1,6 +1,6 @@
-import { XCircle, AlertTriangle, Info } from 'lucide-react';
+import { XCircle, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TopIssue } from '../../types/api';
+import type { TopIssue } from '../../types/api';
 
 interface AlertsBannerProps {
   issues: TopIssue[];

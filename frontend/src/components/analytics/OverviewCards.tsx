@@ -1,5 +1,5 @@
-import { GlobalAnalytics as GlobalStats } from '../../types/api';
-import { Users, BarChart3, Database, TrendingUp, Clock, AlertTriangle, XCircle, Zap } from 'lucide-react';
+import type { GlobalAnalytics as GlobalStats } from '../../types/api';
+import { BarChart3, Database, TrendingUp, Clock, AlertTriangle, XCircle, Zap } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 // Formatters

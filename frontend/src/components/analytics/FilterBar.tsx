@@ -1,5 +1,5 @@
 import { Clock, Filter, AlertCircle, Activity } from 'lucide-react';
-import { RouteStat } from '../../types/api';
+import type { RouteStat } from '../../types/api';
 
 export interface FilterState {
   hours: number;

@@ -19,7 +19,7 @@ import { exportToCSV, exportToJSON } from '../utils/exportUtils';
 
 // Components
 import AlertsBanner from '../components/analytics/AlertsBanner';
-import FilterBar, { FilterState } from '../components/analytics/FilterBar';
+import FilterBar, { type FilterState } from '../components/analytics/FilterBar';
 import OverviewCards from '../components/analytics/OverviewCards';
 import TimeseriesChart from '../components/analytics/TimeseriesChart';
 import RouteTable from '../components/analytics/RouteTable';
