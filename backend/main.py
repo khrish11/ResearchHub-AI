@@ -231,16 +231,22 @@ async def _http_exception_handler(request: Request, exc: HTTPException):
 
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
+# Support comma-separated list of allowed origins (e.g. staging + production)
+_extra_origins = [
+    u.strip().rstrip("/")
+    for u in os.getenv("EXTRA_FRONTEND_URLS", "").split(",")
+    if u.strip()
+]
+
 if APP_ENV == "production":
-    # In production, only allow the explicit FRONTEND_URL. Localhost origins are
-    # stripped to prevent attackers running a local server from making
-    # credentialed cross-origin requests to the production API.
-    allowed_origins = {frontend_url}
-    _cors_origin_regex = None
+    allowed_origins = {frontend_url, *_extra_origins}
+    # Also allow all *.vercel.app subdomains so preview deploys work without
+    # having to update the env var on every Vercel build.
+    _cors_origin_regex = r"^https://[a-zA-Z0-9-]+-[a-zA-Z0-9-]+\.vercel\.app$"
 else:
-    # In development, allow all localhost variants for convenience.
     allowed_origins = {
         frontend_url,
+        *_extra_origins,
         "http://localhost",
         "http://127.0.0.1",
         "http://localhost:3000",
