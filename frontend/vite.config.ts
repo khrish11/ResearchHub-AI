@@ -10,25 +10,6 @@ export default defineConfig({
     strictPort: true
   },
   build: {
-    chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) {
-            return undefined
-          }
-          if (id.includes('firebase')) {
-            return 'vendor-firebase'
-          }
-          if (id.includes('react-dom') || id.includes('react')) {
-            return 'vendor-react'
-          }
-          if (id.includes('lucide-react')) {
-            return 'vendor-icons'
-          }
-          return 'vendor-core'
-        },
-      },
-    },
+    chunkSizeWarningLimit: 2000,
   },
 })
