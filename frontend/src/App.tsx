@@ -12,30 +12,56 @@ import { trackRouteView } from './utils/firebaseClient';
 import { notifyAuthLogin, setBackendToken } from './utils/authSession';
 import { handleFirebaseRedirectResult, firebaseAuthAvailable } from './utils/firebaseAuth';
 
-const Landing = lazy(() => import('./pages/Landing'));
-const Login = lazy(() => import('./pages/Login'));
-const Register = lazy(() => import('./pages/Register'));
-const EmailVerification = lazy(() => import('./pages/EmailVerification'));
-const Settings = lazy(() => import('./pages/Settings'));
-const AccountSettings = lazy(() => import('./pages/AccountSettings'));
-const Home = lazy(() => import('./pages/Home'));
-const Dashboard = lazy(() => import('./pages/Dashboard'));
-const SearchPapers = lazy(() => import('./pages/SearchPapers'));
-const Workspace = lazy(() => import('./pages/Workspace'));
-const Mindmap = lazy(() => import('./pages/Mindmap'));
-const AITools = lazy(() => import('./pages/AITools'));
-const ResearchAgent = lazy(() => import('./pages/ResearchAgent'));
-const UploadPDF = lazy(() => import('./pages/UploadPDF'));
-const DocSpace = lazy(() => import('./pages/DocSpace'));
-const WritingChat = lazy(() => import('./pages/WritingChat'));
-const DeveloperConsole = lazy(() => import('./pages/DeveloperConsole'));
-const AnalyticsDashboard = lazy(() => import('./pages/AnalyticsDashboard'));
-const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
-const TermsOfService = lazy(() => import('./pages/TermsOfService'));
-const CookiePolicy = lazy(() => import('./pages/CookiePolicy'));
-const DataRights = lazy(() => import('./pages/DataRights'));
-const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
-const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const lazyWithRetry = <T extends React.ComponentType<any>>(
+  importer: () => Promise<{ default: T }>,
+  key: string
+) =>
+  lazy(async () => {
+    const retryKey = `soyog.route-chunk-retry:${key}`;
+    try {
+      const mod = await importer();
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(retryKey);
+      }
+      return mod;
+    } catch (error) {
+      if (typeof window !== 'undefined') {
+        const alreadyRetried = window.sessionStorage.getItem(retryKey) === '1';
+        if (!alreadyRetried) {
+          window.sessionStorage.setItem(retryKey, '1');
+          window.location.reload();
+          return new Promise<never>(() => {});
+        }
+        window.sessionStorage.removeItem(retryKey);
+      }
+      throw error;
+    }
+  });
+
+const Landing = lazyWithRetry(() => import('./pages/Landing'), 'landing');
+const Login = lazyWithRetry(() => import('./pages/Login'), 'login');
+const Register = lazyWithRetry(() => import('./pages/Register'), 'register');
+const EmailVerification = lazyWithRetry(() => import('./pages/EmailVerification'), 'email-verification');
+const Settings = lazyWithRetry(() => import('./pages/Settings'), 'settings');
+const AccountSettings = lazyWithRetry(() => import('./pages/AccountSettings'), 'account-settings');
+const Home = lazyWithRetry(() => import('./pages/Home'), 'home');
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'), 'dashboard');
+const SearchPapers = lazyWithRetry(() => import('./pages/SearchPapers'), 'search-papers');
+const Workspace = lazyWithRetry(() => import('./pages/Workspace'), 'workspace');
+const Mindmap = lazyWithRetry(() => import('./pages/Mindmap'), 'mindmap');
+const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools');
+const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent');
+const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf');
+const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space');
+const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat');
+const DeveloperConsole = lazyWithRetry(() => import('./pages/DeveloperConsole'), 'developer-console');
+const AnalyticsDashboard = lazyWithRetry(() => import('./pages/AnalyticsDashboard'), 'analytics-dashboard');
+const PrivacyPolicy = lazyWithRetry(() => import('./pages/PrivacyPolicy'), 'privacy-policy');
+const TermsOfService = lazyWithRetry(() => import('./pages/TermsOfService'), 'terms-of-service');
+const CookiePolicy = lazyWithRetry(() => import('./pages/CookiePolicy'), 'cookie-policy');
+const DataRights = lazyWithRetry(() => import('./pages/DataRights'), 'data-rights');
+const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'), 'forgot-password');
+const ResetPassword = lazyWithRetry(() => import('./pages/ResetPassword'), 'reset-password');
 
 const RouteLoader = () => (
   <div className="min-h-[42vh] flex items-center justify-center" role="status" aria-live="polite">

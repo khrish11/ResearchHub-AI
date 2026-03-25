@@ -59,6 +59,14 @@ const parseYearFromPublished = (value?: string): number | undefined => {
   return match ? Number(match[0]) : undefined;
 };
 
+const formatRelevanceScore = (value: unknown): string | null => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return numeric.toFixed(2);
+};
+
 const normalizeRecKey = (item: RecommendationPaper): string => {
   const doi = String(item.doi || '').trim().toLowerCase();
   if (doi) return `doi:${doi}`;
@@ -535,6 +543,7 @@ const Home = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {recommendations.map((paper, index) => {
               const link = paper.url || (paper.doi ? `https://doi.org/${paper.doi}` : '');
+              const scoreText = formatRelevanceScore(paper.ranking_score ?? paper.score);
               return (
                 <article key={`${paper.title}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50/90 p-3.5 shadow-sm">
                   <div className="flex flex-wrap items-center gap-2">
@@ -548,9 +557,9 @@ const Home = () => {
                     )}
                   </div>
                   <p className="mt-3 text-sm font-semibold text-slate-900 line-clamp-2">{paper.title}</p>
-                  {(paper.ranking_score || paper.score) && (
+                  {scoreText && (
                     <p className="mt-2 text-[11px] text-slate-500">
-                      relevance score: {(paper.ranking_score || paper.score || 0).toFixed(2)}
+                      relevance score: {scoreText}
                     </p>
                   )}
                   {paper.reason && (
