@@ -55,6 +55,26 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Keep form controls visually consistent across pages and browsers. */
+:where(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]),
+  select,
+  textarea
+) {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+:where(input, textarea)::placeholder {
+  color: #64748b;
+  opacity: 1;
+}
+
+select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
 h1,
 h2,
 h3,
