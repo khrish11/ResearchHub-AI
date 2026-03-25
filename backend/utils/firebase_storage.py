@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import logging
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Dict, Optional
@@ -19,6 +20,7 @@ _ENV_ESCAPE_REVERSE = {
     "\t": "t",
     "\v": "v",
 }
+logger = logging.getLogger(__name__)
 
 
 def _normalize_windows_env_path(raw_value: str | None) -> str | None:
@@ -42,11 +44,18 @@ def _firebase_project_id() -> str | None:
 
 
 def _credentials_path() -> str | None:
-    return (
+    path = (
         _normalize_windows_env_path(os.getenv("FIREBASE_CREDENTIALS_PATH"))
         or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
         or None
     )
+    if path and not os.path.isfile(path):
+        logger.warning(
+            "Configured Firebase Storage credentials file does not exist (%s); falling back to Application Default Credentials.",
+            path,
+        )
+        return None
+    return path
 
 
 def storage_bucket_name() -> str | None:

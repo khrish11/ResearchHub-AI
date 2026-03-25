@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any, Optional
 
 try:
@@ -16,15 +17,12 @@ from utils.firebase_storage import _normalize_windows_env_path, storage_bucket_n
 
 
 _APP = None
+logger = logging.getLogger(__name__)
 
 
 def firebase_admin_is_configured() -> bool:
     return bool(
-        os.getenv("FIREBASE_PROJECT_ID")
-        and (
-            os.getenv("FIREBASE_CREDENTIALS_PATH")
-            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        )
+        (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"))
     )
 
 
@@ -80,6 +78,12 @@ def get_firebase_admin_app():
     cert_path = _normalize_windows_env_path(
         os.getenv("FIREBASE_CREDENTIALS_PATH")
     ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    if cert_path and not os.path.isfile(cert_path):
+        logger.warning(
+            "Configured Firebase credentials file does not exist (%s); falling back to Application Default Credentials.",
+            cert_path,
+        )
+        cert_path = None
     options: dict[str, Any] = {}
     project_id = (
         os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
