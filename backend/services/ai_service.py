@@ -58,6 +58,16 @@ from services.cache_service import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = max(10, int(os.getenv("AI_CALL_TIMEOUT_SECONDS", "45") or 45))
+_DECOMMISSION_FALLBACK_MODEL = str(
+    os.getenv("GROQ_FALLBACK_MODEL") or "llama-3.3-70b-versatile"
+).strip()
+
+
+def _is_model_decommissioned_error(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return "model_decommissioned" in lowered or (
+        "decommissioned" in lowered and "model" in lowered
+    )
 
 
 def run_ai_query(
@@ -182,20 +192,53 @@ def run_ai_query(
 
         def _call() -> None:
             try:
+                request_kwargs = dict(model_kwargs)
+                requested_model = str(request_kwargs.get("model") or "")
                 resp = groq_client.chat.completions.create(
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": query[:32000]},
                     ],
-                    **model_kwargs,
+                    **request_kwargs,
                 )
                 _result_holder["text"] = str(
                     (resp.choices[0].message.content or "")
                 ).strip()
                 _result_holder["model"] = str(
-                    getattr(resp, "model", model_kwargs.get("model") or "")
+                    getattr(resp, "model", request_kwargs.get("model") or "")
                 )
             except Exception as exc:
+                if (
+                    _DECOMMISSION_FALLBACK_MODEL
+                    and _is_model_decommissioned_error(str(exc))
+                    and requested_model != _DECOMMISSION_FALLBACK_MODEL
+                ):
+                    logger.warning(
+                        '{"event":"ai_model_fallback","route":"%s","from_model":"%s","to_model":"%s"}',
+                        route,
+                        requested_model,
+                        _DECOMMISSION_FALLBACK_MODEL,
+                    )
+                    try:
+                        fallback_kwargs = dict(request_kwargs)
+                        fallback_kwargs["model"] = _DECOMMISSION_FALLBACK_MODEL
+                        resp = groq_client.chat.completions.create(
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": query[:32000]},
+                            ],
+                            **fallback_kwargs,
+                        )
+                        _result_holder["text"] = str(
+                            (resp.choices[0].message.content or "")
+                        ).strip()
+                        _result_holder["model"] = str(
+                            getattr(resp, "model", fallback_kwargs.get("model") or "")
+                        )
+                        return
+                    except Exception as fallback_exc:
+                        _error_holder["exc"] = fallback_exc
+                        return
                 _error_holder["exc"] = exc
 
         thread = threading.Thread(target=_call, daemon=True)
