@@ -114,6 +114,7 @@ function RouteTelemetry() {
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [canAccessAnalytics, setCanAccessAnalytics] = useState(false);
   const routerBasename = getAppBasePath();
   const authBootstrapStarted = useRef(false);
 
@@ -121,11 +122,13 @@ function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
-      await api.get('/auth/me', { signal: controller.signal });
+      const response = await api.get('/auth/me', { signal: controller.signal });
       clearTimeout(timeoutId);
       setIsAuthenticated(true);
+      setCanAccessAnalytics(Boolean(response?.data?.can_access_analytics));
     } catch {
       setIsAuthenticated(false);
+      setCanAccessAnalytics(false);
     } finally {
       setAuthChecked(true);
     }
@@ -215,6 +218,7 @@ function App() {
           })
           .catch(() => {
             setIsAuthenticated(false);
+            setCanAccessAnalytics(false);
             setAuthChecked(true);
             window.clearTimeout(safetyTimeout);
             const error = encodeURIComponent('Google sign-in session expired. Please try again.');
@@ -244,6 +248,16 @@ function App() {
       return <RouteLoader />;
     }
     return isAuthenticated ? element : <Navigate to="/login" replace />;
+  };
+
+  const adminAnalyticsRoute = (element: ReactElement) => {
+    if (!authChecked) {
+      return <RouteLoader />;
+    }
+    if (!isAuthenticated) {
+      return <Navigate to="/login" replace />;
+    }
+    return canAccessAnalytics ? element : <Navigate to="/home" replace />;
   };
 
   return (
@@ -325,7 +339,7 @@ function App() {
                     />
                     <Route
                       path="/analytics"
-                      element={protectedRoute(<AnalyticsDashboard />)}
+                      element={adminAnalyticsRoute(<AnalyticsDashboard />)}
                     />
                     <Route path="/privacy" element={<PrivacyPolicy />} />
                     <Route path="/terms" element={<TermsOfService />} />

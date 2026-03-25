@@ -8,12 +8,14 @@ interface MobileLayoutProps {
   children: React.ReactNode;
   userEmail?: string;
   userInitials?: string;
+  canAccessAnalytics?: boolean;
 }
 
 const MobileLayout: React.FC<MobileLayoutProps> = ({
   children,
   userEmail,
   userInitials,
+  canAccessAnalytics = false,
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -92,7 +94,12 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
               </button>
             </div>
             <div className="overflow-y-auto h-full pb-20">
-              <Sidebar mobile userEmail={userEmail} userInitials={userInitials} />
+              <Sidebar
+                mobile
+                userEmail={userEmail}
+                userInitials={userInitials}
+                canAccessAnalytics={canAccessAnalytics}
+              />
             </div>
           </div>
         </div>
@@ -102,7 +109,11 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
       <div className="flex">
         {/* Desktop Sidebar */}
         <div className="hidden md:block">
-          <Sidebar userEmail={userEmail} userInitials={userInitials} />
+          <Sidebar
+            userEmail={userEmail}
+            userInitials={userInitials}
+            canAccessAnalytics={canAccessAnalytics}
+          />
         </div>
 
         {/* Page Content */}

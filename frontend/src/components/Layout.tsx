@@ -15,9 +15,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { user } = useUser();
   const email = user?.email;
   const initials = user?.initials ?? '?';
+  const canAccessAnalytics = Boolean(user?.canAccessAnalytics);
 
   return (
-    <MobileLayout userEmail={email} userInitials={initials}>
+    <MobileLayout
+      userEmail={email}
+      userInitials={initials}
+      canAccessAnalytics={canAccessAnalytics}
+    >
       <div className="space-y-6">
         <Header userEmail={email} userInitials={initials} />
         <div className="max-w-none">

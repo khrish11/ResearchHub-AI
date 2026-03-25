@@ -280,6 +280,19 @@ def is_developer_email(email: Optional[str]) -> bool:
     return email.strip().lower() in _parse_developer_emails()
 
 
+def _parse_analytics_admin_user_ids() -> set[str]:
+    raw = os.getenv("ADMIN_USER_IDS", "")
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return set(values)
+
+
+def has_analytics_admin_access(user_id: Any) -> bool:
+    admin_ids = _parse_analytics_admin_user_ids()
+    if not admin_ids:
+        return False
+    return str(user_id or "").strip() in admin_ids
+
+
 def _iso_utc(value: Optional[datetime]) -> Optional[str]:
     if not value:
         return None
@@ -993,6 +1006,7 @@ class UserOut(BaseModel):
     is_verified: bool = False
     is_active: bool = True
     is_developer: bool = False
+    can_access_analytics: bool = False
     auth_provider: Optional[str] = None
     managed_auth: bool = False
 
@@ -1028,6 +1042,7 @@ async def get_me(current_user: Any = Depends(get_current_user)):
         "is_verified": current_user.is_verified,
         "is_active": current_user.is_active,
         "is_developer": is_developer_email(current_user.email),
+        "can_access_analytics": has_analytics_admin_access(current_user.id),
         "auth_provider": auth_provider,
         "managed_auth": not bool(current_user.hashed_password),
     }

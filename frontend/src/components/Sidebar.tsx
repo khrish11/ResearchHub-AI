@@ -9,9 +9,15 @@ interface SidebarProps {
   userEmail?: string;
   userInitials?: string;
   mobile?: boolean;
+  canAccessAnalytics?: boolean;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile = false }) => {
+const Sidebar: React.FC<SidebarProps> = ({
+  userEmail,
+  userInitials = 'U',
+  mobile = false,
+  canAccessAnalytics = false,
+}) => {
   const location = useLocation();
 
   const menuItems = [
@@ -25,7 +31,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userEmail, userInitials = 'U', mobile
     { path: '/docs', label: 'DocSpace', icon: FileText },
     { path: '/mindmap', label: 'Mindmap', icon: Workflow },
     { path: '/account', label: 'Account', icon: UserCog },
-    { path: '/analytics', label: 'AI Analytics', icon: BarChart3 },
+    ...(canAccessAnalytics
+      ? [{ path: '/analytics', label: 'AI Analytics', icon: BarChart3 }]
+      : []),
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 

@@ -6,6 +6,7 @@ interface UserInfo {
     email: string;
     initials: string;
     isDeveloper: boolean;
+    canAccessAnalytics: boolean;
 }
 
 /**
@@ -23,6 +24,7 @@ export function useUser() {
                 .then((res) => {
                     const email: string = res.data.email;
                     const isDeveloper = Boolean(res.data.is_developer);
+                    const canAccessAnalytics = Boolean(res.data.can_access_analytics);
                     // Build initials: first letter of each part before @ split by dot
                     const local = email.split('@')[0];
                     const parts = local.split(/[._-]/);
@@ -35,6 +37,7 @@ export function useUser() {
                         email,
                         initials: initials || email[0].toUpperCase(),
                         isDeveloper,
+                        canAccessAnalytics,
                     });
                 })
                 .catch(() => setUser(null))
