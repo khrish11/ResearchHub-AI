@@ -3,7 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
 import api, { API_URL, getGoogleLoginUrl } from '../api';
-import { firebaseAuthAvailable, registerWithFirebasePassword, signInWithFirebaseGoogle } from '../utils/firebaseAuth';
+import {
+  firebaseAuthAvailable,
+  isFirebaseUnauthorizedDomainError,
+  registerWithFirebasePassword,
+  signInWithFirebaseGoogle,
+} from '../utils/firebaseAuth';
 import { getRemoteBoolean } from '../utils/firebaseClient';
 
 interface RegisterProps {
@@ -86,6 +91,10 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
           navigate('/home');
         })
         .catch((err: unknown) => {
+          if (isFirebaseUnauthorizedDomainError(err) && googleConfigured) {
+            window.location.href = googleLoginUrl;
+            return;
+          }
           const axDetail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
           const raw = err instanceof Error ? err.message : '';
           const msg =

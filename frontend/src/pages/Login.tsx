@@ -2,7 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
 import api, { API_URL, getGoogleLoginUrl } from '../api';
-import { firebaseAuthAvailable, signInWithFirebaseGoogle, signInWithFirebasePassword } from '../utils/firebaseAuth';
+import {
+  firebaseAuthAvailable,
+  isFirebaseUnauthorizedDomainError,
+  signInWithFirebaseGoogle,
+  signInWithFirebasePassword,
+} from '../utils/firebaseAuth';
 import { getRemoteBoolean } from '../utils/firebaseClient';
 
 interface LoginProps {
@@ -91,6 +96,10 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
           navigate('/home');
         })
         .catch((err: unknown) => {
+          if (isFirebaseUnauthorizedDomainError(err) && googleConfigured) {
+            window.location.href = googleLoginUrl;
+            return;
+          }
           const axDetail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
           const raw = err instanceof Error ? err.message : '';
           const msg =

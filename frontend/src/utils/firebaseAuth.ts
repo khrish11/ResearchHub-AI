@@ -31,6 +31,20 @@ const exchangeFirebaseSession = async (idToken: string) => {
 
 export const firebaseAuthAvailable = (): boolean => isFirebaseAuthEnabled();
 
+const extractFirebaseErrorCode = (err: unknown): string => {
+  const maybeCode = (err as { code?: unknown } | null)?.code;
+  return typeof maybeCode === 'string' ? maybeCode.toLowerCase() : '';
+};
+
+export const isFirebaseUnauthorizedDomainError = (err: unknown): boolean => {
+  const code = extractFirebaseErrorCode(err);
+  if (code === 'auth/unauthorized-domain') {
+    return true;
+  }
+  const message = err instanceof Error ? err.message.toLowerCase() : '';
+  return message.includes('auth/unauthorized-domain') || message.includes('unauthorized-domain');
+};
+
 export const signInWithFirebasePassword = async (email: string, password: string) => {
   console.log('Firebase password sign-in attempt:', email);
   const auth = await getFirebaseAuthClient();

@@ -64,6 +64,11 @@ DEFAULT_AUTH_COOKIE_SECURE = "1" if APP_ENV in {"production", "staging"} else "0
 COOKIE_SECURE = os.getenv(
     "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE
 ).strip().lower() in {"1", "true", "yes"}
+ALLOW_VERCEL_PREVIEW_FRONTEND_REDIRECTS = os.getenv(
+    "ALLOW_VERCEL_PREVIEW_FRONTEND_REDIRECTS",
+    "1" if APP_ENV == "production" else "0",
+).strip().lower() in {"1", "true", "yes"}
+VERCEL_PREVIEW_HOST_RE = re.compile(r"^[a-z0-9-]+-[a-z0-9-]+\.vercel\.app$")
 _INMEM_REFRESH_STORE: dict[str, dict[str, Any]] = {}
 _INMEM_REFRESH_LOCK = Lock()
 
@@ -546,8 +551,13 @@ def _is_local_host(hostname: Optional[str]) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
+def _is_vercel_preview_host(hostname: Optional[str]) -> bool:
+    host = (hostname or "").strip().lower()
+    return bool(VERCEL_PREVIEW_HOST_RE.fullmatch(host))
+
+
 def _resolve_frontend_redirect(frontend_redirect: Optional[str]) -> str:
-    """Allow redirects only for configured frontend origin, with localhost flexibility."""
+    """Allow redirects only for trusted frontend origins."""
     if not frontend_redirect:
         return FRONTEND_URL
 
@@ -564,7 +574,13 @@ def _resolve_frontend_redirect(frontend_redirect: Optional[str]) -> str:
         local_host_pair = _is_local_host(parsed_host) and _is_local_host(
             configured_host
         )
-        if not (same_host or local_host_pair):
+        vercel_preview_pair = bool(
+            configured_host.endswith(".vercel.app")
+            and ALLOW_VERCEL_PREVIEW_FRONTEND_REDIRECTS
+            and parsed.scheme == "https"
+            and _is_vercel_preview_host(parsed_host)
+        )
+        if not (same_host or local_host_pair or vercel_preview_pair):
             return FRONTEND_URL
         parsed_port = parsed.port or (443 if parsed.scheme == "https" else 80)
         configured_port = configured.port or (
@@ -572,7 +588,7 @@ def _resolve_frontend_redirect(frontend_redirect: Optional[str]) -> str:
         )
         # In local development users often switch between localhost ports
         # (e.g., :5173, :3000, or reverse-proxy path on :80).
-        if not local_host_pair and parsed_port != configured_port:
+        if not (local_host_pair or vercel_preview_pair) and parsed_port != configured_port:
             return FRONTEND_URL
         if parsed.path and parsed.path != "/":
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
