@@ -29,8 +29,17 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
         const alreadyRetried = window.sessionStorage.getItem(retryKey) === '1';
         if (!alreadyRetried) {
           window.sessionStorage.setItem(retryKey, '1');
-          window.location.reload();
-          return new Promise<never>(() => {});
+          // Trigger one forced reload for stale chunk maps, but never hang forever if reload is blocked.
+          window.setTimeout(() => window.location.reload(), 80);
+          return new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(
+                error instanceof Error
+                  ? error
+                  : new Error(`Failed to load route chunk "${key}"`)
+              );
+            }, 2400);
+          });
         }
         window.sessionStorage.removeItem(retryKey);
       }
@@ -63,14 +72,34 @@ const DataRights = lazyWithRetry(() => import('./pages/DataRights'), 'data-right
 const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'), 'forgot-password');
 const ResetPassword = lazyWithRetry(() => import('./pages/ResetPassword'), 'reset-password');
 
-const RouteLoader = () => (
-  <div className="min-h-[42vh] flex items-center justify-center" role="status" aria-live="polite">
-    <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 shadow-sm">
-      <span className="h-2.5 w-2.5 rounded-full bg-indigo-500 animate-pulse" />
-      Loading workspace...
+const RouteLoader = () => {
+  const [showRecovery, setShowRecovery] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowRecovery(true), 12000);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="min-h-[42vh] flex items-center justify-center" role="status" aria-live="polite">
+      <div className="inline-flex flex-col items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-600 shadow-sm">
+        <div className="inline-flex items-center gap-2">
+          <span className="h-2.5 w-2.5 rounded-full bg-indigo-500 animate-pulse" />
+          Loading workspace...
+        </div>
+        {showRecovery && (
+          <button
+            type="button"
+            className="rounded-md bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+            onClick={() => window.location.reload()}
+          >
+            Still loading. Reload now
+          </button>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 function RouteTelemetry() {
   const location = useLocation();

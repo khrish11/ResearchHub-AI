@@ -2113,7 +2113,7 @@ current_user: User = Depends(get_current_user),
         raise HTTPException(status_code=400, detail="Goal is too short.")
 
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
     candidates, raw_payload = await _search_global_candidates(
         goal, request.max_results, current_user
@@ -2132,7 +2132,7 @@ current_user: User = Depends(get_current_user),
     clusters = _cluster_themes(ranked[:60], max_clusters=6)
     gap_result = _heuristic_gap_detection(goal, ranked[:50])
     trend_result = _trend_projection(ranked[:70])
-    import_result = _import_top_candidates(db, workspace, ranked, request.import_top_n)
+    import_result = _import_top_candidates(workspace, ranked, request.import_top_n)
     ai_status = groq_client_status()
 
     llm_output = _llm_generate(
@@ -2240,7 +2240,7 @@ async def full_pipeline(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
     goal = request.goal.strip()
     if len(goal) < 4:
@@ -2260,7 +2260,6 @@ current_user: User = Depends(get_current_user),
                 max_results=request.max_results,
                 import_top_n=request.import_top_n,
             ),
-            db=db,
             current_user=current_user,
         )
         results["autonomous"] = autonomous_result
@@ -2268,9 +2267,9 @@ current_user: User = Depends(get_current_user),
     except Exception as exc:
         errors.append(_step_error_payload("autonomous", exc))
 
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
-        papers = _load_workspace_papers(db, workspace)
+        papers = _load_workspace_papers(workspace)
 
     if request.paper_ids:
         active_paper_ids = [paper.id for paper in papers]
@@ -2312,7 +2311,6 @@ current_user: User = Depends(get_current_user),
                 GapDetectionRequest(
                     workspace_id=workspace.id, paper_ids=active_paper_ids, topic=goal
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2325,7 +2323,6 @@ current_user: User = Depends(get_current_user),
                     topic=goal,
                     strict_mode=request.strict_mode,
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2337,7 +2334,6 @@ current_user: User = Depends(get_current_user),
                     query=goal,
                     max_results=request.max_results,
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2347,7 +2343,6 @@ current_user: User = Depends(get_current_user),
                 ExperimentDesignRequest(
                     workspace_id=workspace.id, paper_ids=active_paper_ids, topic=goal
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2361,7 +2356,6 @@ current_user: User = Depends(get_current_user),
                     target_format="IEEE",
                     citation_style="IEEE",
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2375,7 +2369,6 @@ current_user: User = Depends(get_current_user),
                     draft_text=draft_seed_text,
                     max_suggestions=10,
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2392,7 +2385,6 @@ current_user: User = Depends(get_current_user),
                     grounded_only=True,
                     max_actions=8,
                 ),
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2401,7 +2393,6 @@ current_user: User = Depends(get_current_user),
             lambda: knowledge_graph(
                 workspace_id=workspace.id,
                 paper_limit=90,
-                db=db,
                 current_user=current_user,
             ),
         ),
@@ -2415,7 +2406,6 @@ current_user: User = Depends(get_current_user),
                     FaultDetectionRequest(
                         workspace_id=workspace.id, paper_id=active_paper_ids[0]
                     ),
-                    db=db,
                     current_user=current_user,
                 ),
             )
@@ -2428,7 +2418,6 @@ current_user: User = Depends(get_current_user),
                         ComparePapersRequest(
                             workspace_id=workspace.id, paper_ids=active_paper_ids[:5]
                         ),
-                        db=db,
                         current_user=current_user,
                     ),
                 )
@@ -2452,7 +2441,6 @@ current_user: User = Depends(get_current_user),
                         ),
                         paper_ids=active_paper_ids,
                     ),
-                    db=db,
                     current_user=current_user,
                 ),
             )
@@ -2467,7 +2455,6 @@ current_user: User = Depends(get_current_user),
                         force_live=True,
                         refresh_seed=datetime.now(timezone.utc).isoformat(),
                     ),
-                    db=db,
                     current_user=current_user,
                 ),
             )
@@ -2507,9 +2494,9 @@ def gap_detection(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
         raise HTTPException(
             status_code=400, detail="No papers found in workspace selection."
@@ -2566,9 +2553,9 @@ def knowledge_graph(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, workspace_id, "Autonomous Research Lab"
+        current_user, workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace)[: max(10, min(paper_limit, 120))]
+    papers = _load_workspace_papers(workspace)[: max(10, min(paper_limit, 120))]
     if not papers:
         raise HTTPException(
             status_code=400, detail="No papers available to build knowledge graph."
@@ -2600,9 +2587,9 @@ def multi_agent_analysis(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
         raise HTTPException(
             status_code=400, detail="No papers found in workspace selection."
@@ -2738,9 +2725,9 @@ current_user: User = Depends(get_current_user),
         candidates = remote_candidates
     else:
         workspace = _workspace_or_default(
-            db, current_user, request.workspace_id, "Autonomous Research Lab"
+            current_user, request.workspace_id, "Autonomous Research Lab"
         )
-        papers = _load_workspace_papers(db, workspace)
+        papers = _load_workspace_papers(workspace)
         candidates = [
             {
                 "index": i + 1,
@@ -2789,9 +2776,9 @@ def experiment_design(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
         raise HTTPException(
             status_code=400, detail="No papers found for experiment design."
@@ -2839,9 +2826,9 @@ def paper_draft(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
         raise HTTPException(status_code=400, detail="No papers found for drafting.")
 
@@ -2893,9 +2880,9 @@ def research_chatbot(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
 
     message = request.message.strip()
     if len(message) < 2:
@@ -3057,9 +3044,9 @@ def writing_suggestions(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
 
     draft = request.draft_text.strip()
     topic = (request.topic or workspace.name or "Research topic").strip()
@@ -3298,7 +3285,7 @@ def smart_read(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
 
     source_name = "raw_text"
@@ -3345,7 +3332,7 @@ def fault_detection(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
     paper = _find_workspace_paper(workspace.id, current_user.id, request.paper_id)
     if not paper:
@@ -3474,9 +3461,9 @@ def compare_papers(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if len(papers) < 2:
         raise HTTPException(
             status_code=400,
@@ -3557,10 +3544,10 @@ async def personalized_feed(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
     repo = _repo_for_db()
-    papers = _load_workspace_papers(db, workspace)
+    papers = _load_workspace_papers(workspace)
     if not papers:
         raise HTTPException(status_code=400, detail="No papers found in workspace.")
 
@@ -3835,9 +3822,9 @@ def verify_citations(
 current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
-        db, current_user, request.workspace_id, "Autonomous Research Lab"
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
-    papers = _load_workspace_papers(db, workspace, request.paper_ids)
+    papers = _load_workspace_papers(workspace, request.paper_ids)
     if not papers:
         raise HTTPException(
             status_code=400, detail="No papers found for citation verification."
