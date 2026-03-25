@@ -3,7 +3,15 @@ import { toAppPath } from './utils/routing';
 import { getAppCheckTokenValue } from './utils/firebaseClient';
 import { clearAuthSession, getBackendToken } from './utils/authSession';
 
-export const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8010';
+const resolveApiUrl = (): string => {
+    const raw =
+        import.meta.env.VITE_API_URL ||
+        import.meta.env.VITE_API_BASE ||
+        'http://localhost:8010';
+    return String(raw).trim().replace(/\/+$/, '');
+};
+
+export const API_URL = resolveApiUrl();
 export const GOOGLE_LOGIN_URL = `${API_URL}/auth/google/login`;
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
