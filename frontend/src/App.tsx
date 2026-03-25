@@ -9,7 +9,7 @@ import CommandPalette from './components/CommandPalette';
 import api from './api';
 import { getAppBasePath, toAppPath } from './utils/routing';
 import { trackRouteView } from './utils/firebaseClient';
-import { notifyAuthLogin } from './utils/authSession';
+import { notifyAuthLogin, setBackendToken } from './utils/authSession';
 import { handleFirebaseRedirectResult, firebaseAuthAvailable } from './utils/firebaseAuth';
 
 const Landing = lazy(() => import('./pages/Landing'));
@@ -80,6 +80,7 @@ function App() {
     if (!token) {
       return;
     }
+    setBackendToken(token);
     notifyAuthLogin();
     void refreshAuthState();
   };
@@ -123,6 +124,10 @@ function App() {
       handleFirebaseRedirectResult()
         .then((response) => {
           if (response) {
+            const nextToken = String(response.access_token || '');
+            if (nextToken) {
+              setBackendToken(nextToken);
+            }
             clearAuthArtifacts();
             notifyAuthLogin();
             window.location.replace(toAppPath('/home'));
@@ -149,6 +154,7 @@ function App() {
             if (!nextToken) {
               throw new Error('Missing OAuth access token');
             }
+            setBackendToken(nextToken);
             notifyAuthLogin();
             window.location.replace(toAppPath('/home'));
           })

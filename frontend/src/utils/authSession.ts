@@ -5,7 +5,10 @@ export const BACKEND_TOKEN_KEY = 'token';
 // Legacy in-memory token support for transitional flows.
 let legacyBackendToken: string | null = null;
 
-const getApiBaseUrl = (): string => (import.meta.env.VITE_API_URL || 'http://localhost:8010').replace(/\/+$/, '');
+const getApiBaseUrl = (): string =>
+  String(import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE || 'http://localhost:8010')
+    .trim()
+    .replace(/\/+$/, '');
 
 export const getBackendToken = (): string | null => legacyBackendToken;
 
