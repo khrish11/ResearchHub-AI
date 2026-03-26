@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3 } from 'lucide-react';
+import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3, Shield } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 import { toAppPath } from '../utils/routing';
 import { clearAuthSession } from '../utils/authSession';
@@ -10,6 +10,7 @@ interface SidebarProps {
   userInitials?: string;
   mobile?: boolean;
   canAccessAnalytics?: boolean;
+  isDeveloper?: boolean;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -17,6 +18,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   userInitials = 'U',
   mobile = false,
   canAccessAnalytics = false,
+  isDeveloper = false,
 }) => {
   const location = useLocation();
 
@@ -31,6 +33,9 @@ const Sidebar: React.FC<SidebarProps> = ({
     { path: '/docs', label: 'DocSpace', icon: FileText },
     { path: '/mindmap', label: 'Mindmap', icon: Workflow },
     { path: '/account', label: 'Account', icon: UserCog },
+    ...(isDeveloper
+      ? [{ path: '/developer', label: 'Admin Console', icon: Shield }]
+      : []),
     ...(canAccessAnalytics
       ? [{ path: '/analytics', label: 'AI Analytics', icon: BarChart3 }]
       : []),

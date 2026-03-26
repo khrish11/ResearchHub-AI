@@ -115,6 +115,7 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [canAccessAnalytics, setCanAccessAnalytics] = useState(false);
+  const [isDeveloper, setIsDeveloper] = useState(false);
   const routerBasename = getAppBasePath();
   const authBootstrapStarted = useRef(false);
 
@@ -126,9 +127,11 @@ function App() {
       clearTimeout(timeoutId);
       setIsAuthenticated(true);
       setCanAccessAnalytics(Boolean(response?.data?.can_access_analytics));
+      setIsDeveloper(Boolean(response?.data?.is_developer));
     } catch {
       setIsAuthenticated(false);
       setCanAccessAnalytics(false);
+      setIsDeveloper(false);
     } finally {
       setAuthChecked(true);
     }
@@ -219,6 +222,7 @@ function App() {
           .catch(() => {
             setIsAuthenticated(false);
             setCanAccessAnalytics(false);
+            setIsDeveloper(false);
             setAuthChecked(true);
             window.clearTimeout(safetyTimeout);
             const error = encodeURIComponent('Google sign-in session expired. Please try again.');
@@ -258,6 +262,16 @@ function App() {
       return <Navigate to="/login" replace />;
     }
     return canAccessAnalytics ? element : <Navigate to="/home" replace />;
+  };
+
+  const developerOnlyRoute = (element: ReactElement) => {
+    if (!authChecked) {
+      return <RouteLoader />;
+    }
+    if (!isAuthenticated) {
+      return <Navigate to="/login" replace />;
+    }
+    return isDeveloper ? element : <Navigate to="/home" replace />;
   };
 
   return (
@@ -335,7 +349,7 @@ function App() {
                     />
                     <Route
                       path="/developer"
-                      element={protectedRoute(<DeveloperConsole />)}
+                      element={developerOnlyRoute(<DeveloperConsole />)}
                     />
                     <Route
                       path="/analytics"

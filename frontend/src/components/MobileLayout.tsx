@@ -9,6 +9,7 @@ interface MobileLayoutProps {
   userEmail?: string;
   userInitials?: string;
   canAccessAnalytics?: boolean;
+  isDeveloper?: boolean;
 }
 
 const MobileLayout: React.FC<MobileLayoutProps> = ({
@@ -16,6 +17,7 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
   userEmail,
   userInitials,
   canAccessAnalytics = false,
+  isDeveloper = false,
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -99,6 +101,7 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
                 userEmail={userEmail}
                 userInitials={userInitials}
                 canAccessAnalytics={canAccessAnalytics}
+                isDeveloper={isDeveloper}
               />
             </div>
           </div>
@@ -113,6 +116,7 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
             userEmail={userEmail}
             userInitials={userInitials}
             canAccessAnalytics={canAccessAnalytics}
+            isDeveloper={isDeveloper}
           />
         </div>
 
