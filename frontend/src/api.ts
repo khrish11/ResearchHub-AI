@@ -2,6 +2,7 @@ import axios from 'axios';
 import { toAppPath } from './utils/routing';
 import { getAppCheckTokenValue } from './utils/firebaseClient';
 import { clearAuthSession, getBackendToken } from './utils/authSession';
+import { apiErrorMessage, apiErrorMessageFromPayload } from './utils/apiError';
 
 const resolveApiUrl = (): string => {
     const raw =
@@ -32,8 +33,8 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   });
 
   if (!res.ok) {
-    const error = await res.json().catch(() => ({}));
-    throw new Error(error.detail || "API request failed");
+    const error = await res.json().catch(() => null);
+    throw new Error(apiErrorMessageFromPayload(error, `API request failed (${res.status})`));
   }
 
   return res.json();
@@ -121,6 +122,14 @@ api.interceptors.response.use(
             }
         }
 
+        try {
+            const normalized = apiErrorMessage(error, error?.message || 'Request failed');
+            if (normalized && typeof normalized === 'string') {
+                error.message = normalized;
+            }
+        } catch {
+            // never block error propagation on normalization failures
+        }
         return Promise.reject(error);
     }
 );

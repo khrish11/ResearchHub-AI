@@ -1,28 +1,28 @@
-"""
-RAG Query Handler - Generate grounded answers from retrieved context.
-"""
+from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence
+
+from services.ai_service import run_ai_query
+from utils.groq_client import model_config
+
 
 logger = logging.getLogger(__name__)
 
-
-class SourceType(str, Enum):
-    PAPER = "paper"
-    SUMMARY = "summary"
-    CHECKER = "checker"
-    REPORT = "report"
+_SOURCE_TAG_RE = re.compile(
+    r"(?:\[?\s*source\s+(\d+)\s*\]?|\[?\s*s(\d+)\s*\]?)",
+    re.IGNORECASE,
+)
 
 
-dataclass
+@dataclass
 class SourceAttribution:
     source_id: str
     source_type: str
-    title: Optional[str]
+    title: Optional[str] = None
     mention_count: int = 0
     relevance_score: float = 0.0
 
@@ -31,202 +31,231 @@ class SourceAttribution:
 class RAGQueryInput:
     query: str
     retrieved_context: List[Dict[str, Any]]
-    max_tokens: int = 1500
+    max_tokens: int = 1400
+    strict_grounding: bool = True
 
 
 @dataclass
 class RAGQueryOutput:
     answer: str
-    sources_used: List[SourceAttribution]
-    confidence: float
-    grounding_score: float
+    sources_used: List[SourceAttribution] = field(default_factory=list)
+    confidence: float = 0.0
+    grounding_score: float = 0.0
+    invalid_source_refs: List[int] = field(default_factory=list)
 
 
 class RAGQueryHandler:
-    """Handler for rag_query AI task - generates grounded answers."""
-    
-    def __init__(self, groq_client_ref=None):
+    def __init__(self, *, groq_client_ref: Any = None) -> None:
         self.groq_client = groq_client_ref
-    
-    async def handle(self, input: RAGQueryInput) -> RAGQueryOutput:
-        """Handle RAG query task."""
-        logger.info(f"Handling RAG query: {input.query[:50]}...")
-        
-        if not input.query or not input.query.strip():
-            raise ValueError("Query cannot be empty")
-        
-        if not input.retrieved_context:
-            logger.warning("No retrieved context provided")
+
+    def _build_system_prompt(self, *, strict_grounding: bool) -> str:
+        grounding_line = (
+            "Only answer from provided sources; if context is insufficient, explicitly say so."
+            if strict_grounding
+            else "Prioritize provided sources and clearly mark uncertainty."
+        )
+        return (
+            "You are Soyog AI's workspace research assistant.\n"
+            f"{grounding_line}\n"
+            "Cite evidence inline using [Source N] markers.\n"
+            "Never invent a source. Never cite a source number not present in context.\n"
+            "When uncertain, say: 'Insufficient evidence in workspace context.'"
+        )
+
+    def _format_context(self, rows: Sequence[Dict[str, Any]]) -> str:
+        if not rows:
+            return "No context provided."
+        blocks: List[str] = []
+        for idx, row in enumerate(rows, start=1):
+            metadata = row.get("metadata") or {}
+            title = str(metadata.get("title") or "Untitled").strip()
+            source_type = str(row.get("source_type") or "unknown").strip()
+            source_id = str(row.get("source_id") or f"source_{idx}").strip()
+            similarity = float(row.get("similarity_score") or 0.0)
+            text = str(row.get("text") or "").strip()
+            blocks.append(
+                "\n".join(
+                    [
+                        f"### Source {idx}",
+                        f"- id: {source_id}",
+                        f"- type: {source_type}",
+                        f"- title: {title}",
+                        f"- similarity: {similarity:.3f}",
+                        text,
+                    ]
+                )
+            )
+        return "\n\n".join(blocks)
+
+    def _build_user_prompt(self, payload: RAGQueryInput) -> str:
+        return (
+            "## Workspace Context\n"
+            f"{self._format_context(payload.retrieved_context)}\n\n"
+            f"## User Question\n{payload.query}\n\n"
+            "## Response Rules\n"
+            "- Start with a direct answer.\n"
+            "- Then provide supporting evidence with [Source N] citations.\n"
+            "- If evidence is incomplete, add a short limitations note."
+        )
+
+    async def _query_llm(
+        self,
+        *,
+        db: Any,
+        user_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        if not self.groq_client:
+            raise RuntimeError("RAG query unavailable: Groq client is not configured.")
+        result = await asyncio.to_thread(
+            run_ai_query,
+            groq_client=self.groq_client,
+            db=db,
+            user_id=str(user_id or "anonymous"),
+            query=user_prompt,
+            system_prompt=system_prompt,
+            route="rag_query",
+            model_kwargs=model_config(
+                task="pipeline",
+                longform=False,
+                max_tokens=min(max(250, int(max_tokens)), 2200),
+                temperature=0.08,
+            ),
+            cacheable=False,
+            timeout_seconds=60,
+        )
+        response = str(result.get("response") or "").strip()
+        if not response:
+            raise RuntimeError(str(result.get("error") or "RAG model returned an empty response."))
+        return response
+
+    def _extract_source_indexes(self, answer: str) -> List[int]:
+        indexes: List[int] = []
+        for match in _SOURCE_TAG_RE.findall(answer or ""):
+            raw = match[0] or match[1]
+            if not raw:
+                continue
+            try:
+                idx = int(raw)
+            except ValueError:
+                continue
+            if idx > 0:
+                indexes.append(idx)
+        return indexes
+
+    def _extract_sources(
+        self,
+        *,
+        answer: str,
+        retrieved_context: Sequence[Dict[str, Any]],
+    ) -> tuple[List[SourceAttribution], List[int]]:
+        indexes = self._extract_source_indexes(answer)
+        if not indexes:
+            return [], []
+        used: Dict[str, SourceAttribution] = {}
+        invalid_refs: List[int] = []
+        for idx in indexes:
+            if idx < 1 or idx > len(retrieved_context):
+                invalid_refs.append(idx)
+                continue
+            row = retrieved_context[idx - 1]
+            source_id = str(row.get("source_id") or f"source_{idx}")
+            item = used.get(source_id)
+            if item is None:
+                metadata = row.get("metadata") or {}
+                item = SourceAttribution(
+                    source_id=source_id,
+                    source_type=str(row.get("source_type") or "unknown"),
+                    title=str(metadata.get("title") or "").strip() or None,
+                    mention_count=0,
+                    relevance_score=float(row.get("similarity_score") or 0.0),
+                )
+                used[source_id] = item
+            item.mention_count += 1
+        return list(used.values()), sorted(set(invalid_refs))
+
+    def _calculate_grounding_score(
+        self,
+        *,
+        answer: str,
+        source_indexes: Sequence[int],
+        invalid_source_refs: Sequence[int],
+    ) -> float:
+        words = max(1, len(str(answer or "").split()))
+        expected_mentions = max(1, words // 90)
+        mention_factor = min(1.0, len(source_indexes) / expected_mentions)
+        penalty = min(0.7, 0.25 * len(invalid_source_refs))
+        return max(0.0, mention_factor - penalty)
+
+    def _calculate_confidence(
+        self,
+        *,
+        sources: Sequence[SourceAttribution],
+        context_count: int,
+        grounding_score: float,
+    ) -> float:
+        if not sources:
+            return max(0.0, min(0.35, grounding_score))
+        coverage = min(1.0, len(sources) / max(1, context_count))
+        avg_relevance = sum(max(0.0, src.relevance_score) for src in sources) / max(1, len(sources))
+        confidence = (0.45 * coverage) + (0.35 * avg_relevance) + (0.20 * grounding_score)
+        return max(0.0, min(1.0, confidence))
+
+    async def handle(
+        self,
+        payload: RAGQueryInput,
+        *,
+        db: Any,
+        user_id: str,
+    ) -> RAGQueryOutput:
+        question = str(payload.query or "").strip()
+        if not question:
+            raise ValueError("Query cannot be empty.")
+        if not payload.retrieved_context:
             return RAGQueryOutput(
-                answer="I could not find relevant information in your workspace.",
+                answer="Insufficient evidence in workspace context.",
                 sources_used=[],
                 confidence=0.0,
                 grounding_score=0.0,
+                invalid_source_refs=[],
             )
-        
-        system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(input)
-        
-        try:
-            response_text = await self._query_llm(system_prompt, user_prompt, input.max_tokens)
-        except Exception as e:
-            logger.error(f"LLM query failed: {e}")
-            raise
-        
-        answer = response_text.strip()
-        sources_used = self._extract_sources(answer, input.retrieved_context)
-        self._validate_grounding(answer, sources_used, input.retrieved_context)
-        
-        confidence = self._calculate_confidence(
+
+        system_prompt = self._build_system_prompt(strict_grounding=payload.strict_grounding)
+        user_prompt = self._build_user_prompt(payload)
+        answer = await self._query_llm(
+            db=db,
+            user_id=user_id,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=payload.max_tokens,
+        )
+
+        sources_used, invalid_refs = self._extract_sources(
             answer=answer,
+            retrieved_context=payload.retrieved_context,
+        )
+        source_indexes = self._extract_source_indexes(answer)
+        grounding_score = self._calculate_grounding_score(
+            answer=answer,
+            source_indexes=source_indexes,
+            invalid_source_refs=invalid_refs,
+        )
+        confidence = self._calculate_confidence(
             sources=sources_used,
-            context_count=len(input.retrieved_context),
+            context_count=len(payload.retrieved_context),
+            grounding_score=grounding_score,
         )
-        
-        grounding_score = self._calculate_grounding_score(answer, sources_used)
-        
-        logger.info(
-            f"RAG query completed: {len(sources_used)} sources, "
-            f"confidence={confidence:.2f}, grounding={grounding_score:.2f}"
-        )
-        
+        if invalid_refs:
+            logger.warning(
+                "RAG response referenced unavailable sources: %s",
+                invalid_refs,
+            )
         return RAGQueryOutput(
             answer=answer,
             sources_used=sources_used,
             confidence=confidence,
             grounding_score=grounding_score,
+            invalid_source_refs=invalid_refs,
         )
-    
-    def _build_system_prompt(self) -> str:
-        return """You are an AI assistant answering questions about research papers.
-
-CRITICAL INSTRUCTIONS:
-1. ONLY use information from the provided context
-2. If you cannot answer, say so explicitly
-3. Cite sources when making claims: "According to [Source 1]..."
-4. Never invent references
-5. Be honest about uncertainty
-
-ANSWER FORMAT:
-- Direct answer to question
-- Support with evidence
-- Clear source citations
-- Any caveats or limitations"""
-    
-    def _build_user_prompt(self, input: RAGQueryInput) -> str:
-        context_text = self._format_context(input.retrieved_context)
-        return f"""## Context from Workspace
-
-{context_text}
-
-## Question
-{input.query}
-
-## Answer
-Based on the provided context:"""
-    
-    def _format_context(self, retrieved_context: List[Dict[str, Any]]) -> str:
-        formatted = ""
-        for i, ctx in enumerate(retrieved_context, 1):
-            formatted += f"\n### Source {i}\n"
-            formatted += f"**Title:** {ctx.get('metadata', {}).get('title', 'Unknown')}\n"
-            formatted += f"**Type:** {ctx.get('source_type', 'unknown')}\n"
-            formatted += f"**Relevance:** {ctx.get('similarity_score', 0):.1%}\n"
-            formatted += f"\n{ctx.get('text', '')}\n\n"
-        return formatted
-    
-    async def _query_llm(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int = 1500,
-    ) -> str:
-        if not self.groq_client:
-            raise RuntimeError("Groq client not available")
-        
-        from utils.groq_client import model_config
-        
-        response = self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            **model_config(task="pipeline", max_tokens=min(max_tokens, 2000)),
-        )
-        
-        return response.choices[0].message.content.strip()
-    
-    def _extract_sources(
-        self,
-        answer: str,
-        retrieved_context: List[Dict[str, Any]],
-    ) -> List[SourceAttribution]:
-        sources_used = {}
-        pattern = r"\[?Source\s+(\d+)\]?"
-        matches = re.findall(pattern, answer, re.IGNORECASE)
-        
-        for match in matches:
-            try:
-                idx = int(match) - 1
-                if 0 <= idx < len(retrieved_context):
-                    ctx = retrieved_context[idx]
-                    source_id = ctx.get("source_id", f"unknown_{idx}")
-                    
-                    if source_id not in sources_used:
-                        sources_used[source_id] = SourceAttribution(
-                            source_id=source_id,
-                            source_type=ctx.get("source_type", "unknown"),
-                            title=ctx.get("metadata", {}).get("title"),
-                            mention_count=0,
-                            relevance_score=ctx.get("similarity_score", 0.0),
-                        )
-                    
-                    sources_used[source_id].mention_count += 1
-            except (ValueError, IndexError):
-                logger.warning(f"Invalid source index: {match}")
-        
-        return list(sources_used.values())
-    
-    def _validate_grounding(
-        self,
-        answer: str,
-        sources_used: List[SourceAttribution],
-        retrieved_context: List[Dict[str, Any]],
-    ) -> None:
-        valid_source_ids = {ctx.get("source_id") for ctx in retrieved_context}
-        used_source_ids = {s.source_id for s in sources_used}
-        
-        if not used_source_ids.issubset(valid_source_ids):
-            invalid = used_source_ids - valid_source_ids
-            logger.warning(f"Potential hallucination detected: {invalid}")
-    
-    def _calculate_confidence(
-        self,
-        answer: str,
-        sources: List[SourceAttribution],
-        context_count: int,
-    ) -> float:
-        if not sources:
-            return 0.0
-        
-        source_coverage = min(len(sources) / max(context_count, 1), 1.0)
-        avg_relevance = sum(s.relevance_score for s in sources) / len(sources)
-        length_factor = min(len(answer) / 50, 1.0)
-        
-        confidence = (0.4 * source_coverage + 0.4 * avg_relevance + 0.2 * length_factor)
-        return min(confidence, 1.0)
-    
-    def _calculate_grounding_score(
-        self,
-        answer: str,
-        sources_used: List[SourceAttribution],
-    ) -> float:
-        if not answer:
-            return 0.0
-        
-        pattern = r"\[?Source\s+\d+\]?"
-        mention_count = len(re.findall(pattern, answer, re.IGNORECASE))
-        answer_words = len(answer.split())
-        expected_mentions = max(1, answer_words // 100)
-        
-        return min(mention_count / expected_mentions, 1.0)

@@ -1009,6 +1009,7 @@ class UserOut(BaseModel):
     can_access_analytics: bool = False
     auth_provider: Optional[str] = None
     managed_auth: bool = False
+    has_completed_onboarding: bool = False
 
 
 class ProfileUpdate(BaseModel):
@@ -1045,6 +1046,7 @@ async def get_me(current_user: Any = Depends(get_current_user)):
         "can_access_analytics": has_analytics_admin_access(current_user.id),
         "auth_provider": auth_provider,
         "managed_auth": not bool(current_user.hashed_password),
+        "has_completed_onboarding": bool(getattr(current_user, "has_completed_onboarding", False)),
     }
 
 

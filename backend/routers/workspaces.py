@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 from utils.groq_client import client as groq_client, model_config
 from utils.firebase_storage import download_bytes, storage_is_configured, upload_bytes
+from services.citation_service import CitationMetadata, generate_bibtex
+from services.onboarding_service import ONBOARDING_STEP_REPORT, mark_step_best_effort
 
 from repositories.research import User, Workspace, Paper, UserSessionState, WorkspaceDocument
 from repositories import ResearchRepository, get_research_repository
@@ -1169,32 +1171,17 @@ def export_workspace(
         return Response(content=content, media_type="text/csv", headers=headers)
 
     # BibTeX export
-    def _escape(s: str) -> str:
-        return (s or "").replace("\n", " ").replace("{", "").replace("}", "").strip()
-
     entries = []
     for p in papers:
-        key = f"paper{p.id}"
-        authors = _escape(p.authors)
-        title = _escape(p.title)
-        year = ""
-        url = _escape(p.url)
-        doi = _escape(getattr(p, "doi", "") or "")
-        abstract = _escape(p.abstract)
-        bib_fields = []
-        if doi:
-            bib_fields.append(f"  doi = {{{doi}}},")
-        if url:
-            bib_fields.append(f"  url = {{{url}}},")
-        bib_fields_str = "\n".join(bib_fields)
-        optional_fields = f"\n{bib_fields_str}" if bib_fields_str else ""
-        entry = (
-            f"@misc{{{key},\n"
-            f"  title = {{{title}}},\n"
-            f"  author = {{{authors}}},{optional_fields}\n"
-            f"  year = {{{year}}},\n"
-            f"  abstract = {{{abstract}}}\n"
-            f"}}\n"
+        entry = generate_bibtex(
+            CitationMetadata(
+                title=p.title or "",
+                authors=[item.strip() for item in str(p.authors or "").split(",") if item.strip()],
+                year=None,
+                venue=None,
+                doi=getattr(p, "doi", None),
+                url=getattr(p, "url", None),
+            )
         )
         entries.append(entry)
     content = "\n".join(entries)
@@ -1352,4 +1339,10 @@ def export_research_report(
         headers["X-Storage-Path"] = str(file_record.storage_path)
         headers["X-Storage-File-Id"] = str(file_record.id)
         headers["X-Storage-Download-Url"] = str(file_record.download_url or "")
+    mark_step_best_effort(
+        repo=repo,
+        user_id=int(current_user.id),
+        workspace_id=int(workspace.id),
+        step_id=ONBOARDING_STEP_REPORT,
+    )
     return Response(content=content, media_type=media_type, headers=headers)

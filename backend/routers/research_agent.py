@@ -11,12 +11,16 @@ from xml.etree import ElementTree as ET
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from repositories.research import Paper, SearchHistory, User, UserSessionState, Workspace
 from repositories import ResearchRepository, get_research_repository
-from routers.auth import get_current_user
+from routers.auth import get_current_user, has_analytics_admin_access
 from routers.papers import search_global
+from services.paper_check_service import get_job_status, queue_paper_check_job, requeue_failed_job
+from services.paper_check_service import aggregate_and_generate_report
+from services.rag_hooks import index_paper_best_effort
 from utils.groq_client import client as groq_client
 from utils.groq_client import model_config
 from utils.groq_client import groq_client_status
@@ -118,6 +122,13 @@ class FullPipelineRequest(BaseModel):
 
 class WorkspaceScopedRequest(BaseModel):
     workspace_id: int
+
+
+class PaperCheckRequest(BaseModel):
+    paper_id: Optional[int] = None
+    raw_text: Optional[str] = Field(default=None, max_length=120000)
+    workspace_id: Optional[int] = None
+    prefer_async: bool = False
     paper_ids: Optional[List[int]] = None
 
 
@@ -207,6 +218,37 @@ class CitationVerifyRequest(BaseModel):
 class FaultDetectionRequest(BaseModel):
     workspace_id: int
     paper_id: int
+
+
+class GenerateResearchReportRequest(BaseModel):
+    paper_ids: List[int] = Field(default_factory=list, max_length=15)
+    topic: Optional[str] = Field(default=None, max_length=1000)
+
+
+@router.post("/generate-report")
+async def generate_research_report(
+    request: GenerateResearchReportRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """
+    Generate a structured multi-paper research report.
+
+    Accepts either:
+    - paper_ids (0..15)
+    - topic (optional)
+    """
+    try:
+        result = await asyncio.to_thread(
+            aggregate_and_generate_report,
+            repo=repo,
+            user_id=str(current_user.id),
+            paper_ids=request.paper_ids,
+            topic=request.topic,
+        )
+        return {"result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _tokenize(text: str) -> List[str]:
@@ -1757,6 +1799,7 @@ def _import_top_candidates(
         row.doi = payload.get("doi")
         row.bibcode = payload.get("bibcode")
         repo.save(row)
+        index_paper_best_effort(repo=repo, paper=row)
         imported_count += 1
         imported_titles.append(payload["title"])
         if doi_key:
@@ -3948,3 +3991,150 @@ current_user: User = Depends(get_current_user),
         "results": rows,
         "summary": llm_text or "Citation authenticity verification completed.",
     }
+
+
+@router.post("/paper-check")
+async def paper_check(
+    payload: PaperCheckRequest,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    if payload.paper_id is None and not str(payload.raw_text or "").strip():
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "invalid_input",
+                    "message": "Provide either paper_id or raw_text.",
+                    "retryable": False,
+                }
+            },
+        )
+
+    raw_text = str(payload.raw_text or "").strip() or None
+    try:
+        queued = queue_paper_check_job(
+            repo=repo,
+            user_id=int(current_user.id),
+            paper_id=payload.paper_id,
+            raw_text=raw_text,
+            workspace_id=payload.workspace_id,
+        )
+        if queued["status"] == "completed" and queued.get("result"):
+            return {
+                "status": "completed",
+                "job_id": queued["job_id"],
+                **queued["result"],
+            }
+        return {
+            "status": "pending",
+            "job_id": queued["job_id"],
+            "metadata": {
+                "processed_at": queued["created_at"],
+                "version": "paper-check-v1",
+            },
+        }
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "paper_check_invalid_input",
+                    "message": str(exc),
+                    "retryable": False,
+                }
+            },
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "paper_check_failed",
+                    "message": str(exc),
+                    "retryable": True,
+                }
+            },
+        )
+
+
+async def _paper_check_status_response(
+    job_id: str,
+    repo: ResearchRepository,
+    current_user: User,
+):
+    row = get_job_status(repo=repo, job_id=job_id, user_id=int(current_user.id))
+    if not row:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "job_not_found",
+                    "message": "Paper check job not found.",
+                    "retryable": False,
+                }
+            },
+        )
+    return row
+
+
+@router.get("/paper-check/{job_id}")
+async def paper_check_job_status(
+    job_id: str,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    return await _paper_check_status_response(job_id, repo, current_user)
+
+
+@router.get("/paper-check/jobs/{job_id}")
+async def paper_check_job_status_legacy(
+    job_id: str,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    return await _paper_check_status_response(job_id, repo, current_user)
+
+
+@router.post("/paper-check/{job_id}/requeue")
+async def paper_check_job_requeue(
+    job_id: str,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    if not has_analytics_admin_access(current_user.id):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": {
+                    "code": "paper_check_admin_required",
+                    "message": "Admin access is required to requeue paper check jobs.",
+                    "retryable": False,
+                }
+            },
+        )
+    try:
+        updated = requeue_failed_job(repo=repo, job_id=job_id)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "paper_check_requeue_invalid",
+                    "message": str(exc),
+                    "retryable": False,
+                }
+            },
+        )
+    if updated is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "job_not_found",
+                    "message": "Paper check job not found.",
+                    "retryable": False,
+                }
+            },
+        )
+    return updated

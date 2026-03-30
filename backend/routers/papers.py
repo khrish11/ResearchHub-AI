@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from repositories.research import SearchHistory, User, Paper, Workspace
 from repositories import (
     FirebaseResearchRepository,
@@ -25,6 +26,18 @@ from datetime import date, timedelta
 import time
 from copy import deepcopy
 import json
+
+from services.citation_service import build_citation_response
+from services.paper_explain_service import get_or_generate_paper_explanation
+from services.paper_check_service import aggregate_and_compare_papers
+from services.rag_hooks import index_paper_best_effort
+from services.onboarding_service import (
+    ONBOARDING_STEP_COMPARE,
+    ONBOARDING_STEP_EXPLAIN,
+    ONBOARDING_STEP_REPORT,
+    ONBOARDING_STEP_UPLOAD,
+    mark_step_best_effort,
+)
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -369,6 +382,58 @@ class WorkspaceAccessResolveRequest(BaseModel):
     workspace_id: int
     refresh_all: bool = False
     max_unpaywall_lookups: int = Field(default=20, ge=2, le=80)
+
+
+class CitationRequest(BaseModel):
+    title: str = Field(default="", max_length=1200)
+    authors: List[str] = Field(default_factory=list)
+    year: Optional[str] = Field(default=None, max_length=12)
+    venue: Optional[str] = Field(default=None, max_length=400)
+    doi: Optional[str] = Field(default=None, max_length=300)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    pages: Optional[str] = Field(default=None, max_length=100)
+    issue: Optional[str] = Field(default=None, max_length=100)
+    volume: Optional[str] = Field(default=None, max_length=100)
+    style: str = Field(default="apa", max_length=20)
+
+
+
+class GenerateReportRequest(BaseModel):
+    paper_ids: List[int] = Field(default_factory=list, max_length=15)
+    topic: Optional[str] = Field(default=None, max_length=1000)
+
+@router.post("/generate-report")
+async def generate_report_endpoint(
+    request: GenerateReportRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    try:
+        from services.paper_check_service import aggregate_and_generate_report
+        result = await asyncio.to_thread(
+            aggregate_and_generate_report,
+            repo=repo,
+            user_id=str(current_user.id),
+            paper_ids=request.paper_ids,
+            topic=request.topic,
+        )
+        if request.paper_ids:
+            first_paper = repo.find_paper_for_user(int(request.paper_ids[0]), int(current_user.id))
+            if first_paper is not None and int(getattr(first_paper, "workspace_id", 0) or 0) > 0:
+                mark_step_best_effort(
+                    repo=repo,
+                    user_id=int(current_user.id),
+                    workspace_id=int(getattr(first_paper, "workspace_id", 0)),
+                    step_id=ONBOARDING_STEP_REPORT,
+                )
+        return {"result": result}
+    except Exception as e:
+        logger.exception("generate_report error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+class ComparePapersRequest(BaseModel):
+    paper_ids: List[int] = Field(..., min_length=2, max_length=5)
+    optional_context: Optional[str] = Field(default=None, max_length=1000)
 
 
 def _record_search_history(
@@ -6007,6 +6072,7 @@ async def import_institutional_papers(
                 resolved.get("full_text_available") or existing.full_text_available
             )
             repo.save(existing)
+            index_paper_best_effort(repo=repo, paper=existing)
             updated += 1
             continue
 
@@ -6026,7 +6092,16 @@ async def import_institutional_papers(
         paper.access_type = str(resolved.get("access_type") or "institutional")
         paper.full_text_available = bool(resolved.get("full_text_available"))
         repo.save(paper)
+        index_paper_best_effort(repo=repo, paper=paper)
         imported += 1
+
+    if imported > 0 or updated > 0:
+        mark_step_best_effort(
+            repo=repo,
+            user_id=int(current_user.id),
+            workspace_id=int(workspace.id),
+            step_id=ONBOARDING_STEP_UPLOAD,
+        )
 
     return {
         "workspace_id": workspace.id,
@@ -6257,6 +6332,13 @@ async def import_paper(
             or ("open_access" if full_text_available else "metadata_only")
         )
         repo.save(existing)
+        index_paper_best_effort(repo=repo, paper=existing)
+        mark_step_best_effort(
+            repo=repo,
+            user_id=int(current_user.id),
+            workspace_id=int(workspace.id),
+            step_id=ONBOARDING_STEP_UPLOAD,
+        )
         return {
             "message": "Paper updated successfully",
             "paper_id": existing.id,
@@ -6280,8 +6362,145 @@ async def import_paper(
     )
     new_paper.full_text_available = bool(full_text_available)
     repo.save(new_paper)
+    index_paper_best_effort(repo=repo, paper=new_paper)
+    mark_step_best_effort(
+        repo=repo,
+        user_id=int(current_user.id),
+        workspace_id=int(workspace.id),
+        step_id=ONBOARDING_STEP_UPLOAD,
+    )
     return {
         "message": "Paper imported successfully",
         "paper_id": new_paper.id,
         "updated": False,
     }
+
+
+@router.post("/citation")
+async def generate_citation(
+    payload: CitationRequest,
+    current_user: User = Depends(get_current_user),
+):
+    _ = current_user
+    try:
+        return await build_citation_response(payload.model_dump(), payload.style)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "citation_generation_failed",
+                    "message": str(exc),
+                    "retryable": False,
+                }
+            },
+        )
+
+
+@router.get("/{paper_id}/citation")
+async def generate_paper_citation(
+    paper_id: int,
+    style: str = "apa",
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    paper = repo.find_paper_for_user(paper_id, current_user.id)
+    if not paper:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "paper_not_found",
+                    "message": "Paper not found.",
+                    "retryable": False,
+                }
+            },
+        )
+    try:
+        payload = {
+            "title": paper.title,
+            "authors": [item.strip() for item in str(paper.authors or "").split(",") if item.strip()],
+            "venue": getattr(paper, "source", None),
+            "doi": getattr(paper, "doi", None),
+            "url": getattr(paper, "url", None),
+        }
+        return await build_citation_response(payload, style)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "citation_generation_failed",
+                    "message": str(exc),
+                    "retryable": False,
+                }
+            },
+        )
+
+
+@router.get("/{paper_id}/explain")
+async def explain_paper(
+    paper_id: int,
+    refresh: bool = False,
+    include_rag: bool = False,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    paper = repo.find_paper_for_user(paper_id, current_user.id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    try:
+        result = await get_or_generate_paper_explanation(
+            repo=repo,
+            paper=paper,
+            user_id=int(current_user.id),
+            refresh=bool(refresh),
+            include_rag=bool(include_rag),
+        )
+        workspace_id = int(getattr(paper, "workspace_id", 0) or 0)
+        if workspace_id > 0:
+            mark_step_best_effort(
+                repo=repo,
+                user_id=int(current_user.id),
+                workspace_id=workspace_id,
+                step_id=ONBOARDING_STEP_EXPLAIN,
+            )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Paper explanation failed for paper_id=%s", paper_id)
+        raise HTTPException(status_code=500, detail=f"Failed to explain paper: {str(exc)}")
+
+
+@router.post("/compare")
+def compare_papers(
+    request: ComparePapersRequest,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = aggregate_and_compare_papers(
+            repo=repo,
+            user_id=str(current_user.id),
+            paper_ids=request.paper_ids,
+            optional_context=request.optional_context,
+        )
+        first_paper = repo.find_paper_for_user(int(request.paper_ids[0]), int(current_user.id))
+        if first_paper is not None:
+            workspace_id = int(getattr(first_paper, "workspace_id", 0) or 0)
+            if workspace_id > 0:
+                mark_step_best_effort(
+                    repo=repo,
+                    user_id=int(current_user.id),
+                    workspace_id=workspace_id,
+                    step_id=ONBOARDING_STEP_COMPARE,
+                )
+        return {"status": "success", "result": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to compare papers")
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")

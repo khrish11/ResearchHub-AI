@@ -8,6 +8,7 @@ import re
 import time
 from typing import Iterable, List, Optional, Tuple
 from services.analytics_service import log_ai_usage
+from services.rag_runtime import get_rag_runtime
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -138,6 +139,20 @@ async def chat_with_papers(
         if chat_msg.include_recent_chats
         else ("", 0)
     )
+    rag_context = ""
+    try:
+        runtime = get_rag_runtime(db=getattr(repo, "db", None))
+        rag_context = await runtime.retrieval_service.retrieve_and_format(
+            query=question,
+            workspace_id=chat_msg.workspace_id,
+            top_k=5,
+            source_types=["paper", "summary", "checker", "report"],
+            max_context_tokens=900,
+        )
+        if rag_context.strip().lower().startswith("no relevant workspace context"):
+            rag_context = ""
+    except Exception:
+        rag_context = ""
 
     system_prompt = (
         "You are Soyog AI Copilot, a rigorous research analyst.\n"
@@ -155,6 +170,7 @@ async def chat_with_papers(
         f"User question:\n{question}\n\n"
         f"Recent chat context (if available):\n{conversation_context or 'No prior chat context.'}\n\n"
         f"Workspace paper context:\n{context}\n\n"
+        f"Retrieved workspace RAG context:\n{rag_context or 'No additional retrieved context.'}\n\n"
         "Constraints:\n"
         "- Prefer concise bullet points where possible.\n"
         "- Include at least 2 citations when evidence exists.\n"
@@ -206,4 +222,5 @@ async def chat_with_papers(
         "response": ai_response,
         "papers_used": len(workspace_papers),
         "recent_chat_turns_used": recent_chat_turns,
+        "rag_context_used": bool(rag_context),
     }

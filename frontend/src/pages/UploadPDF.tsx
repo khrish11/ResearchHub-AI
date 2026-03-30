@@ -1,18 +1,33 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle,
+  Copy,
   Download,
   FileText,
   Loader2,
   Sparkles,
+  ShieldCheck,
   UploadCloud,
   Wand2,
   X,
 } from 'lucide-react';
 import Layout from '../components/Layout';
+import PaperCheckReport from '../components/PaperCheckReport';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
+import { useToast } from '../contexts/ToastContext';
+import {
+  citationMissingFieldLabel,
+  extractPaperTitleFromFilename,
+  type CitationResponse,
+  type CitationStyle,
+  type CompletedPaperCheckResult,
+  fallbackCitation,
+  fetchCitation,
+  fetchPaperCitation,
+  runPaperCheck,
+} from '../utils/researchArtifacts';
 
 interface Workspace {
   id: number;
@@ -22,6 +37,7 @@ interface Workspace {
 type UploadState = 'idle' | 'uploading' | 'done' | 'error';
 
 const UploadPDF: React.FC = () => {
+  const { success: toastSuccess, error: toastError } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
@@ -33,6 +49,12 @@ const UploadPDF: React.FC = () => {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | ''>('');
   const [summarize, setSummarize] = useState(true);
+  const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
+  const [citationResult, setCitationResult] = useState<CitationResponse | null>(null);
+  const [citationLoading, setCitationLoading] = useState(false);
+  const [paperCheckResult, setPaperCheckResult] = useState<CompletedPaperCheckResult | null>(null);
+  const [paperCheckLoading, setPaperCheckLoading] = useState(false);
+  const [paperCheckStatus, setPaperCheckStatus] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -72,6 +94,9 @@ const UploadPDF: React.FC = () => {
     setExtractedText('');
     setAiSummary('');
     setSavedPaperId(null);
+    setCitationResult(null);
+    setPaperCheckResult(null);
+    setPaperCheckStatus('');
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -92,6 +117,9 @@ const UploadPDF: React.FC = () => {
     setExtractedText('');
     setAiSummary('');
     setSavedPaperId(null);
+    setCitationResult(null);
+    setPaperCheckResult(null);
+    setPaperCheckStatus('');
 
     const formData = new FormData();
     formData.append('file', file);
@@ -135,8 +163,116 @@ const UploadPDF: React.FC = () => {
     setExtractedText('');
     setAiSummary('');
     setSavedPaperId(null);
+    setCitationResult(null);
+    setPaperCheckResult(null);
+    setPaperCheckStatus('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const uploadCitationMetadata = useMemo(
+    () => ({
+      title: extractPaperTitleFromFilename(file?.name || ''),
+      authors: [] as string[],
+      url: null,
+    }),
+    [file?.name],
+  );
+
+  const handleGenerateCitation = useCallback(
+    async (quiet = false) => {
+      if (uploadState !== 'done') {
+        return null;
+      }
+      setCitationLoading(true);
+      try {
+        const response = savedPaperId
+          ? await fetchPaperCitation(savedPaperId, citationStyle)
+          : await fetchCitation(uploadCitationMetadata, citationStyle);
+        setCitationResult(response);
+        if (!quiet) {
+          toastSuccess('Citation generated');
+        }
+        return response;
+      } catch (err: unknown) {
+        const message = apiErrorMessage(err, 'Failed to generate citation.');
+        setErrorMsg(message);
+        if (!quiet) {
+          toastError(message);
+        }
+        return null;
+      } finally {
+        setCitationLoading(false);
+      }
+    },
+    [citationStyle, savedPaperId, toastError, toastSuccess, uploadCitationMetadata, uploadState],
+  );
+
+  useEffect(() => {
+    if (!citationResult) {
+      return;
+    }
+    void handleGenerateCitation(true);
+  }, [citationStyle, handleGenerateCitation]);
+
+  const handleCopyCitation = async () => {
+    const resolved = citationResult || (await handleGenerateCitation(true));
+    const text = resolved?.citation || fallbackCitation(uploadCitationMetadata, citationStyle);
+    try {
+      await navigator.clipboard.writeText(text);
+      toastSuccess('Citation copied');
+    } catch {
+      toastError('Failed to copy citation');
+    }
+  };
+
+  const handleExportBibtex = async () => {
+    try {
+      const response = savedPaperId
+        ? await fetchPaperCitation(savedPaperId, 'bibtex')
+        : await fetchCitation(uploadCitationMetadata, 'bibtex');
+      const blob = new Blob([response.citation], { type: 'application/x-bibtex' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${extractPaperTitleFromFilename(file?.name || 'uploaded-paper').replace(/\s+/g, '_')}.bib`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      toastError(apiErrorMessage(err, 'Failed to export BibTeX.'));
+    }
+  };
+
+  const handleRunPaperCheck = async () => {
+    if (!savedPaperId && !extractedText.trim()) {
+      toastError('Upload a paper first.');
+      return;
+    }
+    setPaperCheckLoading(true);
+    setPaperCheckStatus('Running advisory paper analysis...');
+    setPaperCheckResult(null);
+    try {
+      const response = await runPaperCheck({
+        paper_id: savedPaperId || undefined,
+        raw_text: savedPaperId ? undefined : extractedText,
+        workspace_id: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
+        prefer_async: extractedText.length > 45000,
+      });
+      setPaperCheckResult(response);
+      setPaperCheckStatus(
+        response.job_id
+          ? 'Queued analysis completed successfully.'
+          : 'Paper analysis completed successfully.'
+      );
+      toastSuccess('AI checker complete');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'AI checker failed.');
+      setErrorMsg(message);
+      setPaperCheckStatus('');
+      toastError(message);
+    } finally {
+      setPaperCheckLoading(false);
     }
   };
 
@@ -301,6 +437,173 @@ const UploadPDF: React.FC = () => {
           </button>
         </div>
 
+        {uploadState === 'done' && (
+          <section className="studio-surface p-4 mb-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">Post-processing actions</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Generate a production citation or run the advisory AI checker on the uploaded paper.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRunPaperCheck()}
+                  disabled={paperCheckLoading}
+                  className="hero-btn-primary disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {paperCheckLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Running checker...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-4 w-4" />
+                      Run AI Checker
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[0.9fr,1.1fr]">
+              <div className="studio-panel-quiet p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Citation engine</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Backed by normalized metadata with graceful fallback when fields are sparse.
+                    </p>
+                  </div>
+                  <select
+                    value={citationStyle}
+                    onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    <option value="apa">APA</option>
+                    <option value="mla">MLA</option>
+                    <option value="ieee">IEEE</option>
+                    <option value="chicago">Chicago</option>
+                    <option value="bibtex">BibTeX</option>
+                  </select>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleGenerateCitation()}
+                    disabled={citationLoading}
+                    className="hero-btn-secondary disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    {citationLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-4 w-4" />
+                        Generate Citation
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyCitation()}
+                    disabled={citationLoading && !citationResult}
+                    className="hero-btn-secondary disabled:cursor-not-allowed disabled:opacity-55"
+                  >
+                    <Copy className="h-4 w-4" />
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleExportBibtex()}
+                    className="hero-btn-secondary"
+                  >
+                    <Download className="h-4 w-4" />
+                    Export BibTeX
+                  </button>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {citationResult ? (
+                      <>
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            citationResult.completeness_score >= 80
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : citationResult.completeness_score >= 55
+                              ? 'bg-amber-50 text-amber-700'
+                              : 'bg-rose-50 text-rose-700'
+                          }`}
+                        >
+                          Completeness {citationResult.completeness_score}%
+                        </span>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                          {citationResult.style.toUpperCase()}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                        Citation not generated yet
+                      </span>
+                    )}
+                  </div>
+
+                  <pre className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-700">
+                    {citationResult?.citation || fallbackCitation(uploadCitationMetadata, citationStyle)}
+                  </pre>
+
+                  {citationResult && citationResult.missing_fields.length > 0 && (
+                    <p className="mt-3 text-xs text-slate-500">
+                      Missing fields: {citationResult.missing_fields.map(citationMissingFieldLabel).join(', ')}
+                    </p>
+                  )}
+                  {citationResult && citationResult.warnings.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {citationResult.warnings.map((warning) => (
+                        <div key={warning} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          {warning}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="studio-panel-quiet p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">AI checker</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Structured paper review with suspicious-segment AI-writing likelihood analysis.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                    {savedPaperId ? `paper ${savedPaperId}` : 'raw text mode'}
+                  </span>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Checker status</p>
+                  <p className="mt-2 text-sm text-slate-700">
+                    {paperCheckLoading
+                      ? paperCheckStatus || 'Running advisory paper analysis...'
+                      : paperCheckStatus || 'Ready to analyze the uploaded paper.'}
+                  </p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Suspicious passage review is advisory only and not proof of AI authorship.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
         {aiSummary && (
           <section className="studio-surface p-4 mb-4">
             <h3 className="text-base font-semibold text-slate-900 mb-2 inline-flex items-center gap-2">
@@ -313,6 +616,13 @@ const UploadPDF: React.FC = () => {
               </pre>
             </div>
           </section>
+        )}
+
+        {paperCheckResult && (
+          <PaperCheckReport
+            result={paperCheckResult}
+            title="Upload paper checker report"
+          />
         )}
 
         <section className="studio-surface p-4">

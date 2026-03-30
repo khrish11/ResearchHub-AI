@@ -109,6 +109,16 @@ def invalidate_memory_cache(key: str) -> None:
         _MEM_CACHE.pop(key, None)
 
 
+def clear_memory_cache() -> None:
+    """Remove all entries from L1 cache.
+
+    Used by tests to guarantee isolation across cases that reuse the same
+    user/query inputs.
+    """
+    with _MEM_LOCK:
+        _MEM_CACHE.clear()
+
+
 # ── Helpers: query normalisation & key generation ────────────────────────────
 
 def _normalize_query(query: str) -> str:
@@ -116,18 +126,20 @@ def _normalize_query(query: str) -> str:
     return re.sub(r"\s+", " ", (query or "").strip()).lower()
 
 
-def generate_cache_key(*, user_id: str, query: str) -> str:
+def generate_cache_key(*, user_id: str, query: str, scope: str = "") -> str:
     """Return a deterministic per-user SHA-256 cache key.
 
     Args:
         user_id: Authenticated user ID (string form).
         query:   Raw query / prompt sent to the LLM.
+        scope:   Optional cache namespace to isolate routes/models.
 
     Returns:
         64-character lowercase hex SHA-256 string.
     """
     normalized = _normalize_query(query)
-    raw = f"{user_id}:{normalized}"
+    normalized_scope = _normalize_query(scope)[:160]
+    raw = f"{user_id}:{normalized_scope}:{normalized}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

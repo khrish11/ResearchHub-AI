@@ -107,14 +107,9 @@ def _fetch_docs(
         if cutoff_ts is not None:
             from datetime import datetime, timezone as _tz  # noqa: F811
             cutoff_dt = datetime.fromtimestamp(cutoff_ts, tz=_tz.utc)
-            try:
-                query = coll.where(
-                    filter=FieldFilter("created_at", ">=", cutoff_dt)
-                ).limit(min(limit, _QUERY_LIMIT))
-            except Exception:
-                query = coll.where(
-                    "created_at", ">=", cutoff_dt
-                ).limit(min(limit, _QUERY_LIMIT))
+            query = coll.where(
+                filter=FieldFilter("created_at", ">=", cutoff_dt)
+            ).limit(min(limit, _QUERY_LIMIT))
         else:
             query = coll.order_by(
                 "created_at", direction="DESCENDING"

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3, Shield } from 'lucide-react';
+import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3, Shield, Database } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
 import { toAppPath } from '../utils/routing';
 import { clearAuthSession } from '../utils/authSession';
@@ -29,6 +29,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     { path: '/ai-tools', label: 'AI Tools', icon: Brain },
     { path: '/research-agent', label: 'Research Agent', icon: Bot },
     { path: '/research-chat', label: 'Research Chat', icon: MessageSquareCode },
+    { path: '/ask-workspace', label: 'Ask Workspace', icon: Database },
     { path: '/upload', label: 'Upload PDF', icon: Upload },
     { path: '/docs', label: 'DocSpace', icon: FileText },
     { path: '/mindmap', label: 'Mindmap', icon: Workflow },

@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   BrainCircuit,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Download,
   ExternalLink,
   FileText,
@@ -10,14 +13,29 @@ import {
   MessageSquare,
   Rocket,
   Search,
+  ShieldCheck,
   Sparkles,
   Workflow,
 } from 'lucide-react';
 import Layout from '../components/Layout';
+import UnifiedCopilotPanel from '../components/UnifiedCopilotPanel';
 import DataExportImport from '../components/DataExportImport';
+import PaperCheckReport from '../components/PaperCheckReport';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
+import { useToast } from '../contexts/ToastContext';
 import { openFileUrl } from '../utils/openFile';
+import {
+  citationMissingFieldLabel,
+  type CitationResponse,
+  type CitationStyle,
+  type CompletedPaperCheckResult,
+  type PaperExplanationResponse,
+  fallbackCitation,
+  fetchPaperExplanation,
+  fetchPaperCitation,
+  runPaperCheck,
+} from '../utils/researchArtifacts';
 
 interface Paper {
   id: number;
@@ -71,7 +89,9 @@ interface FaultResult {
 type WorkspaceTab = 'papers' | 'chat' | 'review' | 'ops';
 
 const Workspace: React.FC = () => {
+  const { success: toastSuccess, error: toastError } = useToast();
   const { id } = useParams();
+  const navigate = useNavigate();
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [chatInput, setChatInput] = useState('');
@@ -90,6 +110,16 @@ const Workspace: React.FC = () => {
   const [resolvingWorkspaceAccess, setResolvingWorkspaceAccess] = useState(false);
   const [institutionalRaw, setInstitutionalRaw] = useState('');
   const [institutionalImporting, setInstitutionalImporting] = useState(false);
+  const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
+  const [citationCache, setCitationCache] = useState<Record<string, CitationResponse>>({});
+  const [citationLoading, setCitationLoading] = useState(false);
+  const [paperCheckCache, setPaperCheckCache] = useState<Record<number, CompletedPaperCheckResult>>({});
+  const [paperCheckLoading, setPaperCheckLoading] = useState(false);
+  const [paperCheckStatus, setPaperCheckStatus] = useState('');
+  const [paperExplainCache, setPaperExplainCache] = useState<Record<number, PaperExplanationResponse>>({});
+  const [paperExplainLoading, setPaperExplainLoading] = useState(false);
+  const [paperExplainError, setPaperExplainError] = useState<string | null>(null);
+  const [paperExplainCollapsed, setPaperExplainCollapsed] = useState(false);
 
   const loadWorkspace = useCallback(async () => {
     if (!id) {
@@ -193,6 +223,20 @@ const Workspace: React.FC = () => {
     );
   };
 
+  const navigateToResearchReport = (paperIds: number[], topic?: string) => {
+    const qp = new URLSearchParams();
+    if (paperIds.length > 0) {
+      qp.set('ids', paperIds.join(','));
+    }
+    if (topic && topic.trim()) {
+      qp.set('topic', topic.trim());
+    }
+    if (workspace) {
+      qp.set('workspace_id', String(workspace.id));
+    }
+    navigate(`/research-report?${qp.toString()}`);
+  };
+
   const runFaultDetection = async () => {
     if (!workspace || !faultPaperId) return;
     setFaultLoading(true);
@@ -233,6 +277,75 @@ const Workspace: React.FC = () => {
       window.URL.revokeObjectURL(url);
     } catch {
       setError('Failed to export workspace.');
+    }
+  };
+
+  const copySelectedCitation = async () => {
+    if (!selectedPaper) {
+      return;
+    }
+    const response = selectedCitation || (await loadSelectedCitation(selectedPaper.id, citationStyle));
+    const fallbackText = fallbackCitation(
+      {
+        title: selectedPaper.title,
+        authors: selectedPaper.authors.split(',').map((item) => item.trim()).filter(Boolean),
+        source: selectedPaper.source,
+        doi: selectedPaper.doi,
+        url: selectedPaper.url,
+      },
+      citationStyle,
+    );
+    const text = response?.citation || fallbackText;
+    try {
+      await navigator.clipboard.writeText(text);
+      toastSuccess('Citation copied');
+    } catch {
+      toastError('Failed to copy citation');
+    }
+  };
+
+  const exportSelectedBibtex = async () => {
+    if (!selectedPaper) {
+      return;
+    }
+    try {
+      const response = await fetchPaperCitation(selectedPaper.id, 'bibtex');
+      const blob = new Blob([response.citation], { type: 'application/x-bibtex' });
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${selectedPaper.title.replace(/\s+/g, '_')}.bib`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      toastError(apiErrorMessage(err, 'Failed to export BibTeX.'));
+    }
+  };
+
+  const runSelectedPaperCheck = async () => {
+    if (!workspace || !selectedPaper) {
+      return;
+    }
+    setPaperCheckLoading(true);
+    setPaperCheckStatus('Running advisory paper analysis...');
+    setError(null);
+    try {
+      const response = await runPaperCheck({
+        paper_id: selectedPaper.id,
+        workspace_id: workspace.id,
+      });
+      setPaperCheckCache((prev) => ({ ...prev, [selectedPaper.id]: response }));
+      setPaperCheckStatus(response.job_id ? 'Queued analysis completed successfully.' : 'Paper analysis completed successfully.');
+      toastSuccess('AI checker complete');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Failed to analyze paper.');
+      setPaperCheckStatus('');
+      setError(message);
+      toastError(message);
+    } finally {
+      setPaperCheckLoading(false);
     }
   };
 
@@ -346,6 +459,10 @@ const Workspace: React.FC = () => {
     () => papersForDisplay.find((paper) => paper.id === selectedPaperId) || papersForDisplay[0] || null,
     [papersForDisplay, selectedPaperId],
   );
+  const selectedCitationKey = selectedPaper ? `${selectedPaper.id}:${citationStyle}` : null;
+  const selectedCitation = selectedCitationKey ? citationCache[selectedCitationKey] || null : null;
+  const selectedPaperCheck = selectedPaper ? paperCheckCache[selectedPaper.id] || null : null;
+  const selectedPaperExplanation = selectedPaper ? paperExplainCache[selectedPaper.id] || null : null;
 
   const fullTextReadyCount = useMemo(
     () =>
@@ -370,6 +487,93 @@ const Workspace: React.FC = () => {
       setSelectedPaperId(papersForDisplay[0].id);
     }
   }, [papersForDisplay, selectedPaperId]);
+
+  const loadSelectedCitation = useCallback(
+    async (paperId: number, style: CitationStyle, quiet = false): Promise<CitationResponse | null> => {
+      const key = `${paperId}:${style}`;
+      if (citationCache[key]) {
+        return citationCache[key];
+      }
+      setCitationLoading(true);
+      try {
+        const response = await fetchPaperCitation(paperId, style);
+        setCitationCache((prev) => ({ ...prev, [key]: response }));
+        return response;
+      } catch (err: unknown) {
+        if (!quiet) {
+          toastError(apiErrorMessage(err, 'Failed to generate citation.'));
+        }
+        return null;
+      } finally {
+        setCitationLoading(false);
+      }
+    },
+    [citationCache, toastError],
+  );
+
+  const loadSelectedPaperExplanation = useCallback(
+    async (
+      paperId: number,
+      options: { refresh?: boolean; includeRag?: boolean; quiet?: boolean } = {}
+    ): Promise<PaperExplanationResponse | null> => {
+      const refresh = Boolean(options.refresh);
+      if (!refresh && paperExplainCache[paperId]) {
+        return paperExplainCache[paperId];
+      }
+      setPaperExplainLoading(true);
+      if (!options.quiet) {
+        setPaperExplainError(null);
+      }
+      try {
+        const response = await fetchPaperExplanation(paperId, {
+          refresh,
+          includeRag: Boolean(options.includeRag),
+        });
+        setPaperExplainCache((prev) => ({ ...prev, [paperId]: response }));
+        setPaperExplainError(null);
+        return response;
+      } catch (err: unknown) {
+        const message = apiErrorMessage(err, 'Failed to load AI explanation.');
+        setPaperExplainError(message);
+        if (!options.quiet) {
+          toastError(message);
+        }
+        return null;
+      } finally {
+        setPaperExplainLoading(false);
+      }
+    },
+    [paperExplainCache, toastError],
+  );
+
+  useEffect(() => {
+    if (!selectedPaper) {
+      return;
+    }
+    void loadSelectedCitation(selectedPaper.id, citationStyle, true);
+  }, [citationStyle, loadSelectedCitation, selectedPaper]);
+
+  useEffect(() => {
+    if (!selectedPaper) {
+      setPaperExplainError(null);
+      return;
+    }
+    if (!paperExplainCache[selectedPaper.id]) {
+      void loadSelectedPaperExplanation(selectedPaper.id, { quiet: true });
+      return;
+    }
+    setPaperExplainError(null);
+  }, [loadSelectedPaperExplanation, paperExplainCache, selectedPaper]);
+
+  useEffect(() => {
+    if (!selectedPaper) {
+      setPaperCheckStatus('');
+      return;
+    }
+    if (!paperCheckCache[selectedPaper.id]) {
+      setPaperCheckStatus('');
+    }
+  }, [paperCheckCache, selectedPaper]);
 
   const resolveWorkspacePaperAccess = async () => {
     if (!workspace) return;
@@ -528,6 +732,17 @@ const Workspace: React.FC = () => {
                   </>
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigateToResearchReport(workspace.papers.map((paper) => paper.id), reportTopic);
+                }}
+                disabled={workspace.papers.length === 0}
+                className="hero-btn-secondary disabled:opacity-55 disabled:cursor-not-allowed"
+              >
+                <Sparkles className="h-4 w-4" />
+                Generate Report
+              </button>
             </div>
 
             <section className="studio-stat-grid mb-4">
@@ -548,6 +763,20 @@ const Workspace: React.FC = () => {
                   </article>
                 );
               })}
+            </section>
+
+            <section className="mb-4">
+              <UnifiedCopilotPanel
+                workspaceId={workspace.id}
+                paperIds={selectedPaper ? [selectedPaper.id] : []}
+                initialQuery={selectedPaper ? 'Explain this paper' : 'Summarize my workspace'}
+                heading="AI Copilot"
+                subheading={
+                  selectedPaper
+                    ? 'Smart context active: current workspace + selected paper.'
+                    : 'Smart context active: current workspace.'
+                }
+              />
             </section>
 
             <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.05fr,0.95fr]">
@@ -718,7 +947,7 @@ const Workspace: React.FC = () => {
                               key={paper.id}
                               type="button"
                               onClick={() => setSelectedPaperId(paper.id)}
-                              className={`w-full rounded-2xl border p-4 text-left transition ${
+                              className={`w-full rounded-2xl border p-4 text-left transition relative ${
                                 active
                                   ? 'border-indigo-300 bg-indigo-50/70 shadow-sm'
                                   : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
@@ -734,7 +963,7 @@ const Workspace: React.FC = () => {
                                   </span>
                                 )}
                               </div>
-                              <h3 className="mt-3 text-base font-semibold text-slate-900 line-clamp-2">{paper.title}</h3>
+                              <h3 className="mt-3 pr-20 text-base font-semibold text-slate-900 line-clamp-2">{paper.title}</h3>
                               <p className="mt-1 text-sm text-slate-500 line-clamp-1">{paper.authors}</p>
                               <p className="mt-2 line-clamp-2 text-sm text-slate-600">{paper.abstract || 'No abstract available.'}</p>
                             </button>
@@ -854,6 +1083,366 @@ const Workspace: React.FC = () => {
                       })() : (
                         <div className="studio-panel-quiet p-8 text-center">
                           <p className="text-sm text-slate-600">Select a paper to inspect details and take the next action.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="studio-surface p-4">
+                      {selectedPaper ? (
+                        <div className="space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">AI Explanation</p>
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                Instant structured explanation that reuses checker output and cached workspace context.
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void loadSelectedPaperExplanation(selectedPaper.id, {
+                                    refresh: true,
+                                    includeRag: true,
+                                  })
+                                }
+                                disabled={paperExplainLoading}
+                                className="hero-btn-secondary disabled:cursor-not-allowed disabled:opacity-55"
+                              >
+                                {paperExplainLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                                Refresh
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPaperExplainCollapsed((prev) => !prev)}
+                                className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                              >
+                                {paperExplainCollapsed ? (
+                                  <>
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                    Expand
+                                  </>
+                                ) : (
+                                  <>
+                                    <ChevronUp className="h-3.5 w-3.5" />
+                                    Collapse
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          {!paperExplainCollapsed && (
+                            <div className="space-y-4">
+                              {paperExplainLoading && !selectedPaperExplanation && (
+                                <div className="space-y-3">
+                                  {[1, 2, 3].map((item) => (
+                                    <div key={item} className="animate-pulse rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                      <div className="h-3 w-28 rounded bg-slate-200" />
+                                      <div className="mt-3 h-3 w-full rounded bg-slate-200" />
+                                      <div className="mt-2 h-3 w-11/12 rounded bg-slate-200" />
+                                      <div className="mt-2 h-3 w-10/12 rounded bg-slate-200" />
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {!paperExplainLoading && paperExplainError && !selectedPaperExplanation && (
+                                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                                  {paperExplainError}
+                                </div>
+                              )}
+
+                              {selectedPaperExplanation && (
+                                <div className="space-y-3">
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Simple Explanation</p>
+                                    <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                                      {selectedPaperExplanation.simple_explanation || 'No explanation available yet.'}
+                                    </p>
+                                  </div>
+
+                                  <div className="grid gap-3 xl:grid-cols-2">
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Key Points</p>
+                                      {selectedPaperExplanation.key_points.length > 0 ? (
+                                        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-slate-700">
+                                          {selectedPaperExplanation.key_points.map((item) => (
+                                            <li key={item}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-2 text-sm text-slate-500">No key points extracted.</p>
+                                      )}
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Method</p>
+                                      <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                                        {selectedPaperExplanation.methodology || 'Method summary unavailable.'}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid gap-3 xl:grid-cols-2">
+                                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Strengths</p>
+                                      {selectedPaperExplanation.strengths.length > 0 ? (
+                                        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-emerald-900">
+                                          {selectedPaperExplanation.strengths.map((item) => (
+                                            <li key={item}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-2 text-sm text-emerald-900">No explicit strengths identified.</p>
+                                      )}
+                                    </div>
+                                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Weaknesses</p>
+                                      {selectedPaperExplanation.weaknesses.length > 0 ? (
+                                        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-amber-900">
+                                          {selectedPaperExplanation.weaknesses.map((item) => (
+                                            <li key={item}>{item}</li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="mt-2 text-sm text-amber-900">No explicit weaknesses identified.</p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="grid gap-3 xl:grid-cols-3">
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Evidence Quality</p>
+                                      <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                                        {selectedPaperExplanation.evidence_quality || 'Evidence quality unavailable.'}
+                                      </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI Likelihood</p>
+                                      <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                                        {selectedPaperExplanation.ai_likelihood || 'No AI-writing likelihood data available.'}
+                                      </p>
+                                    </div>
+                                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Why It Matters</p>
+                                      <p className="mt-2 text-sm leading-relaxed text-slate-700">
+                                        {selectedPaperExplanation.significance || 'Significance note unavailable.'}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span
+                                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                          selectedPaperExplanation.cached
+                                            ? 'bg-emerald-50 text-emerald-700'
+                                            : 'bg-indigo-50 text-indigo-700'
+                                        }`}
+                                      >
+                                        {selectedPaperExplanation.cached ? 'Cached' : 'Fresh'}
+                                      </span>
+                                      {selectedPaperExplanation.generated_at && (
+                                        <span className="rounded-full bg-white px-2.5 py-1 text-xs text-slate-600">
+                                          Generated {new Date(selectedPaperExplanation.generated_at).toLocaleString()}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {selectedPaperExplanation.sources.length > 0 && (
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        {selectedPaperExplanation.sources.map((source, index) => {
+                                          const href = source.url || (source.doi ? `https://doi.org/${source.doi}` : '');
+                                          const label = source.title || `${source.source_type} source`;
+                                          if (href) {
+                                            return (
+                                              <a
+                                                key={`${source.source_id}-${index}`}
+                                                href={href}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                                              >
+                                                {label}
+                                                <ExternalLink className="h-3.5 w-3.5" />
+                                              </a>
+                                            );
+                                          }
+                                          return (
+                                            <span
+                                              key={`${source.source_id}-${index}`}
+                                              className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600"
+                                            >
+                                              {label}
+                                            </span>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+
+                                    <p className="mt-3 text-xs text-slate-500">
+                                      {selectedPaperExplanation.disclaimer || 'AI explanations are advisory and should be validated.'}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">Select a paper to generate an AI explanation.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="studio-surface p-4">
+                      {selectedPaper ? (
+                        <div className="space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Citation engine</p>
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                Generate normalized citations and export BibTeX for the selected paper.
+                              </p>
+                            </div>
+                            <select
+                              value={citationStyle}
+                              onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                            >
+                              <option value="apa">APA</option>
+                              <option value="mla">MLA</option>
+                              <option value="ieee">IEEE</option>
+                              <option value="chicago">Chicago</option>
+                              <option value="bibtex">BibTeX</option>
+                            </select>
+                          </div>
+
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void copySelectedCitation()}
+                              disabled={citationLoading}
+                              className="hero-btn-secondary disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {citationLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                              Copy citation
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void exportSelectedBibtex()}
+                              className="hero-btn-secondary"
+                            >
+                              <Download className="h-4 w-4" />
+                              Export BibTeX
+                            </button>
+                          </div>
+
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {selectedCitation ? (
+                                <>
+                                  <span
+                                    className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                      selectedCitation.completeness_score >= 80
+                                        ? 'bg-emerald-50 text-emerald-700'
+                                        : selectedCitation.completeness_score >= 55
+                                        ? 'bg-amber-50 text-amber-700'
+                                        : 'bg-rose-50 text-rose-700'
+                                    }`}
+                                  >
+                                    Completeness {selectedCitation.completeness_score}%
+                                  </span>
+                                  <span className="rounded-full bg-white px-2.5 py-1 text-xs text-slate-600">
+                                    {selectedCitation.style.toUpperCase()}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="rounded-full bg-white px-2.5 py-1 text-xs text-slate-600">
+                                  {citationLoading ? 'Generating citation...' : 'Citation preview pending'}
+                                </span>
+                              )}
+                            </div>
+                            <pre className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm leading-6 text-slate-700">
+                              {selectedCitation?.citation ||
+                                fallbackCitation(
+                                  {
+                                    title: selectedPaper.title,
+                                    authors: selectedPaper.authors.split(',').map((item) => item.trim()).filter(Boolean),
+                                    source: selectedPaper.source,
+                                    doi: selectedPaper.doi,
+                                    url: selectedPaper.url,
+                                  },
+                                  citationStyle,
+                                )}
+                            </pre>
+                            {selectedCitation && selectedCitation.missing_fields.length > 0 && (
+                              <p className="mt-3 text-xs text-slate-500">
+                                Missing fields: {selectedCitation.missing_fields.map(citationMissingFieldLabel).join(', ')}
+                              </p>
+                            )}
+                            {selectedCitation && selectedCitation.warnings.length > 0 && (
+                              <div className="mt-3 space-y-2">
+                                {selectedCitation.warnings.map((warning) => (
+                                  <div key={warning} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                    {warning}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">Select a paper to generate a citation.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="studio-surface p-4">
+                      {selectedPaper ? (
+                        <div className="space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">AI checker</p>
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                Run a structured paper review with suspicious-segment AI-writing likelihood analysis.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void runSelectedPaperCheck()}
+                              disabled={paperCheckLoading}
+                              className="hero-btn-primary disabled:cursor-not-allowed disabled:opacity-55"
+                            >
+                              {paperCheckLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                              Run AI checker
+                            </button>
+                          </div>
+
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
+                            <p className="mt-2 text-sm text-slate-700">
+                              {paperCheckLoading
+                                ? paperCheckStatus || 'Running advisory paper analysis...'
+                                : paperCheckStatus || 'Ready to analyze the selected paper.'}
+                            </p>
+                            <p className="mt-2 text-xs text-slate-500">
+                              This output is advisory and must not be treated as proof of AI authorship.
+                            </p>
+                          </div>
+
+                          {selectedPaperCheck && (
+                            <PaperCheckReport
+                              result={selectedPaperCheck}
+                              title={`Paper checker report for ${selectedPaper.title}`}
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <div className="studio-panel-quiet p-8 text-center">
+                          <p className="text-sm text-slate-600">Select a paper to run the AI checker.</p>
                         </div>
                       )}
                     </div>

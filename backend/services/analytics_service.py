@@ -44,6 +44,8 @@ import logging
 import threading
 from typing import Optional
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,7 +114,9 @@ def get_ai_usage_stats(db, *, user_id: Optional[str] = None, limit: int = 500) -
             "created_at", direction="DESCENDING"
         ).limit(min(limit, 500))
         if user_id:
-            query = query.where("user_id", "==", str(user_id))
+            query = query.where(
+                filter=FieldFilter("user_id", "==", str(user_id))
+            )
         docs = query.stream()
         return [{"id": doc.id, **doc.to_dict()} for doc in docs]
     except Exception as exc:  # pragma: no cover

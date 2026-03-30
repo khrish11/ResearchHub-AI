@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Dict, Literal, List, Optional
 import re
 from routers.auth import get_current_user
@@ -13,6 +13,7 @@ from utils.groq_client import (
     set_active_models,
 )
 from services.ai_service import run_ai_query
+from services.copilot_service import run_unified_copilot
 from services.analytics_service import log_ai_usage
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -83,6 +84,17 @@ class AnalyzeRequest(BaseModel):
     focus: Literal["broad", "methods", "applications", "risks"] = "broad"
     include_paper_links: bool = True
     reference_style: Literal["paper", "legacy"] = "paper"
+
+
+class CopilotContextRequest(BaseModel):
+    workspace_id: Optional[int] = None
+    paper_ids: List[int] = Field(default_factory=list)
+
+
+class CopilotRequest(BaseModel):
+    query: str
+    context: Optional[CopilotContextRequest] = None
+    refresh: bool = False
 
 
 ANALYZE_SYSTEM_PROMPTS = {
@@ -329,4 +341,29 @@ async def analyze(
         "cache_hit": cache_hit,
         "cache_layer": cache_layer,
     }
+
+
+@router.post("/copilot")
+async def copilot(
+    req: CopilotRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    query = (req.query or "").strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters.")
+    try:
+        return await run_unified_copilot(
+            repo=repo,
+            user_id=int(current_user.id),
+            query=query,
+            context=(req.context.model_dump() if req.context else {}),
+            refresh=bool(req.refresh),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Copilot failed: {str(exc)}")
 

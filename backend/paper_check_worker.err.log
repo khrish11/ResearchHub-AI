@@ -1,0 +1,51 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\rezsrch\ResearchHub-AI\backend\workers\paper_check_worker.py", line 806, in <module>
+    main()
+    ~~~~^^
+  File "E:\rezsrch\ResearchHub-AI\backend\workers\paper_check_worker.py", line 802, in main
+    run_worker()
+    ~~~~~~~~~~^^
+  File "E:\rezsrch\ResearchHub-AI\backend\workers\paper_check_worker.py", line 720, in run_worker
+    subscriber = get_subscriber_client()
+  File "E:\rezsrch\ResearchHub-AI\backend\utils\paper_check_pubsub.py", line 115, in get_subscriber_client
+    return pubsub_v1.SubscriberClient()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "E:\rezsrch\ResearchHub-AI\.venv\Lib\site-packages\google\cloud\pubsub_v1\subscriber\client.py", line 95, in __init__
+    super().__init__(**kwargs)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "E:\rezsrch\ResearchHub-AI\.venv\Lib\site-packages\google\pubsub_v1\services\subscriber\client.py", line 774, in __init__
+    self._transport = transport_init(
+                      ~~~~~~~~~~~~~~^
+        credentials=credentials,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+        api_audience=self._client_options.api_audience,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "E:\rezsrch\ResearchHub-AI\.venv\Lib\site-packages\google\pubsub_v1\services\subscriber\transports\grpc.py", line 241, in __init__
+    super().__init__(
+    ~~~~~~~~~~~~~~~~^
+        host=host,
+        ^^^^^^^^^^
+    ...<6 lines>...
+        api_audience=api_audience,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "E:\rezsrch\ResearchHub-AI\.venv\Lib\site-packages\google\pubsub_v1\services\subscriber\transports\base.py", line 113, in __init__
+    credentials, _ = google.auth.default(
+                     ~~~~~~~~~~~~~~~~~~~^
+        scopes=scopes,
+        ^^^^^^^^^^^^^^
+        quota_project_id=quota_project_id,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        default_scopes=self.AUTH_SCOPES,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "E:\rezsrch\ResearchHub-AI\.venv\Lib\site-packages\google\auth\_default.py", line 752, in default
+    raise exceptions.DefaultCredentialsError(_CLOUD_SDK_MISSING_CREDENTIALS)
+google.auth.exceptions.DefaultCredentialsError: Your default credentials were not found. To set up Application Default Credentials, see https://cloud.google.com/docs/authentication/external/set-up-adc for more information.

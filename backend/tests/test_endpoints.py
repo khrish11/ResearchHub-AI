@@ -21,7 +21,7 @@ class TestHealthEndpoints:
         resp = test_client.get("/health/live")
         assert resp.status_code == 200
         data = resp.json()
-        assert data.get("status") == "ok"
+        assert data.get("status") in {"ok", "alive"}
 
     def test_health_ready_returns_json(self, test_client: TestClient):
         resp = test_client.get("/health/ready")
@@ -66,6 +66,10 @@ class TestAuthEndpoints:
     def test_protected_route_without_token_returns_401(self, test_client: TestClient):
         resp = test_client.get("/workspaces/")
         assert resp.status_code == 401
+        data = resp.json()
+        assert isinstance(data.get("error_code"), str)
+        assert isinstance(data.get("message"), str)
+        assert isinstance(data.get("details"), dict)
 
     def test_protected_route_with_invalid_token_returns_401(
         self, test_client: TestClient
@@ -203,3 +207,7 @@ class TestEdgeCases:
             headers=auth_headers,
         )
         assert resp.status_code == 422
+        data = resp.json()
+        assert data.get("error_code") == "VALIDATION_ERROR"
+        assert isinstance(data.get("message"), str)
+        assert isinstance(data.get("details"), dict)

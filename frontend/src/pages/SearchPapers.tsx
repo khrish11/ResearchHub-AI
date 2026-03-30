@@ -26,6 +26,12 @@ import { apiErrorMessage } from '../utils/apiError';
 import { openFileUrl } from '../utils/openFile';
 import { getUiDensityDefault } from '../utils/firebaseClient';
 import { useToast } from '../contexts/ToastContext';
+import {
+  type CitationResponse,
+  type CitationStyle,
+  fallbackCitation,
+  fetchCitation,
+} from '../utils/researchArtifacts';
 
 interface Paper {
   title: string;
@@ -99,7 +105,6 @@ interface SourceCatalogEntry {
 
 type YearFilter = 'any' | '2026' | '2024' | '2020' | '2015' | '2010';
 type SortMode = 'relevance' | 'newest' | 'oldest' | 'title';
-type CitationStyle = 'apa' | 'mla' | 'ieee';
 type SearchMode = 'fast' | 'balanced' | 'deep';
 type ResultView = 'comfortable' | 'compact';
 
@@ -282,22 +287,18 @@ const loadSavedQueries = (): SavedQuery[] => {
   }
 };
 
-const buildCitation = (paper: Paper, style: CitationStyle): string => {
-  const year = parseYear(paper.published);
-  const authors = paper.authors && paper.authors.length > 0 ? paper.authors : ['Unknown author'];
-  const title = (paper.title || 'Untitled').trim();
-  const venue = (paper.publication_name || paper.publication_title || paper.source || 'Unknown venue').trim();
-  const url = (paper.url || '').trim();
+const getCitationMetadata = (paper: Paper) => ({
+  title: paper.title,
+  authors: paper.authors,
+  published: paper.published,
+  publication_name: paper.publication_name,
+  publication_title: paper.publication_title,
+  source: paper.source,
+  doi: paper.doi,
+  url: paper.url,
+});
 
-  if (style === 'ieee') {
-    return `${authors.join(', ')}, "${title}," ${venue}, ${year || 'n.d.'}. ${url ? `Available: ${url}` : ''}`.trim();
-  }
-  if (style === 'mla') {
-    const first = authors[0] || 'Unknown author';
-    return `${first}${authors.length > 1 ? ', et al.' : '.'} "${title}." ${venue}, ${year || 'n.d.'}. ${url}`.trim();
-  }
-  return `${authors.join(', ')} (${year || 'n.d.'}). ${title}. ${venue}.${url ? ` ${url}` : ''}`.trim();
-};
+const citationCacheKey = (paper: Paper, style: CitationStyle) => `${normalizeKey(paper)}::${style}`;
 
 const formatHistoryTime = (value: string): string => {
   const timestamp = new Date(value).getTime();
@@ -336,6 +337,8 @@ const SearchPapers: React.FC = () => {
   const [sortMode, setSortMode] = useState<SortMode>('relevance');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
+  const [citationCache, setCitationCache] = useState<Record<string, CitationResponse>>({});
+  const [citationLoadingMap, setCitationLoadingMap] = useState<Record<string, boolean>>({});
   const [resultView, setResultView] = useState<ResultView>('comfortable');
   const [bulkImporting, setBulkImporting] = useState(false);
   const [visibleCount, setVisibleCount] = useState(INITIAL_RENDER_BATCH);
@@ -1028,8 +1031,40 @@ const SearchPapers: React.FC = () => {
     toastSuccess(`Imported ${created} new papers, updated ${updated}`);
   };
 
+  const ensureCitation = useCallback(
+    async (paper: Paper, quiet = false): Promise<CitationResponse | null> => {
+      const key = citationCacheKey(paper, citationStyle);
+      if (citationCache[key]) {
+        return citationCache[key];
+      }
+      if (citationLoadingMap[key]) {
+        return null;
+      }
+
+      setCitationLoadingMap((prev) => ({ ...prev, [key]: true }));
+      try {
+        const response = await fetchCitation(getCitationMetadata(paper), citationStyle);
+        setCitationCache((prev) => ({ ...prev, [key]: response }));
+        return response;
+      } catch (err: unknown) {
+        if (!quiet) {
+          toastError(apiErrorMessage(err, 'Failed to generate citation.'));
+        }
+        return null;
+      } finally {
+        setCitationLoadingMap((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }
+    },
+    [citationCache, citationLoadingMap, citationStyle, toastError],
+  );
+
   const copyCitation = async (paper: Paper) => {
-    const text = buildCitation(paper, citationStyle);
+    const resolved = await ensureCitation(paper);
+    const text = resolved?.citation || fallbackCitation(getCitationMetadata(paper), citationStyle);
     try {
       await navigator.clipboard.writeText(text);
       toastSuccess('Citation copied');
@@ -1147,7 +1182,7 @@ const SearchPapers: React.FC = () => {
           SOURCE_LABELS[String(paper.source || '').toLowerCase()] || paper.source || 'Unknown',
           paper.doi || '',
           paper.url || '',
-          buildCitation(paper, citationStyle),
+          citationCache[citationCacheKey(paper, citationStyle)]?.citation || fallbackCitation(getCitationMetadata(paper), citationStyle),
         ]),
       ];
 
@@ -1158,7 +1193,11 @@ const SearchPapers: React.FC = () => {
       ext = 'csv';
     } else {
       content = filteredResults
-        .map((paper, index) => `${index + 1}. ${buildCitation(paper, citationStyle)}`)
+        .map((paper, index) => {
+          const cached = citationCache[citationCacheKey(paper, citationStyle)];
+          const text = cached?.citation || fallbackCitation(getCitationMetadata(paper), citationStyle);
+          return `${index + 1}. ${text}`;
+        })
         .join('\n\n');
     }
 
@@ -1172,6 +1211,12 @@ const SearchPapers: React.FC = () => {
     link.remove();
     URL.revokeObjectURL(url);
   };
+
+  useEffect(() => {
+    renderedResults.slice(0, 10).forEach((paper) => {
+      void ensureCitation(paper, true);
+    });
+  }, [citationStyle, ensureCitation, renderedResults]);
 
   return (
     <Layout>
@@ -1395,6 +1440,8 @@ const SearchPapers: React.FC = () => {
                   <option value="apa">Cite: APA</option>
                   <option value="mla">Cite: MLA</option>
                   <option value="ieee">Cite: IEEE</option>
+                  <option value="chicago">Cite: Chicago</option>
+                  <option value="bibtex">Cite: BibTeX</option>
                 </select>
 
                 <select
@@ -1674,7 +1721,10 @@ const SearchPapers: React.FC = () => {
               const imported = importedSet.has(importKey);
               const sourceKey = canonicalSourceKey(String(paper.source || '').toLowerCase());
               const sourceLabel = SOURCE_LABELS[sourceKey] || paper.source || 'Merged source';
-              const citation = buildCitation(paper, citationStyle);
+              const citationKey = citationCacheKey(paper, citationStyle);
+              const citationResult = citationCache[citationKey];
+              const citation = citationResult?.citation || fallbackCitation(getCitationMetadata(paper), citationStyle);
+              const citationLoading = Boolean(citationLoadingMap[citationKey]);
               const fullTextLink = String(
                 paper.full_text_url || paper.pdf_url || paper.institutional_url || (hasPdfLink(paper) ? paper.url : '')
               ).trim();
@@ -1712,6 +1762,23 @@ const SearchPapers: React.FC = () => {
                       <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700">
                         {sourceLabel}
                       </span>
+                      {citationResult ? (
+                        <span
+                          className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                            citationResult.completeness_score >= 80
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : citationResult.completeness_score >= 55
+                              ? 'border-amber-200 bg-amber-50 text-amber-700'
+                              : 'border-rose-200 bg-rose-50 text-rose-700'
+                          }`}
+                        >
+                          Citation completeness {citationResult.completeness_score}%
+                        </span>
+                      ) : (
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-500">
+                          {citationLoading ? 'Assessing citation...' : 'Citation assessment pending'}
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => copyCitation(paper)}
@@ -1753,6 +1820,11 @@ const SearchPapers: React.FC = () => {
                   </div>
 
                   <p className={`text-xs text-slate-500 ${resultView === 'compact' ? 'mt-2 line-clamp-1' : 'mt-3 line-clamp-2'}`}>{citation}</p>
+                  {citationResult && citationResult.warnings.length > 0 && (
+                    <p className="mt-2 text-xs text-amber-700">
+                      {citationResult.warnings[0]}
+                    </p>
+                  )}
 
                   <div className={`flex flex-wrap gap-2 ${resultView === 'compact' ? 'mt-4' : 'mt-5'}`}>
                     <a

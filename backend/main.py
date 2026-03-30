@@ -69,8 +69,14 @@ from routers import (
     analytics,
     insights,
     health,
+    rag,
+    workspace_insights,
+    workspace_feed,
+    onboarding,
+    demo_mode,
 )
 from repositories import FirebaseResearchRepository
+from services.paper_check_service import JOB_TIMEOUT_SECONDS, get_paper_check_metrics_snapshot
 from utils.cloud_logging import setup_google_cloud_logging
 from utils.firebase_admin_client import verify_firebase_app_check_token
 
@@ -149,6 +155,22 @@ _HTTP_METRICS: Dict[str, Any] = {
 }
 _RECENT_REQUESTS: Deque[Tuple[float, int, int]] = deque(maxlen=15000)
 _REDIS_RATE_LIMITER = None
+SLOW_REQUEST_THRESHOLD_MS = max(
+    250,
+    int(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "1200") or 1200),
+)
+FAILURE_SPIKE_WINDOW_SECONDS = max(
+    10,
+    int(os.getenv("FAILURE_SPIKE_WINDOW_SECONDS", "60") or 60),
+)
+FAILURE_SPIKE_THRESHOLD = max(
+    5,
+    int(os.getenv("FAILURE_SPIKE_THRESHOLD", "15") or 15),
+)
+FAILURE_SPIKE_COOLDOWN_SECONDS = max(
+    10,
+    int(os.getenv("FAILURE_SPIKE_COOLDOWN_SECONDS", "60") or 60),
+)
 
 if RATE_LIMIT_STORE == "redis":
     if not redis or not REDIS_URL:
@@ -184,15 +206,85 @@ app = FastAPI(title="Soyog AI API", version="1.0.0")
 # ---------------------------------------------------------------------------
 
 
+def _request_id_from_request(request: Request) -> str:
+    request_id = str(getattr(request.state, "request_id", "") or "").strip()
+    if request_id:
+        return request_id
+    header_request_id = str(request.headers.get("X-Request-ID", "")).strip()
+    return header_request_id or uuid4().hex
+
+
+def _error_code_for_status(status_code: int) -> str:
+    status = int(status_code or 500)
+    mapping = {
+        400: "BAD_REQUEST",
+        401: "UNAUTHORIZED",
+        403: "FORBIDDEN",
+        404: "NOT_FOUND",
+        409: "CONFLICT",
+        422: "VALIDATION_ERROR",
+        429: "RATE_LIMITED",
+        500: "INTERNAL_ERROR",
+        502: "UPSTREAM_ERROR",
+        503: "SERVICE_UNAVAILABLE",
+        504: "UPSTREAM_TIMEOUT",
+    }
+    return mapping.get(status, f"HTTP_{status}")
+
+
+def _normalize_error_detail(detail: Any) -> Tuple[str, Any]:
+    if isinstance(detail, dict):
+        message = str(
+            detail.get("message")
+            or detail.get("detail")
+            or detail.get("error")
+            or "Request failed."
+        ).strip()
+        return message or "Request failed.", dict(detail)
+    if isinstance(detail, list):
+        return "Request failed.", list(detail)
+    text = str(detail or "").strip()
+    return (text or "Request failed."), (text or None)
+
+
+def _error_payload(
+    *,
+    status_code: int,
+    message: str,
+    raw_detail: Any,
+    request_id: str,
+    details: Any = None,
+    error_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "error_code": str(error_code or _error_code_for_status(status_code)),
+        "message": str(message or "Request failed.").strip() or "Request failed.",
+    }
+    normalized_details: Any = details
+    if isinstance(details, dict):
+        normalized_details = dict(details)
+    elif details is None:
+        normalized_details = {}
+    else:
+        normalized_details = {"context": details}
+    if isinstance(normalized_details, dict):
+        normalized_details.setdefault("request_id", request_id)
+    payload["details"] = normalized_details
+    payload["detail"] = raw_detail if raw_detail is not None else payload["message"]
+    return payload
+
+
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     """Catch-all for unhandled exceptions. Returns 500 with a safe message."""
-    import traceback
-
-    logger.error(
+    request_id = _request_id_from_request(request)
+    user_id = str(getattr(request.state, "user_id", "anonymous") or "anonymous")
+    logger.exception(
         json.dumps(
             {
                 "event": "unhandled_exception",
+                "request_id": request_id,
+                "user_id": user_id,
                 "error_type": type(exc).__name__,
                 "path": request.url.path,
                 "method": request.method,
@@ -202,29 +294,80 @@ async def _global_exception_handler(request: Request, exc: Exception):
     )
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content=_error_payload(
+            status_code=500,
+            message="Internal server error",
+            raw_detail="Internal server error",
+            request_id=request_id,
+            details={},
+            error_code="INTERNAL_ERROR",
+        ),
     )
 
 
 @app.exception_handler(RequestValidationError)
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Return clean 422 with structured field errors — no stack traces."""
+    """Return clean 422 with structured field errors - no stack traces."""
+    request_id = _request_id_from_request(request)
     errors = []
     for error in exc.errors():
-        field = " → ".join(str(loc) for loc in error.get("loc", []))
+        field = " -> ".join(str(loc) for loc in error.get("loc", []))
         errors.append({"field": field, "message": error.get("msg", "Invalid value")})
+    logger.warning(
+        json.dumps(
+            {
+                "event": "request_validation_error",
+                "request_id": request_id,
+                "path": request.url.path,
+                "method": request.method,
+                "error_count": len(errors),
+            }
+        )
+    )
+    payload = _error_payload(
+        status_code=422,
+        message="Validation error",
+        raw_detail="Validation error",
+        request_id=request_id,
+        details={"errors": errors},
+        error_code="VALIDATION_ERROR",
+    )
+    payload["errors"] = errors
     return JSONResponse(
         status_code=422,
-        content={"detail": "Validation error", "errors": errors},
+        content=payload,
     )
 
 
 @app.exception_handler(HTTPException)
 async def _http_exception_handler(request: Request, exc: HTTPException):
     """Standardize HTTPException response shape across all routers."""
+    request_id = _request_id_from_request(request)
+    message, detail_value = _normalize_error_detail(exc.detail)
+    status_code = int(exc.status_code or 500)
+    if status_code >= 500:
+        logger.error(
+            json.dumps(
+                {
+                    "event": "http_exception",
+                    "request_id": request_id,
+                    "user_id": str(getattr(request.state, "user_id", "anonymous") or "anonymous"),
+                    "status_code": status_code,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "detail": str(message)[:500],
+                }
+            )
+        )
     return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail},
+        status_code=status_code,
+        content=_error_payload(
+            status_code=status_code,
+            message=message,
+            raw_detail=exc.detail,
+            request_id=request_id,
+            details=detail_value if detail_value is not None else {},
+        ),
         headers=getattr(exc, "headers", None) or {},
     )
 
@@ -494,6 +637,8 @@ def _update_http_metrics(
 ) -> None:
     now = time.time()
     path_key = _metric_path(path)
+    should_log_failure_spike = False
+    recent_failure_count = 0
     with _METRICS_LOCK:
         _HTTP_METRICS["requests_total"] = (
             int(_HTTP_METRICS.get("requests_total", 0)) + 1
@@ -529,6 +674,32 @@ def _update_http_metrics(
             buckets["gt_1000"] = int(buckets.get("gt_1000", 0)) + 1
 
         _RECENT_REQUESTS.append((now, int(status_code), int(duration_ms)))
+        if int(status_code) >= 500:
+            cutoff = now - FAILURE_SPIKE_WINDOW_SECONDS
+            for ts, code, _ in reversed(_RECENT_REQUESTS):
+                if ts < cutoff:
+                    break
+                if int(code) >= 500:
+                    recent_failure_count += 1
+            last_logged = float(_HTTP_METRICS.get("last_failure_spike_log_at", 0.0))
+            if (
+                recent_failure_count >= FAILURE_SPIKE_THRESHOLD
+                and (now - last_logged) >= FAILURE_SPIKE_COOLDOWN_SECONDS
+            ):
+                _HTTP_METRICS["last_failure_spike_log_at"] = now
+                should_log_failure_spike = True
+    if should_log_failure_spike:
+        logger.error(
+            json.dumps(
+                {
+                    "event": "failure_spike_detected",
+                    "window_seconds": FAILURE_SPIKE_WINDOW_SECONDS,
+                    "threshold": FAILURE_SPIKE_THRESHOLD,
+                    "recent_5xx_count": recent_failure_count,
+                    "path": path_key,
+                }
+            )
+        )
 
 
 def _window_slo(window_seconds: int) -> Dict[str, Any]:
@@ -594,6 +765,9 @@ def _apply_response_headers(
 async def request_logging_middleware(request: Request, call_next):
     started = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or uuid4().hex
+    request.state.request_id = request_id
+    if not getattr(request.state, "user_id", None):
+        request.state.user_id = "anonymous"
     status_code = 500
     cloud_trace = _resolve_cloud_trace(request)
 
@@ -620,7 +794,13 @@ async def request_logging_middleware(request: Request, call_next):
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 response = JSONResponse(
                     status_code=401,
-                    content={"detail": "Missing Firebase App Check token."},
+                    content=_error_payload(
+                        status_code=401,
+                        message="Missing Firebase App Check token.",
+                        raw_detail="Missing Firebase App Check token.",
+                        request_id=request_id,
+                        details={},
+                    ),
                 )
                 _apply_response_headers(response, request, request_id, duration_ms)
                 _update_http_metrics(request.url.path, 401, duration_ms)
@@ -632,7 +812,13 @@ async def request_logging_middleware(request: Request, call_next):
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 response = JSONResponse(
                     status_code=401,
-                    content={"detail": "Invalid Firebase App Check token."},
+                    content=_error_payload(
+                        status_code=401,
+                        message="Invalid Firebase App Check token.",
+                        raw_detail="Invalid Firebase App Check token.",
+                        request_id=request_id,
+                        details={},
+                    ),
                 )
                 _apply_response_headers(response, request, request_id, duration_ms)
                 _update_http_metrics(request.url.path, 401, duration_ms)
@@ -643,7 +829,13 @@ async def request_logging_middleware(request: Request, call_next):
         duration_ms = int((time.perf_counter() - started) * 1000)
         response = JSONResponse(
             status_code=429,
-            content={"detail": "Rate limit exceeded. Please retry shortly."},
+            content=_error_payload(
+                status_code=429,
+                message="Rate limit exceeded. Please retry shortly.",
+                raw_detail="Rate limit exceeded. Please retry shortly.",
+                request_id=request_id,
+                details={"retry_after_s": retry_after},
+            ),
         )
         response.headers["Retry-After"] = str(retry_after)
         _apply_response_headers(response, request, request_id, duration_ms)
@@ -671,7 +863,7 @@ async def request_logging_middleware(request: Request, call_next):
     except Exception:
         duration_ms = int((time.perf_counter() - started) * 1000)
         _update_http_metrics(request.url.path, 500, duration_ms)
-        logger.info(
+        logger.error(
             json.dumps(
                 {
                     "event": "http_request",
@@ -689,6 +881,22 @@ async def request_logging_middleware(request: Request, call_next):
     duration_ms = int((time.perf_counter() - started) * 1000)
     _apply_response_headers(response, request, request_id, duration_ms)
     _update_http_metrics(request.url.path, status_code, duration_ms)
+    if duration_ms >= SLOW_REQUEST_THRESHOLD_MS:
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "slow_http_request",
+                    "request_id": request_id,
+                    "user_id": getattr(request.state, "user_id", "anonymous"),
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                    "threshold_ms": SLOW_REQUEST_THRESHOLD_MS,
+                    "logging.googleapis.com/trace": cloud_trace,
+                }
+            )
+        )
     logger.info(
         json.dumps(
             {
@@ -717,6 +925,11 @@ app.include_router(compliance.router)
 app.include_router(analytics.router)
 app.include_router(insights.router)
 app.include_router(health.router)
+app.include_router(rag.router)
+app.include_router(workspace_insights.router)
+app.include_router(workspace_feed.router)
+app.include_router(onboarding.router)
+app.include_router(demo_mode.router)
 
 logger.info(
     json.dumps(
@@ -802,6 +1015,23 @@ async def ops_metrics(request: Request):
         "# TYPE researchhub_uptime_seconds gauge",
         f"researchhub_uptime_seconds {int(max(0, int(now - m_started_at)))}",
     ]
+    paper_check_metrics = {
+        "total_jobs_created": 0,
+        "jobs_completed": 0,
+        "jobs_failed": 0,
+        "avg_latency_ms": 0.0,
+        "retry_rate": 0.0,
+        "total_retries": 0,
+        "stuck_job_count": 0,
+    }
+    try:
+        repo = FirebaseResearchRepository()
+        paper_check_metrics = get_paper_check_metrics_snapshot(
+            repo=repo,
+            timeout_seconds=JOB_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("paper_check metrics collection failed: %s", exc)
 
     for status_code, count in sorted(m_status_counts.items()):
         lines.append(
@@ -816,6 +1046,31 @@ async def ops_metrics(request: Request):
         lines.append(
             f'researchhub_http_latency_bucket_total{{bucket="{bucket_key}"}} {int(count)}'
         )
+    lines.extend(
+        [
+            "# HELP researchhub_paper_check_jobs_created_total Total paper-check jobs created",
+            "# TYPE researchhub_paper_check_jobs_created_total gauge",
+            f'researchhub_paper_check_jobs_created_total {int(paper_check_metrics["total_jobs_created"])}',
+            "# HELP researchhub_paper_check_jobs_completed_total Total completed paper-check jobs",
+            "# TYPE researchhub_paper_check_jobs_completed_total gauge",
+            f'researchhub_paper_check_jobs_completed_total {int(paper_check_metrics["jobs_completed"])}',
+            "# HELP researchhub_paper_check_jobs_failed_total Total failed paper-check jobs",
+            "# TYPE researchhub_paper_check_jobs_failed_total gauge",
+            f'researchhub_paper_check_jobs_failed_total {int(paper_check_metrics["jobs_failed"])}',
+            "# HELP researchhub_paper_check_avg_latency_ms Average paper-check latency in milliseconds",
+            "# TYPE researchhub_paper_check_avg_latency_ms gauge",
+            f'researchhub_paper_check_avg_latency_ms {float(paper_check_metrics["avg_latency_ms"])}',
+            "# HELP researchhub_paper_check_retry_rate Retry rate for paper-check jobs",
+            "# TYPE researchhub_paper_check_retry_rate gauge",
+            f'researchhub_paper_check_retry_rate {float(paper_check_metrics["retry_rate"])}',
+            "# HELP researchhub_paper_check_total_retries Total retries consumed by paper-check jobs",
+            "# TYPE researchhub_paper_check_total_retries gauge",
+            f'researchhub_paper_check_total_retries {int(paper_check_metrics["total_retries"])}',
+            "# HELP researchhub_paper_check_stuck_jobs_total Total stuck running paper-check jobs",
+            "# TYPE researchhub_paper_check_stuck_jobs_total gauge",
+            f'researchhub_paper_check_stuck_jobs_total {int(paper_check_metrics["stuck_job_count"])}',
+        ]
+    )
     return PlainTextResponse(
         "\n".join(lines) + "\n", media_type="text/plain; version=0.0.4"
     )
@@ -824,3 +1079,4 @@ async def ops_metrics(request: Request):
 @app.get("/")
 async def root():
     return {"message": "Soyog AI API is running"}
+

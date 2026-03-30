@@ -1,337 +1,178 @@
 # Soyog AI
 
-Soyog AI is an end-to-end research workspace where users can:
+Soyog AI is an AI-native research workspace for searching, synthesizing, and analyzing scientific literature at scale.
 
-1. Search papers across multiple scholarly sources.
-2. Import selected papers into personal workspaces.
-3. Ask AI questions using workspace paper context.
-4. Upload PDFs and auto-generate summaries.
-5. Export literature synthesis and mindmap reports (PDF/DOCX).
+## Live Deployment
 
-## Key Features
+- Production frontend: <https://research-hub-ai-lime.vercel.app>
+- Production backend docs: <https://soyog-ai-backend-568566718388.us-central1.run.app/docs>
 
-1. Unified paper discovery (`/papers/search-global`) across 28+ providers.
-2. Account system with email/password and Google OAuth login.
-3. Workspace-centric organization for papers and AI chat history.
-4. AI analysis modes (`summaries`, `insights`, `review`) with long-form output support.
-5. Research report export with structured sections and mindmap block.
-6. CSV/BibTeX workspace export for citations and external tooling.
+## Platform Highlights
+
+### Core product
+
+- FastAPI backend with modular routes for auth, papers, chat, workspaces, AI, analytics, compliance, health checks, and the research agent.
+- React + Vite + TypeScript frontend built around a workspace-centric research workflow.
+- Firebase-first runtime for request-path persistence with Firestore and Firebase Storage.
+- Legacy SQLAlchemy code retained for compatibility and migration workflows.
+
+### AI and search
+
+- Unified paper discovery across 28+ scholarly providers, including arXiv, NASA ADS, OpenAlex, and NCBI-backed sources.
+- Groq-backed AI features for chat, PDF summarization, long-form synthesis, and mindmap/report generation.
+- Per-feature model routing support through `GROQ_CHAT_MODEL`, `GROQ_UPLOAD_SUMMARY_MODEL`, `GROQ_MINDMAP_MODEL`, and `GROQ_PIPELINE_MODEL`.
+
+### Production and operations
+
+- Frontend deployed on Vercel and backend deployed on Google Cloud Run.
+- Dynamic CORS handling for stable Vercel production and preview subdomains.
+- Sentry error tracking, Prometheus-compatible metrics, health probes, structured logging, and production security headers.
+- Backend build optimization via [`backend/.gcloudignore`](backend/.gcloudignore).
 
 ## Tech Stack
 
-1. Frontend: React, TypeScript, Vite, Tailwind, Axios, React Router.
-2. Backend: FastAPI, SQLAlchemy, Pydantic, Authlib, PyJWT.
-3. AI: Groq API (Llama model family).
-4. Database: SQLite by default (configurable via `DATABASE_URL`).
-5. Testing/CI: Pytest + GitHub Actions workflow (`.github/workflows/ci.yml`).
+| Component | Technology |
+| :-- | :-- |
+| Frontend | React, TypeScript, Vite, Tailwind CSS, Axios |
+| Backend | Python, FastAPI, Pydantic, Authlib |
+| AI Models | Groq-hosted Llama 3.3 and DeepSeek R1 variants |
+| Auth | Firebase Authentication, Google OAuth, email/password |
+| Storage | Firestore, Firebase Storage, compatibility SQLAlchemy code |
+| Hosting | Google Cloud Run, Vercel |
+| Observability | Sentry, Prometheus metrics, Google Cloud Logging |
 
-## Project Structure
+## Repository Layout
 
 ```text
-<repo-root>/
+ResearchHub-AI/
   backend/
     main.py
-    database.py
-    models.py
     routers/
+    repositories/
     utils/
     tests/
   frontend/
     src/
-      pages/
-      components/
-      utils/
+  docs/
+  ops/
+  deploy/
 ```
 
-## Quick Start (Development)
+## Local Setup
 
 ### Prerequisites
 
-1. Python 3.11+
-2. Node.js 20+ and npm
-3. Git
+1. Python 3.11 or newer
+2. Node.js 20 or newer
+3. Google Cloud SDK with Firestore emulator support if you want to use `run_dev.ps1`
+4. A Groq API key and Firebase project config for non-emulator or production-like runs
 
-### 1) Clone and install dependencies
+### 1. Create the local Python environment
+
+Use the repository-root virtual environment. The workspace is already configured to prefer [`.vscode/settings.json`](.vscode/settings.json).
 
 ```powershell
-git clone <your-repo-url>
-cd <repo-folder>
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend/requirements.txt
+.\.venv\Scripts\activate
+pip install -r backend\requirements.txt
+```
+
+### 2. Configure environment files
+
+Copy the shared example file into the backend and frontend folders:
+
+```powershell
+Copy-Item .env.example backend\.env
+Copy-Item .env.example frontend\.env
+```
+
+Minimum values to review before running locally:
+
+- `backend/.env`: `APP_ENV`, `SECRET_KEY`, `GROQ_API_KEY`, `FRONTEND_URL`
+- `backend/.env`: Firebase settings such as `FIREBASE_PROJECT_ID`, `FIREBASE_CREDENTIALS_PATH`, and `FIREBASE_STORAGE_BUCKET` when not using the emulator
+- `frontend/.env`: `VITE_API_URL` and the `VITE_FIREBASE_*` keys
+
+Important runtime note:
+
+- The active request-path backend is Firebase-first. For local development, either run against the Firestore emulator or provide real Firebase credentials.
+
+### 3. Install frontend dependencies
+
+```powershell
 cd frontend
-npm ci
+npm install
 cd ..
 ```
 
-Development standard:
+### 4. Start the app
 
-1. The supported local Python environment for this repo is `.venv` at the repository root.
-2. Do not point your editor at `backend\venv`. If that folder exists on your machine, treat it as legacy local state.
-3. VS Code/Windsurf will use the repo-tracked workspace setting in `.vscode/settings.json` to select `.venv`.
-
-### 2) Configure environment files
-
-Copy the example file and fill real values:
-
-```powershell
-copy .env.example backend\.env
-copy .env.example frontend\.env
-```
-
-Minimum required backend values:
-
-1. `SECRET_KEY`
-2. `BACKEND_URL`
-3. `FRONTEND_URL`
-4. `DATABASE_URL` (optional if default SQLite is used)
-5. `GROQ_API_KEY` (required for AI features)
-6. `STORAGE_BACKEND=sqlalchemy` (keep this value unless you are intentionally testing the Firebase-backed repository slice)
-7. Keep `BACKEND_URL`, `VITE_API_URL`, and `GOOGLE_REDIRECT_URI` aligned with the actual backend port (`8010` in the commands below).
-8. Leave `TRUST_PROXY_HEADERS=0` unless the app is running behind a reverse proxy you control and `TRUSTED_PROXY_IPS` is set correctly.
-
-Optional AI routing values:
-
-1. `GROQ_CHAT_MODEL`
-2. `GROQ_UPLOAD_SUMMARY_MODEL`
-3. `GROQ_MINDMAP_MODEL`
-4. `GROQ_PIPELINE_MODEL`
-
-Frontend value:
-
-1. `VITE_API_URL` (must match backend URL)
-
-### 3) Run backend and frontend
-
-Option A: Use helper script (Windows):
+Recommended on Windows:
 
 ```powershell
 .\run_dev.ps1
 ```
 
-Option B: Run manually in two terminals:
+`run_dev.ps1` starts:
 
-Terminal 1 (backend):
+- the Firestore emulator on `localhost:8080`
+- the backend on `http://localhost:8010`
+- the frontend via Vite
+
+Manual startup is also possible:
 
 ```powershell
+# Terminal 1
+gcloud beta emulators firestore start --project=studio-5606596663-2ca06 --host-port=localhost:8080
+
+# Terminal 2
 cd backend
-python -m uvicorn main:app --reload --port 8010
-```
+$env:FIRESTORE_EMULATOR_HOST='localhost:8080'
+..\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8010
 
-Terminal 2 (frontend):
-
-```powershell
+# Terminal 3
 cd frontend
 npm run dev
 ```
 
-Open the frontend URL printed by Vite (usually `http://localhost:5173`).
-
-### Python interpreter note
-
-If VS Code or Windsurf keeps prompting you to select a Python interpreter:
-
-1. Run `Python: Clear Workspace Interpreter Setting`.
-2. Run `Developer: Reload Window`.
-3. Select `${workspaceFolder}\\.venv\\Scripts\\python.exe` if prompted.
-4. Confirm the status bar shows `.venv`.
-
-Optional cleanup after `.venv` is working:
-
-```powershell
-Remove-Item -Recurse -Force backend\venv
-```
-
-Verification:
-
-```powershell
-python -V
-python -c "import sys; print(sys.executable)"
-```
-
-## AI Model Routing
-
-Soyog AI can now route different features to different Groq models:
-
-1. `Chat`
-2. `Upload Summary`
-3. `Mindmap / Report`
-4. `Pipeline / Agent`
-
-Use `Settings -> AI model routing` to keep a lighter model on chat and a stronger model on long-form generation.
-
-## Database Direction
-
-Soyog AI now supports a full request-path Firebase runtime:
-
-1. Firestore for users, workspaces, papers, chats, search history, session state, compliance requests, and developer/admin reads
-2. Firebase Storage for uploaded PDFs and generated export/report files
-3. `STORAGE_BACKEND=firebase` switches the active runtime persistence layer to Firebase
-4. SQLAlchemy remains available as a compatibility fallback and migration source
-
-Required Firebase envs are documented in `.env.example` and the operational details live in `docs/firebase-migration.md`.
-
-### Alembic migrations (SQLAlchemy mode)
-
-When `STORAGE_BACKEND=sqlalchemy`, apply schema changes with Alembic:
-
-```powershell
-.\.venv\Scripts\python.exe -m alembic upgrade head
-```
-
-If an existing local database already matches the baseline and you only want to mark it:
-
-```powershell
-.\.venv\Scripts\python.exe -m alembic stamp head
-```
-
-### SQL to Firebase migration script
-
-Dry run first:
-
-```powershell
-.\.venv\Scripts\python.exe backend\scripts\migrate_sql_to_firebase.py --dry-run
-```
-
-Real migration after setting `FIREBASE_PROJECT_ID` and `FIREBASE_CREDENTIALS_PATH`:
-
-```powershell
-.\.venv\Scripts\python.exe backend\scripts\migrate_sql_to_firebase.py --drop-target
-```
-
-The executable path should point to `.venv`.
-
 ## Common Commands
 
-### Backend tests
+Backend tests with the Firestore emulator running:
 
 ```powershell
-python -m pytest backend/tests -q
+$env:FIRESTORE_EMULATOR_HOST='localhost:8080'
+.\.venv\Scripts\python.exe -m pytest backend\tests -q
 ```
 
-### Frontend production build
+Frontend production build:
 
 ```powershell
 cd frontend
 npm run build
 ```
 
-### Frontend E2E smoke tests
+Optional Makefile shortcuts:
 
-```powershell
-cd frontend
-npx playwright install
-npm run test:e2e
-```
+- `make start-backend`
+- `make start-frontend`
+- `make test`
+- `make build-frontend`
 
-### Makefile shortcuts (if using make)
+## Additional Docs
 
-1. `make start-backend`
-2. `make start-frontend`
-3. `make test`
-4. `make build-frontend`
+- Deployment guide: [`DEPLOYMENT.md`](DEPLOYMENT.md)
+- Monitoring guide: [`MONITORING.md`](MONITORING.md)
+- Security guide: [`SECURITY.md`](SECURITY.md)
+- Firebase runtime notes: [`docs/firebase-migration.md`](docs/firebase-migration.md)
+- Edge deployment guide: [`docs/edge/global-edge-deployment.md`](docs/edge/global-edge-deployment.md)
+- Disaster recovery plan: [`docs/resilience/backup-restore-dr-plan.md`](docs/resilience/backup-restore-dr-plan.md)
 
-## Notes
+## Roadmap
 
-1. Default local DB is `backend/researchhub.db`.
-2. AI endpoints return graceful errors if `GROQ_API_KEY` is missing.
-3. Google OAuth requires correct redirect URI in Google Console and `backend/.env`.
-4. Never commit real secrets in `.env` files.
+- [ ] Add Pinecone or Weaviate-backed RAG retrieval
+- [ ] Ship real-time collaboration for shared workspaces
+- [ ] Expand report export formats to Markdown and LaTeX
+- [ ] Improve full-text PDF parsing for non-open-access papers
 
-## Security and Secret Hygiene
+## Maintainer
 
-1. Keep only placeholders in `.env.example`.
-2. Store real keys only in local `.env` files or secret managers.
-3. Rotate any key that was accidentally exposed.
-4. Install local pre-push secret guard:
-   ```powershell
-   .\scripts\install-git-hooks.ps1
-   ```
-
-## Production Hardening
-
-1. Built-in API rate limiting is configurable with:
-   `RATE_LIMIT_ENABLED`, `RATE_LIMIT_WINDOW_SECONDS`, `RATE_LIMIT_AUTH_PER_WINDOW`, `RATE_LIMIT_API_PER_WINDOW`.
-2. Optional Redis-backed limiter:
-   `RATE_LIMIT_STORE=redis` with `REDIS_URL=redis://...`.
-3. Cookie auth controls:
-   `AUTH_COOKIE_SAMESITE`, `AUTH_COOKIE_DOMAIN`, `AUTH_COOKIE_SECURE`.
-4. Security headers can be toggled with `SECURITY_HEADERS_ENABLED`.
-5. Health probes:
-   - Liveness: `GET /health/live`
-   - Readiness (DB check): `GET /health/ready`
-
-## External Security Testing
-
-1. Automated security workflow: `.github/workflows/security-scans.yml`
-2. Secret scan workflow: `.github/workflows/secret-scan.yml`
-3. OWASP ZAP local scan:
-   ```powershell
-   .\scripts\run_owasp_zap.ps1 -TargetUrl https://app.example.com
-   ```
-4. Manual penetration testing playbook:
-   - `docs/security/penetration-testing-playbook.md`
-   - `docs/security/owasp-scan-operations.md`
-5. Dependency update automation: `.github/dependabot.yml`
-
-## Production Edge Setup
-
-1. Nginx reverse-proxy baseline: `deploy/nginx/researchhub.conf`
-2. Cloudflare rules template: `deploy/cloudflare/waf-rules.json`
-3. Edge deployment guide: `docs/edge/global-edge-deployment.md`
-
-## Observability and SRE
-
-1. Prometheus scrape endpoint: `GET /ops/metrics` (supports optional `X-Metrics-Token`)
-2. SLO endpoint: `GET /ops/slo`
-3. Monitoring configs:
-   - `ops/monitoring/prometheus.yml`
-   - `ops/monitoring/alerts.yml`
-4. Runbooks:
-   - `ops/runbooks/incident-response.md`
-   - `ops/runbooks/slo-policy.md`
-
-## Data Resilience
-
-1. Backup:
-   ```powershell
-   python scripts/db_backup.py --out-dir backups
-   ```
-2. Restore:
-   ```powershell
-   python scripts/db_restore.py --backup-file backups/<file> --manifest-file backups/<manifest> --force
-   ```
-3. Disaster-recovery drill:
-   ```powershell
-   python scripts/backup_restore_drill.py
-   ```
-4. CI drill workflow: `.github/workflows/dr-backup-restore-drill.yml`
-5. DR plan: `docs/resilience/backup-restore-dr-plan.md`
-
-## Compliance and Legal
-
-1. Public legal pages:
-   - `/privacy`
-   - `/terms`
-   - `/cookies`
-   - `/data-rights`
-2. Data rights API:
-   - `POST /compliance/data-rights-request`
-   - `GET /compliance/data-rights-request/me`
-   - `GET /compliance/export-my-data`
-
-## Accessibility (WCAG 2.2 AA)
-
-1. Automated audit:
-   ```powershell
-   cd frontend
-   npm run build
-   npm run a11y:ci
-   ```
-2. Audit config: `frontend/.pa11yci.json`
-3. CI audit workflow: `.github/workflows/accessibility-audit.yml`
-4. Manual checklist: `docs/accessibility/wcag-2.2-aa-audit-checklist.md`
-
-## License
-
-Add your preferred license here (MIT/Apache-2.0/etc.).
+Maintained by Girish S. and the Soyog AI team.

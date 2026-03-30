@@ -1,13 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from typing import Optional
-import pdfplumber
-import io
 import os
 import re
 
 from repositories.research import User
 from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user
+from services.pdf_text_service import clean_extracted_text, extract_text_from_pdf_bytes
+from services.rag_hooks import index_paper_best_effort
 from utils.groq_client import client, model_config
 from utils.firebase_storage import download_bytes, storage_is_configured, upload_bytes
 
@@ -21,16 +21,6 @@ def _safe_filename(name: str, fallback: str = "upload.pdf") -> str:
 
 def _backend_base_url() -> str:
     return (os.getenv("BACKEND_URL") or "http://127.0.0.1:8010").rstrip("/")
-
-
-def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract plain text from PDF bytes using pdfplumber."""
-    text_parts = []
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text() or ""
-            text_parts.append(page_text)
-    return "\n".join(text_parts)
 
 
 def summarize_with_ai(text: str) -> str:
@@ -128,7 +118,7 @@ async def upload_pdf(
 
     # Extract text
     try:
-        extracted_text = extract_text_from_pdf(file_bytes)
+        extracted_text = clean_extracted_text(extract_text_from_pdf_bytes(file_bytes))
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse PDF: {str(e)}")
 
@@ -196,6 +186,7 @@ async def upload_pdf(
             )
             file_record_id = file_record.id
             storage_bucket = uploaded.bucket
+        index_paper_best_effort(repo=repo, paper=new_paper)
 
     return {
         "filename": file.filename,

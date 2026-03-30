@@ -30,6 +30,9 @@ Configure the following Alerting rules in Sentry or Google Cloud Monitoring to t
 | **P95 Latency** | > 3000 ms (5m) | WARNING | Check Groq LLM latency; spin up more Uvicorn workers if CPU bound. |
 | **Cache Hit Rate** | < 20% | INFO | Cache eviction may be too aggressive; adjust TTL in `cache_service.py`. |
 | **AI Usage Spikes** | > 200% over baseline | WARNING | Monitor potentially anomalous token generation or heavy user scrapers. |
+| **Job DLQ Spikes** | > 10 messages (10m) | CRITICAL | Investigate paper check worker failures; check `paper_check_message_handler_failed` logs. |
+| **Job High Latency** | > 60s processing time | WARNING | Check worker logs for `paper_check_job_latency_warning`; scale heavy worker pool if needed. |
+| **Queue Backlog Growth** | > 50% growth (5m) | WARNING | Worker starvation; burst publish occurred; check `paper_check_queue_backlog_growth` logs. |
 
 ## 3. Integration Examples
 

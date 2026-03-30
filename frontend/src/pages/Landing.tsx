@@ -145,6 +145,9 @@ const Landing: React.FC = () => {
               <Link to="/login" className="hero-btn-secondary">
                 Continue session
               </Link>
+              <Link to="/register?demo=1" className="hero-btn-secondary">
+                Try Demo
+              </Link>
             </div>
 
             <div className="landing-meta-grid">

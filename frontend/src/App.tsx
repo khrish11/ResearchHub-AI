@@ -58,11 +58,14 @@ const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'), 'dashboard');
 const SearchPapers = lazyWithRetry(() => import('./pages/SearchPapers'), 'search-papers');
 const Workspace = lazyWithRetry(() => import('./pages/Workspace'), 'workspace');
 const Mindmap = lazyWithRetry(() => import('./pages/Mindmap'), 'mindmap');
+const ComparePapers = lazyWithRetry(() => import('./pages/ComparePapers'), 'compare-papers');
+const ResearchReport = lazyWithRetry(() => import('./pages/ResearchReport'), 'research-report');
 const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools');
 const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent');
 const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf');
 const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space');
 const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat');
+const AskWorkspace = lazyWithRetry(() => import('./pages/AskWorkspace'), 'ask-workspace');
 const DeveloperConsole = lazyWithRetry(() => import('./pages/DeveloperConsole'), 'developer-console');
 const AnalyticsDashboard = lazyWithRetry(() => import('./pages/AnalyticsDashboard'), 'analytics-dashboard');
 const PrivacyPolicy = lazyWithRetry(() => import('./pages/PrivacyPolicy'), 'privacy-policy');
@@ -319,6 +322,14 @@ function App() {
                       element={protectedRoute(<Mindmap />)}
                     />
                     <Route
+                      path="/compare"
+                      element={protectedRoute(<ComparePapers />)}
+                    />
+                    <Route
+                      path="/research-report"
+                      element={protectedRoute(<ResearchReport />)}
+                    />
+                    <Route
                       path="/ai-tools"
                       element={protectedRoute(<AITools />)}
                     />
@@ -337,6 +348,10 @@ function App() {
                     <Route
                       path="/research-chat"
                       element={protectedRoute(<WritingChat />)}
+                    />
+                    <Route
+                      path="/ask-workspace"
+                      element={protectedRoute(<AskWorkspace />)}
                     />
                     <Route path="/writing-chat" element={<Navigate to="/research-chat" replace />} />
                     <Route

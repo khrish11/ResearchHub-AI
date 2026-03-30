@@ -27,6 +27,10 @@ from repositories.research import (
     Paper,
     SearchHistory,
 )
+from services.cache_service import clear_memory_cache
+from services.demo_mode_service import reset_demo_mode_memory_state
+from services.onboarding_service import reset_onboarding_memory_state
+from services.workspace_feed_service import reset_workspace_feed_memory_state
 from routers.auth import create_access_token
 
 
@@ -72,6 +76,9 @@ def repo(emulator_db: _firestore.Client) -> FirebaseResearchRepository:
     r.user_session_state = emulator_db.collection("user_session_state")
     r.workspace_documents = emulator_db.collection("workspace_documents")
     r.workspace_files = emulator_db.collection("workspace_files")
+    r.paper_check_jobs = emulator_db.collection("paper_check_jobs")
+    r.paper_comparisons = emulator_db.collection("paper_comparisons")
+    r.research_reports = emulator_db.collection("research_reports")
     r.data_rights_requests = emulator_db.collection("data_rights_requests")
     r.counters = emulator_db.collection("_counters")
     return r
@@ -90,6 +97,17 @@ _COLLECTIONS_TO_WIPE = [
     "user_session_state",
     "workspace_documents",
     "workspace_files",
+    "paper_check_jobs",
+    "paper_comparisons",
+    "research_reports",
+    "paper_explanations",
+    "ai_cache",
+    "workspace_vectors",
+    "workspace_onboarding",
+    "workspace_insights",
+    "workspace_insight_jobs",
+    "workspace_feed",
+    "workspace_feed_jobs",
     "data_rights_requests",
     "_counters",
 ]
@@ -108,9 +126,17 @@ def _delete_collection(
 @pytest.fixture(autouse=True)
 def clean_db(emulator_db: _firestore.Client) -> Generator[None, None, None]:
     """Wipe all collections before each test for full isolation."""
+    clear_memory_cache()
+    reset_demo_mode_memory_state()
+    reset_onboarding_memory_state()
+    reset_workspace_feed_memory_state()
     for col in _COLLECTIONS_TO_WIPE:
         _delete_collection(emulator_db.collection(col))
     yield
+    clear_memory_cache()
+    reset_demo_mode_memory_state()
+    reset_onboarding_memory_state()
+    reset_workspace_feed_memory_state()
     for col in _COLLECTIONS_TO_WIPE:
         _delete_collection(emulator_db.collection(col))
 
