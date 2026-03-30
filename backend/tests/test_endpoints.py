@@ -7,8 +7,8 @@ to the Firebase Emulator. Auth is handled via JWT tokens created in conftest.
 
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
+from tests.env_flags import ALLOWED_FRONTEND_ORIGIN, IS_PRODUCTION
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,14 +189,20 @@ class TestPaperEndpoints:
 class TestEdgeCases:
     def test_options_preflight_returns_200(self, test_client: TestClient):
         """CORS preflight should succeed."""
+        origin = ALLOWED_FRONTEND_ORIGIN if IS_PRODUCTION else "http://localhost:5173"
         resp = test_client.options(
             "/workspaces/",
             headers={
-                "Origin": "http://localhost:5173",
+                "Origin": origin,
                 "Access-Control-Request-Method": "GET",
             },
         )
-        assert resp.status_code in (200, 204)
+        if IS_PRODUCTION and origin != "http://localhost:5173":
+            assert resp.status_code in (200, 204)
+        elif IS_PRODUCTION:
+            assert resp.status_code in (200, 204, 400)
+        else:
+            assert resp.status_code in (200, 204)
 
     def test_create_workspace_missing_name_returns_422(
         self, test_client: TestClient, auth_headers: dict

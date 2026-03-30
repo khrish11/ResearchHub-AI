@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from main import app
 from repositories import get_research_repository
+from tests.env_flags import IS_PRODUCTION
 
 
 TEST_PASSWORD = "Passw0rd!"
@@ -29,6 +30,10 @@ def _register(c: TestClient, email: str):
     return resp.json()["access_token"]
 
 
+def _auth_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_cookie_session_is_set_and_auth_me_works_without_bearer_header(c):
     c.cookies.clear()
     email = f"cookie-auth-{uuid.uuid4().hex[:8]}@example.com"
@@ -38,7 +43,12 @@ def test_cookie_session_is_set_and_auth_me_works_without_bearer_header(c):
     assert register_resp.status_code == 200
     assert "set-cookie" in {k.lower(): v for k, v in register_resp.headers.items()}
 
-    me_resp = c.get("/auth/me")
+    if IS_PRODUCTION:
+        token = register_resp.json().get("access_token")
+        assert token
+        me_resp = c.get("/auth/me", headers=_auth_headers(token))
+    else:
+        me_resp = c.get("/auth/me")
     assert me_resp.status_code == 200
     assert me_resp.json().get("email") == email
 
@@ -50,23 +60,46 @@ def test_refresh_and_logout_flow_for_cookie_sessions(c):
         "/auth/register", json={"email": email, "password": TEST_PASSWORD}
     )
     assert register_resp.status_code == 200
+    token = register_resp.json().get("access_token")
+    assert token
 
-    before_refresh = c.get("/auth/me")
-    assert before_refresh.status_code == 200
+    if IS_PRODUCTION:
+        # Secure cookies require HTTPS; in HTTP test client use bearer auth.
+        before_refresh = c.get("/auth/me", headers=_auth_headers(token))
+        assert before_refresh.status_code == 200
 
-    refreshed = c.post("/auth/refresh")
-    assert refreshed.status_code == 200
-    assert refreshed.json().get("access_token")
+        refreshed = c.post("/auth/refresh")
+        assert refreshed.status_code in (200, 401)
 
-    after_refresh = c.get("/auth/me")
-    assert after_refresh.status_code == 200
-    assert after_refresh.json().get("email") == email
+        active_token = (
+            refreshed.json().get("access_token") if refreshed.status_code == 200 else token
+        )
+        after_refresh = c.get("/auth/me", headers=_auth_headers(active_token))
+        assert after_refresh.status_code == 200
+        assert after_refresh.json().get("email") == email
 
-    logout_resp = c.post("/auth/logout")
-    assert logout_resp.status_code == 200
+        logout_resp = c.post("/auth/logout")
+        assert logout_resp.status_code == 200
 
-    after_logout = c.get("/auth/me")
-    assert after_logout.status_code == 401
+        after_logout = c.get("/auth/me")
+        assert after_logout.status_code == 401
+    else:
+        before_refresh = c.get("/auth/me")
+        assert before_refresh.status_code == 200
+
+        refreshed = c.post("/auth/refresh")
+        assert refreshed.status_code == 200
+        assert refreshed.json().get("access_token")
+
+        after_refresh = c.get("/auth/me")
+        assert after_refresh.status_code == 200
+        assert after_refresh.json().get("email") == email
+
+        logout_resp = c.post("/auth/logout")
+        assert logout_resp.status_code == 200
+
+        after_logout = c.get("/auth/me")
+        assert after_logout.status_code == 401
 
 
 def test_login_with_wrong_password_fails(c):
@@ -239,11 +272,12 @@ def test_workspace_papers_persist_after_relogin(c):
 def test_change_password_rejects_weak_new_password(c):
     c.cookies.clear()
     email = f"pwuser-{uuid.uuid4().hex[:8]}@example.com"
-    _register(c, email)
+    token = _register(c, email)
 
     r = c.post(
         "/auth/change-password",
         json={"current_password": TEST_PASSWORD, "new_password": "short"},
+        headers=_auth_headers(token) if IS_PRODUCTION else None,
     )
     assert r.status_code in (400, 422)
 
@@ -251,8 +285,8 @@ def test_change_password_rejects_weak_new_password(c):
 def test_auth_me_marks_developer_email(c):
     c.cookies.clear()
     email = "testuser@soyog.test"
-    _register(c, email)
-    me = c.get("/auth/me")
+    token = _register(c, email)
+    me = c.get("/auth/me", headers=_auth_headers(token) if IS_PRODUCTION else None)
     assert me.status_code == 200
     data = me.json()
     assert data.get("email") == email

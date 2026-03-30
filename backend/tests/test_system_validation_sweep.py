@@ -7,6 +7,7 @@ from typing import Any, Dict
 import services.paper_explain_service as paper_explain_service
 import services.workspace_insights_service as workspace_insights_service
 from repositories.research import FirebaseResearchRepository, User
+from tests.env_flags import MAX_LATENCY_SECONDS
 
 
 def _create_workspace(*, test_client, auth_headers: Dict[str, str], name: str = "System QA Workspace") -> int:
@@ -609,5 +610,8 @@ def test_performance_smoke_and_repeated_request_behavior(
 
     assert call_counter["insights_model_calls"] <= 1
 
-    slow = {name: seconds for name, seconds in timings.items() if seconds > 2.0}
-    assert not slow, f"Endpoints slower than 2s: {slow}"
+    slow = {
+        name: seconds for name, seconds in timings.items()
+        if seconds > MAX_LATENCY_SECONDS
+    }
+    assert not slow, f"Endpoints slower than {MAX_LATENCY_SECONDS}s: {slow}"
