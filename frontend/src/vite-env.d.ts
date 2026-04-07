@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   // Backend API
   readonly VITE_API_URL: string;
+  readonly VITE_API_TIMEOUT_MS?: string;
 
   // Firebase Web SDK
   readonly VITE_FIREBASE_API_KEY: string;

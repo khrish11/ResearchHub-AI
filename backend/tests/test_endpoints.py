@@ -180,6 +180,64 @@ class TestPaperEndpoints:
         assert resp.status_code == 200
         assert resp.json()["papers"] == []
 
+    def test_delete_paper_from_workspace(
+        self, test_client: TestClient, auth_headers: dict
+    ):
+        ws_id = self._create_workspace(test_client, auth_headers)
+        import_resp = test_client.post(
+            "/papers/import",
+            json={
+                "workspace_id": ws_id,
+                "title": "Paper to remove",
+                "authors": ["Tester"],
+                "abstract": "Temporary paper",
+            },
+            headers=auth_headers,
+        )
+        assert import_resp.status_code == 200
+        paper_id = int(import_resp.json().get("paper_id") or 0)
+        assert paper_id > 0
+
+        delete_resp = test_client.delete(
+            f"/workspaces/{ws_id}/papers/{paper_id}", headers=auth_headers
+        )
+        assert delete_resp.status_code == 200
+
+        detail_resp = test_client.get(f"/workspaces/{ws_id}", headers=auth_headers)
+        assert detail_resp.status_code == 200
+        assert all(int(paper.get("id") or 0) != paper_id for paper in detail_resp.json().get("papers") or [])
+
+    def test_delete_paper_wrong_workspace_returns_404(
+        self, test_client: TestClient, auth_headers: dict
+    ):
+        ws_a = self._create_workspace(test_client, auth_headers)
+        ws_b_resp = test_client.post(
+            "/workspaces/",
+            json={"name": "Paper WS Secondary"},
+            headers=auth_headers,
+        )
+        assert ws_b_resp.status_code in (200, 201)
+        ws_b = int(ws_b_resp.json().get("id") or 0)
+        assert ws_b > 0
+        import_resp = test_client.post(
+            "/papers/import",
+            json={
+                "workspace_id": ws_a,
+                "title": "Scoped paper",
+                "authors": ["Tester"],
+                "abstract": "Workspace scoped paper",
+            },
+            headers=auth_headers,
+        )
+        assert import_resp.status_code == 200
+        paper_id = int(import_resp.json().get("paper_id") or 0)
+        assert paper_id > 0
+
+        delete_resp = test_client.delete(
+            f"/workspaces/{ws_b}/papers/{paper_id}", headers=auth_headers
+        )
+        assert delete_resp.status_code == 404
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Edge cases & rate limiting

@@ -1041,6 +1041,27 @@ def get_workspace(
     )
 
 
+@router.delete("/{workspace_id}/papers/{paper_id}")
+def delete_workspace_paper(
+    workspace_id: int,
+    paper_id: int,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    paper = repo.find_paper_for_user(paper_id, current_user.id)
+    if not paper or int(paper.workspace_id) != int(workspace.id):
+        raise HTTPException(status_code=404, detail="Paper not found in this workspace.")
+    deleted = repo.delete_paper_for_user(paper_id, current_user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Paper not found in this workspace.")
+    return {
+        "message": "Paper removed from workspace successfully",
+        "workspace_id": int(workspace_id),
+        "paper_id": int(paper_id),
+    }
+
+
 @router.post("/default", response_model=WorkspaceOut)
 def get_or_create_default_workspace(
     repo: ResearchRepository = Depends(get_research_repository),

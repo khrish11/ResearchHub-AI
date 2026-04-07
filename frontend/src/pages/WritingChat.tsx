@@ -306,6 +306,7 @@ const WritingChat: React.FC = () => {
   const sendMessage = async () => {
     const trimmed = chatInput.trim();
     if (!trimmed || !selectedWsId) return;
+    const selectedIds = Array.from(selectedPaperIds);
 
     const nextUserMessage = pushUserMessage(trimmed);
     const convoPayload = [...messages, nextUserMessage].slice(-12).map((item) => ({
@@ -321,7 +322,7 @@ const WritingChat: React.FC = () => {
     try {
       const response = await api.post<ResearchChatResponse>('/research/chatbot', {
         workspace_id: selectedWsId,
-        paper_ids: Array.from(selectedPaperIds),
+        paper_ids: selectedIds,
         topic: selectedWorkspace?.name || 'Workspace context',
         context_text: contextText,
         message: trimmed,
@@ -333,7 +334,35 @@ const WritingChat: React.FC = () => {
       const assistantMessage = pushAssistantMessage(response.data || {});
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err: unknown) {
-      setError(apiErrorMessage(err, 'Research chatbot failed.'));
+      const primaryError = apiErrorMessage(err, 'Research chatbot failed.');
+      const shouldRetryWithoutSelection =
+        selectedIds.length > 0 &&
+        /paper selection|selected papers|no papers|workspace selection/i.test(
+          primaryError.toLowerCase()
+        );
+
+      if (shouldRetryWithoutSelection) {
+        try {
+          const retry = await api.post<ResearchChatResponse>('/research/chatbot', {
+            workspace_id: selectedWsId,
+            topic: selectedWorkspace?.name || 'Workspace context',
+            context_text: contextText,
+            message: trimmed,
+            conversation: convoPayload,
+            max_actions: 6,
+            response_style: responseStyle,
+            grounded_only: groundedOnly,
+          });
+          const assistantMessage = pushAssistantMessage(retry.data || {});
+          setMessages((prev) => [...prev, assistantMessage]);
+          setError(null);
+          return;
+        } catch (retryErr: unknown) {
+          setError(apiErrorMessage(retryErr, primaryError));
+        }
+      } else {
+        setError(primaryError);
+      }
       setMessages((prev) => [
         ...prev,
         {

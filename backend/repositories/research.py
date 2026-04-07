@@ -334,6 +334,7 @@ class ResearchRepository(Protocol):
         url: Optional[str] = None,
         pdf_url: Optional[str] = None,
     ) -> Paper: ...
+    def delete_paper_for_user(self, paper_id: int, user_id: int) -> bool: ...
     def list_chats_for_workspace(
         self,
         workspace_id: int,
@@ -1040,6 +1041,21 @@ class FirebaseResearchRepository:
         if not self.workspace_exists_for_user(workspace_id, user_id):
             return None
         return self._paper_from_doc(doc)
+
+    def delete_paper_for_user(self, paper_id: int, user_id: int) -> bool:
+        paper = self.find_paper_for_user(int(paper_id), int(user_id))
+        if not paper:
+            return False
+        self.papers.document(str(int(paper_id))).delete()
+        for snapshot in self.workspace_files.where(
+            filter=FieldFilter("paper_id", "==", int(paper_id))
+        ).stream():
+            doc = snapshot.to_dict() or {}
+            workspace_id = int(doc.get("workspace_id") or 0)
+            owner_id = int(doc.get("user_id") or 0)
+            if workspace_id == int(paper.workspace_id) and owner_id == int(user_id):
+                snapshot.reference.delete()
+        return True
 
     def list_chats_for_workspace(
         self,
@@ -2643,6 +2659,13 @@ class InMemoryResearchRepository:
         if not self.workspace_exists_for_user(int(paper.workspace_id), int(user_id)):
             return None
         return paper
+
+    def delete_paper_for_user(self, paper_id: int, user_id: int) -> bool:
+        paper = self.find_paper_for_user(int(paper_id), int(user_id))
+        if not paper:
+            return False
+        self._papers.pop(int(paper_id), None)
+        return True
 
     def create_paper(
         self,

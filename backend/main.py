@@ -32,6 +32,7 @@ import os
 import logging
 import json
 import ipaddress
+import re
 import time
 from collections import deque
 from threading import Lock
@@ -372,7 +373,12 @@ async def _http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+_default_frontend_url = (
+    "https://research-hub-ai-lime.vercel.app"
+    if APP_ENV == "production"
+    else "http://localhost:5173"
+)
+frontend_url = os.getenv("FRONTEND_URL", _default_frontend_url).rstrip("/")
 
 # Support comma-separated list of allowed origins (e.g. staging + production)
 _extra_origins = [
@@ -381,11 +387,19 @@ _extra_origins = [
     if u.strip()
 ]
 
+_allow_vercel_preview_cors = os.getenv(
+    "ALLOW_VERCEL_PREVIEW_CORS", "0"
+).strip().lower() in {"1", "true", "yes"}
+
 if APP_ENV == "production":
     allowed_origins = {frontend_url, *_extra_origins}
-    # Also allow all *.vercel.app subdomains so preview deploys work without
-    # having to update the env var on every Vercel build.
-    _cors_origin_regex = r"^https://[a-zA-Z0-9-]+-[a-zA-Z0-9-]+\.vercel\.app$"
+    # Keep production strict by default so cookies are accepted on a single
+    # trusted frontend origin. Preview origins can be enabled explicitly.
+    _cors_origin_regex = (
+        r"^https://[a-zA-Z0-9-]+-[a-zA-Z0-9-]+\.vercel\.app$"
+        if _allow_vercel_preview_cors
+        else None
+    )
 else:
     allowed_origins = {
         frontend_url,
@@ -401,13 +415,18 @@ else:
     }
     _cors_origin_regex = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
+_cors_kwargs = {
+    "allow_origins": sorted(allowed_origins),
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if _cors_origin_regex:
+    _cors_kwargs["allow_origin_regex"] = _cors_origin_regex
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=sorted(allowed_origins),
-    allow_origin_regex=_cors_origin_regex,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **_cors_kwargs,
 )
 app.add_middleware(GZipMiddleware, minimum_size=512)
 
@@ -498,6 +517,8 @@ def _rate_limit_scope(path: str) -> Optional[Tuple[str, int]]:
 
 def _check_rate_limit(request: Request) -> Tuple[bool, int]:
     if not RATE_LIMIT_ENABLED:
+        return True, 0
+    if str(request.method or "").upper() == "OPTIONS":
         return True, 0
     scope = _rate_limit_scope(request.url.path)
     if not scope:
@@ -761,6 +782,31 @@ def _apply_response_headers(
         )
 
 
+def _origin_is_allowed(origin: str) -> bool:
+    candidate = str(origin or "").strip().rstrip("/")
+    if not candidate:
+        return False
+    if candidate in allowed_origins:
+        return True
+    try:
+        return bool(re.match(_cors_origin_regex, candidate))
+    except re.error:
+        return False
+
+
+def _apply_cors_headers_for_short_circuit(response, request: Request) -> None:
+    origin = str(request.headers.get("origin") or "").strip().rstrip("/")
+    if not _origin_is_allowed(origin):
+        return
+    response.headers.setdefault("Access-Control-Allow-Origin", origin)
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+    vary_header = str(response.headers.get("Vary") or "").strip()
+    if not vary_header:
+        response.headers["Vary"] = "Origin"
+    elif "origin" not in {part.strip().lower() for part in vary_header.split(",") if part.strip()}:
+        response.headers["Vary"] = f"{vary_header}, Origin"
+
+
 @app.middleware("http")
 async def request_logging_middleware(request: Request, call_next):
     started = time.perf_counter()
@@ -775,7 +821,10 @@ async def request_logging_middleware(request: Request, call_next):
         allow_local = FIREBASE_APPCHECK_ALLOW_LOCALHOST and _is_local_direct_client(
             request
         )
-        if not allow_local and not request.url.path.startswith(
+        if (
+            not allow_local
+            and request.method != "OPTIONS"
+            and not request.url.path.startswith(
             (
                 "/health/",
                 "/docs",
@@ -784,6 +833,7 @@ async def request_logging_middleware(request: Request, call_next):
                 "/auth/google/",
                 "/auth/firebase/status",
             )
+        )
         ):
             app_check_token = (
                 request.headers.get("X-Firebase-AppCheck")
@@ -803,6 +853,7 @@ async def request_logging_middleware(request: Request, call_next):
                     ),
                 )
                 _apply_response_headers(response, request, request_id, duration_ms)
+                _apply_cors_headers_for_short_circuit(response, request)
                 _update_http_metrics(request.url.path, 401, duration_ms)
                 return response
             try:
@@ -821,6 +872,7 @@ async def request_logging_middleware(request: Request, call_next):
                     ),
                 )
                 _apply_response_headers(response, request, request_id, duration_ms)
+                _apply_cors_headers_for_short_circuit(response, request)
                 _update_http_metrics(request.url.path, 401, duration_ms)
                 return response
 
@@ -839,6 +891,7 @@ async def request_logging_middleware(request: Request, call_next):
         )
         response.headers["Retry-After"] = str(retry_after)
         _apply_response_headers(response, request, request_id, duration_ms)
+        _apply_cors_headers_for_short_circuit(response, request)
         _update_http_metrics(request.url.path, 429, duration_ms, rate_limited=True)
         logger.info(
             json.dumps(

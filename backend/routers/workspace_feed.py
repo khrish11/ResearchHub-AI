@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,7 @@ from services.workspace_feed_service import (
 
 
 router = APIRouter(prefix="/workspace-feed", tags=["workspace-feed"])
+logger = logging.getLogger(__name__)
 
 
 def _to_iso(value: Any) -> Optional[str]:
@@ -197,23 +199,46 @@ async def get_workspace_feed(
         workspace_id=workspace_id,
         user_id=int(current_user.id),
     )
-    generated = await get_or_generate_workspace_feed(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        refresh=bool(refresh),
-        run_inline=bool(run_inline),
-        trigger="dashboard_open" if not refresh else "manual_refresh",
-    )
-    page = get_workspace_feed_page(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        sort=sort,
-        limit=limit,
-        cursor=cursor,
-        include_read=bool(include_read),
-    )
+    try:
+        generated = await get_or_generate_workspace_feed(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            refresh=bool(refresh),
+            run_inline=bool(run_inline),
+            trigger="dashboard_open" if not refresh else "manual_refresh",
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_feed_get_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        generated = {
+            "status": "failed",
+            "job": {"status": "failed", "error": str(exc) or "Workspace feed request failed."},
+        }
+    try:
+        page = get_workspace_feed_page(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            sort=sort,
+            limit=limit,
+            cursor=cursor,
+            include_read=bool(include_read),
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_feed_page_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        page = {"items": [], "next_cursor": None, "total_count": 0, "unread_count": 0}
+        if not isinstance(generated.get("job"), dict):
+            generated["job"] = {}
+        generated["job"]["status"] = "failed"
+        generated["job"]["error"] = str(exc) or "Workspace feed listing failed."
     return _build_feed_response(
         status=str(generated.get("status") or "unknown"),
         workspace_id=workspace_id,
@@ -238,23 +263,46 @@ async def refresh_workspace_feed(
         workspace_id=workspace_id,
         user_id=int(current_user.id),
     )
-    generated = await get_or_generate_workspace_feed(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        refresh=True,
-        run_inline=bool(run_inline),
-        trigger="manual_refresh",
-    )
-    page = get_workspace_feed_page(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        sort=sort,
-        limit=limit,
-        cursor=cursor,
-        include_read=bool(include_read),
-    )
+    try:
+        generated = await get_or_generate_workspace_feed(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            refresh=True,
+            run_inline=bool(run_inline),
+            trigger="manual_refresh",
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_feed_refresh_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        generated = {
+            "status": "failed",
+            "job": {"status": "failed", "error": str(exc) or "Workspace feed refresh failed."},
+        }
+    try:
+        page = get_workspace_feed_page(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            sort=sort,
+            limit=limit,
+            cursor=cursor,
+            include_read=bool(include_read),
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_feed_refresh_page_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        page = {"items": [], "next_cursor": None, "total_count": 0, "unread_count": 0}
+        if not isinstance(generated.get("job"), dict):
+            generated["job"] = {}
+        generated["job"]["status"] = "failed"
+        generated["job"]["error"] = str(exc) or "Workspace feed listing failed."
     return _build_feed_response(
         status=str(generated.get("status") or "unknown"),
         workspace_id=workspace_id,

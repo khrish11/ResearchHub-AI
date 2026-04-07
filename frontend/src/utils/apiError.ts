@@ -63,5 +63,12 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
   if (payloadMessage) {
     return payloadMessage;
   }
-  return _readText(apiErr.message) || fallback;
+  const message = _readText(apiErr.message);
+  if (!message) {
+    return fallback;
+  }
+  if (message.toLowerCase() === 'network error') {
+    return fallback;
+  }
+  return message;
 }

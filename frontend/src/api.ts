@@ -14,6 +14,15 @@ const resolveApiUrl = (): string => {
 
 export const API_URL = resolveApiUrl();
 export const GOOGLE_LOGIN_URL = `${API_URL}/auth/google/login`;
+const resolveApiTimeoutMs = (): number => {
+    const raw = Number(import.meta.env.VITE_API_TIMEOUT_MS || 120000);
+    if (!Number.isFinite(raw) || raw <= 0) {
+        return 120000;
+    }
+    return Math.max(15000, Math.min(300000, Math.trunc(raw)));
+};
+
+const DEFAULT_API_TIMEOUT_MS = resolveApiTimeoutMs();
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getBackendToken();
@@ -60,11 +69,26 @@ export const getGoogleLoginUrl = () => {
 const api = axios.create({
     baseURL: API_URL,
     withCredentials: true,
-    timeout: 30000,
+    timeout: DEFAULT_API_TIMEOUT_MS,
 });
 
 // Single combined request interceptor — merges auth token + Firebase App Check.
 api.interceptors.request.use(async (config) => {
+    const url = String(config.url || '');
+    // Long-running routes can legitimately exceed the default timeout.
+    if (
+        url.includes('/research/full-pipeline') ||
+        url.includes('/research/multi-agent-analysis') ||
+        url.includes('/research/paper-draft')
+    ) {
+        config.timeout = Math.max(DEFAULT_API_TIMEOUT_MS, 180000);
+    } else if (
+        url.includes('/workspace-insights/') ||
+        url.includes('/workspace-feed/')
+    ) {
+        config.timeout = Math.max(DEFAULT_API_TIMEOUT_MS, 90000);
+    }
+
     const token = getBackendToken();
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;

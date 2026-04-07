@@ -58,8 +58,27 @@ GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60
 OAUTH_HANDOFF_TTL_SECONDS = 2 * 60
 ACCESS_TOKEN_COOKIE_NAME = "researchhub_access_token"
 REFRESH_TOKEN_COOKIE_NAME = "researchhub_refresh_token"
-COOKIE_SAMESITE = (os.getenv("AUTH_COOKIE_SAMESITE") or "lax").strip().lower() or "lax"
 COOKIE_DOMAIN = (os.getenv("AUTH_COOKIE_DOMAIN") or "").strip() or None
+DEFAULT_AUTH_COOKIE_SAMESITE = (
+    "none" if APP_ENV in {"production", "staging"} else "lax"
+)
+
+
+def _normalize_cookie_samesite(raw_value: str) -> str:
+    value = (raw_value or "").strip().lower()
+    if value in {"lax", "strict", "none"}:
+        return value
+    logging.warning(
+        "Invalid AUTH_COOKIE_SAMESITE=%r; falling back to %s.",
+        raw_value,
+        DEFAULT_AUTH_COOKIE_SAMESITE,
+    )
+    return DEFAULT_AUTH_COOKIE_SAMESITE
+
+
+COOKIE_SAMESITE = _normalize_cookie_samesite(
+    os.getenv("AUTH_COOKIE_SAMESITE", DEFAULT_AUTH_COOKIE_SAMESITE)
+)
 DEFAULT_AUTH_COOKIE_SECURE = "1" if APP_ENV in {"production", "staging"} else "0"
 COOKIE_SECURE = os.getenv(
     "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE
@@ -456,6 +475,10 @@ def _normalize_dt(value: Optional[datetime]) -> datetime:
 
 
 def _cookie_secure(request: Request) -> bool:
+    # SameSite=None cookies must be Secure for browser acceptance on
+    # cross-origin HTTPS deployments (e.g. Vercel -> Cloud Run).
+    if COOKIE_SAMESITE == "none":
+        return True
     if COOKIE_SECURE:
         return True
     forwarded = (

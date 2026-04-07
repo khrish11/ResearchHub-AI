@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -159,6 +159,7 @@ const AITools: React.FC = () => {
   const [writingSuggestionAnalysis, setWritingSuggestionAnalysis] = useState('');
   const [writingSuggestionLoading, setWritingSuggestionLoading] = useState(false);
   const [writingSuggestionError, setWritingSuggestionError] = useState<string | null>(null);
+  const writingSuggestionAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     api
@@ -253,6 +254,8 @@ const AITools: React.FC = () => {
 
   useEffect(() => {
     if (!selectedWsId || writingDraft.trim().length < 30) {
+      writingSuggestionAbortRef.current?.abort();
+      writingSuggestionAbortRef.current = null;
       setWritingSuggestions([]);
       setWritingSuggestionGroups({});
       setWritingDraftQuality(null);
@@ -263,12 +266,16 @@ const AITools: React.FC = () => {
       setRewriteExcerpt('');
       setWritingSuggestionAnalysis('');
       setWritingSuggestionError(null);
+      setWritingSuggestionLoading(false);
       return;
     }
 
     const timer = window.setTimeout(async () => {
       setWritingSuggestionLoading(true);
       setWritingSuggestionError(null);
+      writingSuggestionAbortRef.current?.abort();
+      const controller = new AbortController();
+      writingSuggestionAbortRef.current = controller;
       try {
         const response = await api.post<WritingSuggestionResponse>('/research/writing-suggestions', {
           workspace_id: selectedWsId,
@@ -276,7 +283,7 @@ const AITools: React.FC = () => {
           topic: `Workspace manuscript draft: ${workspaces.find((workspace) => workspace.id === selectedWsId)?.name || 'Research topic'}`,
           draft_text: writingDraft,
           max_suggestions: 12,
-        });
+        }, { signal: controller.signal });
         setWritingSuggestions(Array.isArray(response.data?.suggestions) ? response.data.suggestions : []);
         setWritingSuggestionGroups(
           response.data?.suggestion_groups && typeof response.data.suggestion_groups === 'object'
@@ -311,14 +318,24 @@ const AITools: React.FC = () => {
         setRewriteExcerpt(String(response.data?.rewrite_excerpt || ''));
         setWritingSuggestionAnalysis(String(response.data?.analysis || ''));
       } catch (err: unknown) {
+        const cancelled =
+          (err as { code?: string; name?: string } | null)?.code === 'ERR_CANCELED' ||
+          (err as { code?: string; name?: string } | null)?.name === 'CanceledError';
+        if (cancelled) {
+          return;
+        }
         setWritingSuggestionError(apiErrorMessage(err, 'Failed to generate writing suggestions.'));
       } finally {
+        if (writingSuggestionAbortRef.current === controller) {
+          writingSuggestionAbortRef.current = null;
+        }
         setWritingSuggestionLoading(false);
       }
     }, 900);
 
     return () => {
       window.clearTimeout(timer);
+      writingSuggestionAbortRef.current?.abort();
     };
   }, [selectedIds, selectedWsId, workspaces, writingDraft]);
 

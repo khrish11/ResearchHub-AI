@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -10,12 +11,14 @@ from repositories import ResearchRepository, get_research_repository
 from repositories.research import User
 from routers.auth import get_current_user
 from services.workspace_insights_service import (
+    get_latest_workspace_insights,
     get_or_generate_workspace_insights,
     get_workspace_insights_job,
 )
 
 
 router = APIRouter(prefix="/workspace-insights", tags=["workspace-insights"])
+logger = logging.getLogger(__name__)
 
 
 def _to_iso(value: Any) -> Optional[str]:
@@ -221,14 +224,31 @@ async def get_workspace_insights(
         workspace_id=workspace_id,
         user_id=int(current_user.id),
     )
-    result = await get_or_generate_workspace_insights(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        refresh=bool(refresh),
-        run_inline=bool(run_inline),
-        trigger="dashboard_open" if not refresh else "manual_refresh",
-    )
+    try:
+        result = await get_or_generate_workspace_insights(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            refresh=bool(refresh),
+            run_inline=bool(run_inline),
+            trigger="dashboard_open" if not refresh else "manual_refresh",
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_insights_get_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        latest = get_latest_workspace_insights(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+        )
+        result = {
+            "status": "failed",
+            "insight": latest,
+            "job": {"status": "failed", "error": str(exc) or "Workspace insights request failed."},
+        }
     return _map_response(
         status=str(result.get("status") or "unknown"),
         workspace_id=workspace_id,
@@ -249,14 +269,31 @@ async def refresh_workspace_insights(
         workspace_id=workspace_id,
         user_id=int(current_user.id),
     )
-    result = await get_or_generate_workspace_insights(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=int(current_user.id),
-        refresh=True,
-        run_inline=bool(run_inline),
-        trigger="manual_refresh",
-    )
+    try:
+        result = await get_or_generate_workspace_insights(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+            refresh=True,
+            run_inline=bool(run_inline),
+            trigger="manual_refresh",
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_insights_refresh_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            current_user.id,
+        )
+        latest = get_latest_workspace_insights(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=int(current_user.id),
+        )
+        result = {
+            "status": "failed",
+            "insight": latest,
+            "job": {"status": "failed", "error": str(exc) or "Workspace insights refresh failed."},
+        }
     return _map_response(
         status=str(result.get("status") or "unknown"),
         workspace_id=workspace_id,

@@ -1192,13 +1192,28 @@ async def get_or_generate_workspace_insights(
         workspace_id=workspace_id,
         user_id=user_id,
     )
-    enqueue_result = enqueue_workspace_insights_job(
-        repo=repo,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        trigger=trigger,
-        force=refresh,
-    )
+    try:
+        enqueue_result = enqueue_workspace_insights_job(
+            repo=repo,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            trigger=trigger,
+            force=refresh,
+        )
+    except Exception as exc:
+        logger.exception(
+            "workspace_insights_enqueue_failed workspace_id=%s user_id=%s",
+            workspace_id,
+            user_id,
+        )
+        return {
+            "status": "failed",
+            "job": {
+                "status": "failed",
+                "error": _safe_str(exc) or "Unable to enqueue workspace insights job.",
+            },
+            "insight": latest,
+        }
     status = _safe_str(enqueue_result.get("status")) or "queued"
     job_id = _safe_str(enqueue_result.get("job_id"))
     if status in {"cached", "reused"}:
@@ -1211,22 +1226,35 @@ async def get_or_generate_workspace_insights(
 
     job: Optional[Dict[str, Any]] = None
     if job_id and run_inline:
-        job = await process_workspace_insights_job(
-            repo=repo,
-            job_id=job_id,
-            worker_id="api_inline",
-        )
-        if job is None:
-            job = get_workspace_insights_job(repo=repo, job_id=job_id)
-        # Firestore visibility can lag immediately after enqueue; retry inline once.
-        if _safe_str((job or {}).get("status")).lower() == "pending":
-            retried = await process_workspace_insights_job(
+        try:
+            job = await process_workspace_insights_job(
                 repo=repo,
                 job_id=job_id,
-                worker_id="api_inline_retry",
+                worker_id="api_inline",
             )
-            if retried is not None:
-                job = retried
+            if job is None:
+                job = get_workspace_insights_job(repo=repo, job_id=job_id)
+            # Firestore visibility can lag immediately after enqueue; retry inline once.
+            if _safe_str((job or {}).get("status")).lower() == "pending":
+                retried = await process_workspace_insights_job(
+                    repo=repo,
+                    job_id=job_id,
+                    worker_id="api_inline_retry",
+                )
+                if retried is not None:
+                    job = retried
+        except Exception as exc:
+            logger.exception(
+                "workspace_insights_inline_failed workspace_id=%s user_id=%s job_id=%s",
+                workspace_id,
+                user_id,
+                job_id,
+            )
+            job = {
+                "job_id": job_id,
+                "status": "failed",
+                "error": _safe_str(exc) or "Workspace insights generation failed.",
+            }
     elif job_id:
         job = get_workspace_insights_job(repo=repo, job_id=job_id)
 
