@@ -7,6 +7,7 @@ node_modules/
 backend/.env
 frontend/.env
 frontend/.env.*
+deploy/*.env.local
 
 # Python
 __pycache__/

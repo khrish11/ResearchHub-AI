@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - optional dependency until configured
     credentials = None
 
 from utils.firebase_storage import _normalize_windows_env_path, storage_bucket_name
+from utils.firebase_service_account import load_service_account_info_from_env
 
 
 _APP = None
@@ -54,7 +55,7 @@ def get_firebase_admin_app():
     if firebase_admin is None or credentials is None:
         raise RuntimeError("firebase-admin is not installed.")
 
-    # ── Emulator short-circuit: skip ADC entirely ──────────────────────
+    # Emulator short-circuit: skip ADC entirely.
     # When FIRESTORE_EMULATOR_HOST is set, the Firestore emulator ignores
     # auth tokens completely.  We must not call ApplicationDefault() or
     # credentials.Certificate() because there are no real credentials in
@@ -73,8 +74,9 @@ def get_firebase_admin_app():
             options={"projectId": project_id},
         )
         return _APP
-    # ── Production / staging path ──────────────────────────────────────
+    # Production / staging path.
 
+    service_account_info = load_service_account_info_from_env()
     cert_path = _normalize_windows_env_path(
         os.getenv("FIREBASE_CREDENTIALS_PATH")
     ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
@@ -88,6 +90,8 @@ def get_firebase_admin_app():
     project_id = (
         os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
     ).strip()
+    if not project_id and service_account_info:
+        project_id = str(service_account_info.get("project_id") or "").strip()
     bucket_name = storage_bucket_name()
     if project_id:
         options["projectId"] = project_id
@@ -100,11 +104,12 @@ def get_firebase_admin_app():
     except ValueError:
         pass
 
-    cred = (
-        credentials.Certificate(cert_path)
-        if cert_path
-        else credentials.ApplicationDefault()
-    )
+    if service_account_info:
+        cred = credentials.Certificate(service_account_info)
+    elif cert_path:
+        cred = credentials.Certificate(cert_path)
+    else:
+        cred = credentials.ApplicationDefault()
     _APP = firebase_admin.initialize_app(cred, options=options or None)
     return _APP
 

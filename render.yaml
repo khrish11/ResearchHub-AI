@@ -1,0 +1,50 @@
+services:
+  - type: web
+    name: soyog-ai-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health/live
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: BACKEND_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: AUTH_COOKIE_SAMESITE
+        value: none
+      - key: AUTH_COOKIE_SECURE
+        value: "1"
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+
+      # Firebase service account strategy (choose one):
+      # Option A (recommended): base64-encoded full service account JSON
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON_BASE64
+        sync: false
+      # Option A.2: raw JSON service account (if your env manager supports multiline JSON safely)
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      # Option B: split fields
+      - key: FIREBASE_SERVICE_ACCOUNT_PROJECT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_PRIVATE_KEY_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_CLIENT_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_TOKEN_URI
+        value: https://oauth2.googleapis.com/token
