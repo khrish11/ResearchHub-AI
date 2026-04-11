@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import logging
 import math
 import os
@@ -9,10 +10,8 @@ import re
 from threading import Lock
 from typing import Dict, List, Sequence
 
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:  # pragma: no cover - optional runtime dependency
-    SentenceTransformer = None  # type: ignore[assignment]
+SentenceTransformer = None  # type: ignore[assignment]
+_SENTENCE_TRANSFORMER_IMPORT_ERROR: Exception | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +66,24 @@ class EmbeddingService:
     _shared_model_name: str | None = None
     _model_lock = Lock()
 
+    @staticmethod
+    def _resolve_sentence_transformer_class():
+        global SentenceTransformer, _SENTENCE_TRANSFORMER_IMPORT_ERROR
+        if SentenceTransformer is not None:
+            return SentenceTransformer
+        if _SENTENCE_TRANSFORMER_IMPORT_ERROR is not None:
+            return None
+        try:
+            module = importlib.import_module("sentence_transformers")
+            SentenceTransformer = getattr(module, "SentenceTransformer", None)
+            return SentenceTransformer
+        except Exception as exc:  # pragma: no cover - optional runtime dependency
+            _SENTENCE_TRANSFORMER_IMPORT_ERROR = exc
+            logger.warning(
+                "sentence-transformers import unavailable; using hashing embeddings."
+            )
+            return None
+
     def __init__(
         self,
         *,
@@ -106,7 +123,8 @@ class EmbeddingService:
     def _get_model(self):
         if self.provider in {"hash", "hashing", "none"}:
             return None
-        if SentenceTransformer is None:
+        sentence_transformer_class = self._resolve_sentence_transformer_class()
+        if sentence_transformer_class is None:
             return None
         with self._model_lock:
             if (
@@ -117,7 +135,7 @@ class EmbeddingService:
                     model_kwargs: Dict[str, object] = {}
                     if not self.allow_download:
                         model_kwargs["local_files_only"] = True
-                    EmbeddingService._shared_model = SentenceTransformer(
+                    EmbeddingService._shared_model = sentence_transformer_class(
                         self.model_name, **model_kwargs
                     )
                     EmbeddingService._shared_model_name = self.model_name
