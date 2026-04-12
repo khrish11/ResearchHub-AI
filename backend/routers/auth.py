@@ -1225,6 +1225,9 @@ async def firebase_session_exchange(
 
     try:
         decoded = verify_firebase_id_token(payload.id_token)
+    except RuntimeError as exc:
+        logging.exception("Firebase Admin credential/configuration error")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         logging.exception("Firebase token verification failed")
         raise HTTPException(

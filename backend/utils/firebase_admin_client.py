@@ -22,9 +22,23 @@ logger = logging.getLogger(__name__)
 
 
 def firebase_admin_is_configured() -> bool:
-    return bool(
-        (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"))
-    )
+    if os.getenv("FIRESTORE_EMULATOR_HOST"):
+        return True
+
+    project_id = (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    if not project_id:
+        return False
+
+    if load_service_account_info_from_env():
+        return True
+
+    cert_path = _normalize_windows_env_path(
+        os.getenv("FIREBASE_CREDENTIALS_PATH")
+    ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    if cert_path and os.path.isfile(cert_path):
+        return True
+
+    return str(os.getenv("FIREBASE_ALLOW_ADC") or "").strip().lower() in {"1", "true", "yes"}
 
 
 def _make_emulator_credential():
@@ -82,7 +96,7 @@ def get_firebase_admin_app():
     ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
     if cert_path and not os.path.isfile(cert_path):
         logger.warning(
-            "Configured Firebase credentials file does not exist (%s); falling back to Application Default Credentials.",
+            "Configured Firebase credentials file does not exist (%s); ignoring path.",
             cert_path,
         )
         cert_path = None
@@ -104,12 +118,27 @@ def get_firebase_admin_app():
     except ValueError:
         pass
 
+    allow_adc = str(os.getenv("FIREBASE_ALLOW_ADC") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if not service_account_info and not cert_path and not allow_adc:
+        raise RuntimeError(
+            "Firebase Admin credentials are not configured. "
+            "Set FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 or FIREBASE_SERVICE_ACCOUNT_JSON "
+            "(or FIREBASE_CREDENTIALS_PATH)."
+        )
+
     if service_account_info:
         cred = credentials.Certificate(service_account_info)
     elif cert_path:
         cred = credentials.Certificate(cert_path)
-    else:
+    elif allow_adc:
         cred = credentials.ApplicationDefault()
+    else:  # pragma: no cover - defensive guard
+        raise RuntimeError("Firebase Admin credential resolution failed.")
     _APP = firebase_admin.initialize_app(cred, options=options or None)
     return _APP
 
