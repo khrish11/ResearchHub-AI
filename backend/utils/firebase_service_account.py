@@ -10,6 +10,25 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+def _strip_optional_assignment(raw: str, key_name: str) -> str:
+    value = str(raw or "").strip()
+    if not value:
+        return value
+
+    prefix = f"{key_name}="
+    if value.startswith(prefix):
+        value = value[len(prefix) :].strip()
+
+    # tolerate accidentally quoted values in env UIs
+    if (
+        len(value) >= 2
+        and ((value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'"))
+    ):
+        value = value[1:-1].strip()
+
+    return value
+
+
 def _normalize_private_key(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -135,13 +154,19 @@ def load_service_account_info_from_env() -> Optional[Dict[str, Any]]:
     2) FIREBASE_SERVICE_ACCOUNT_JSON
     3) split FIREBASE_SERVICE_ACCOUNT_* fields
     """
-    encoded = str(os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64") or "").strip()
+    encoded = _strip_optional_assignment(
+        os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64") or "",
+        "FIREBASE_SERVICE_ACCOUNT_JSON_BASE64",
+    )
     if encoded:
         resolved = _load_service_account_json_base64(encoded)
         if resolved is not None:
             return resolved
 
-    raw_json = str(os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip()
+    raw_json = _strip_optional_assignment(
+        os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "",
+        "FIREBASE_SERVICE_ACCOUNT_JSON",
+    )
     if raw_json:
         resolved = _load_service_account_json(
             raw_json, source_name="FIREBASE_SERVICE_ACCOUNT_JSON"
@@ -150,4 +175,3 @@ def load_service_account_info_from_env() -> Optional[Dict[str, Any]]:
             return resolved
 
     return _load_split_service_account_env()
-
