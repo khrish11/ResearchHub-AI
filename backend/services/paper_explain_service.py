@@ -550,9 +550,10 @@ def _explain_user_prompt(
         "- If evidence is weak, mention uncertainty in evidence_quality.\n"
         "- ai_likelihood must be advisory language only.\n"
     )
+    checker_block = checker_context or "## Checker Context\n- No checker context available."
     return (
         f"{metadata_block}\n"
-        f"{checker_context or '## Checker Context\\n- No checker context available.'}\n\n"
+        f"{checker_block}\n\n"
         f"{rag_context or ''}\n\n"
         f"{instructions}\n"
         f"Output schema:\n{schema}"
