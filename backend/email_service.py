@@ -25,7 +25,20 @@ MAIL_FROM = (
     os.getenv("MAIL_FROM", "noreply@researchhub.ai").strip() or "noreply@researchhub.ai"
 )
 MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com").strip() or "smtp.gmail.com"
-MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "")
+    try:
+        return int(str(raw).strip() or default)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Invalid %s=%r; using default %s.", name, raw, default
+        )
+        return int(default)
+
+
+MAIL_PORT = _env_int("MAIL_PORT", 587)
 MAIL_STARTTLS = os.getenv("MAIL_STARTTLS", "1").strip().lower() in {"1", "true", "yes"}
 MAIL_SSL_TLS = os.getenv("MAIL_SSL_TLS", "0").strip().lower() in {"1", "true", "yes"}
 

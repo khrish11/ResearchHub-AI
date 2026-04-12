@@ -62,15 +62,39 @@ from utils.groq_client import model_config
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT = max(10, int(os.getenv("AI_CALL_TIMEOUT_SECONDS", "45") or 45))
-_MAX_AI_CALL_RETRIES = max(1, int(os.getenv("AI_CALL_MAX_RETRIES", "3") or 3))
-_AI_RETRY_BASE_DELAY_SECONDS = max(
-    0.05,
-    float(os.getenv("AI_CALL_RETRY_BASE_DELAY_SECONDS", "0.25") or 0.25),
+
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.getenv(name, "")
+    try:
+        value = int(str(raw).strip() or default)
+    except Exception:
+        logger.warning("Invalid %s=%r; using default %s.", name, raw, default)
+        value = int(default)
+    if minimum is not None and value < minimum:
+        return int(minimum)
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float | None = None) -> float:
+    raw = os.getenv(name, "")
+    try:
+        value = float(str(raw).strip() or default)
+    except Exception:
+        logger.warning("Invalid %s=%r; using default %s.", name, raw, default)
+        value = float(default)
+    if minimum is not None and value < minimum:
+        return float(minimum)
+    return value
+
+
+_DEFAULT_TIMEOUT = _env_int("AI_CALL_TIMEOUT_SECONDS", 45, minimum=10)
+_MAX_AI_CALL_RETRIES = _env_int("AI_CALL_MAX_RETRIES", 3, minimum=1)
+_AI_RETRY_BASE_DELAY_SECONDS = _env_float(
+    "AI_CALL_RETRY_BASE_DELAY_SECONDS", 0.25, minimum=0.05
 )
 _AI_RETRY_MAX_DELAY_SECONDS = max(
     _AI_RETRY_BASE_DELAY_SECONDS,
-    float(os.getenv("AI_CALL_RETRY_MAX_DELAY_SECONDS", "2.0") or 2.0),
+    _env_float("AI_CALL_RETRY_MAX_DELAY_SECONDS", 2.0),
 )
 _DECOMMISSION_FALLBACK_MODEL = str(
     os.getenv("GROQ_FALLBACK_MODEL") or "llama-3.3-70b-versatile"
@@ -84,7 +108,7 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.12,
         "max_tokens": 3200,
-        "timeout_seconds": max(15, int(os.getenv("AI_PAPER_CHECK_TIMEOUT_SECONDS", "55") or 55)),
+        "timeout_seconds": _env_int("AI_PAPER_CHECK_TIMEOUT_SECONDS", 55, minimum=15),
         "cacheable": True,
     },
     "ai_writing_detection": {
@@ -93,7 +117,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": False,
         "temperature": 0.08,
         "max_tokens": 1800,
-        "timeout_seconds": max(12, int(os.getenv("AI_WRITING_DETECTION_TIMEOUT_SECONDS", "35") or 35)),
+        "timeout_seconds": _env_int(
+            "AI_WRITING_DETECTION_TIMEOUT_SECONDS", 35, minimum=12
+        ),
         "cacheable": True,
     },
     "research_report": {
@@ -102,7 +128,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.25,
         "max_tokens": 6000,
-        "timeout_seconds": max(30, int(os.getenv("AI_RESEARCH_REPORT_TIMEOUT_SECONDS", "120") or 120)),
+        "timeout_seconds": _env_int(
+            "AI_RESEARCH_REPORT_TIMEOUT_SECONDS", 120, minimum=30
+        ),
         "cacheable": True,
     },
     "compare_papers": {
@@ -111,7 +139,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.2,
         "max_tokens": 4000,
-        "timeout_seconds": max(20, int(os.getenv("AI_COMPARE_PAPERS_TIMEOUT_SECONDS", "60") or 60)),
+        "timeout_seconds": _env_int(
+            "AI_COMPARE_PAPERS_TIMEOUT_SECONDS", 60, minimum=20
+        ),
         "cacheable": True,
     },
     "workspace_insights": {
@@ -120,7 +150,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.12,
         "max_tokens": 3600,
-        "timeout_seconds": max(20, int(os.getenv("AI_WORKSPACE_INSIGHTS_TIMEOUT_SECONDS", "90") or 90)),
+        "timeout_seconds": _env_int(
+            "AI_WORKSPACE_INSIGHTS_TIMEOUT_SECONDS", 90, minimum=20
+        ),
         "cacheable": False,
     },
     "workspace_feed": {
@@ -129,7 +161,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.12,
         "max_tokens": 2600,
-        "timeout_seconds": max(20, int(os.getenv("AI_WORKSPACE_FEED_TIMEOUT_SECONDS", "90") or 90)),
+        "timeout_seconds": _env_int(
+            "AI_WORKSPACE_FEED_TIMEOUT_SECONDS", 90, minimum=20
+        ),
         "cacheable": False,
     },
     "explain_paper": {
@@ -138,7 +172,9 @@ TASK_CONFIGS: Dict[str, Dict[str, Any]] = {
         "longform": True,
         "temperature": 0.1,
         "max_tokens": 2400,
-        "timeout_seconds": max(20, int(os.getenv("AI_EXPLAIN_PAPER_TIMEOUT_SECONDS", "60") or 60)),
+        "timeout_seconds": _env_int(
+            "AI_EXPLAIN_PAPER_TIMEOUT_SECONDS", 60, minimum=20
+        ),
         "cacheable": True,
     },
 }

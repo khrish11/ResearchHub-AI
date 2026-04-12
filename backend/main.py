@@ -91,18 +91,27 @@ if not logging.getLogger().handlers:
 logger.setLevel(logging.INFO)
 setup_google_cloud_logging()
 
+
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.getenv(name, "")
+    try:
+        value = int(str(raw).strip() or default)
+    except Exception:
+        logger.warning(
+            "Invalid %s=%r; using default %s.", name, raw, default
+        )
+        value = int(default)
+    if minimum is not None and value < minimum:
+        return int(minimum)
+    return value
+
+
 RATE_LIMIT_ENABLED = os.getenv(
     "RATE_LIMIT_ENABLED", "1" if APP_ENV != "development" else "0"
 ).strip().lower() in {"1", "true", "yes"}
-RATE_LIMIT_WINDOW_SECONDS = max(
-    10, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60") or 60)
-)
-RATE_LIMIT_AUTH_PER_WINDOW = max(
-    10, int(os.getenv("RATE_LIMIT_AUTH_PER_WINDOW", "90") or 90)
-)
-RATE_LIMIT_API_PER_WINDOW = max(
-    40, int(os.getenv("RATE_LIMIT_API_PER_WINDOW", "300") or 300)
-)
+RATE_LIMIT_WINDOW_SECONDS = _env_int("RATE_LIMIT_WINDOW_SECONDS", 60, minimum=10)
+RATE_LIMIT_AUTH_PER_WINDOW = _env_int("RATE_LIMIT_AUTH_PER_WINDOW", 90, minimum=10)
+RATE_LIMIT_API_PER_WINDOW = _env_int("RATE_LIMIT_API_PER_WINDOW", 300, minimum=40)
 SECURITY_HEADERS_ENABLED = os.getenv(
     "SECURITY_HEADERS_ENABLED", "1"
 ).strip().lower() in {"1", "true", "yes"}
@@ -130,9 +139,7 @@ TRUSTED_PROXY_IPS = {
 RATE_LIMIT_STORE = (os.getenv("RATE_LIMIT_STORE") or "memory").strip().lower()
 REDIS_URL = (os.getenv("REDIS_URL") or "").strip()
 
-AI_RATE_LIMIT_PER_MINUTE = max(
-    1, int(os.getenv("AI_RATE_LIMIT_PER_MINUTE", "10") or 10)
-)
+AI_RATE_LIMIT_PER_MINUTE = _env_int("AI_RATE_LIMIT_PER_MINUTE", 10, minimum=1)
 _AI_RATE_LIMIT_BUCKETS: Dict[str, Deque[float]] = {}
 _AI_RATE_LIMIT_LOCK = Lock()
 
@@ -156,22 +163,10 @@ _HTTP_METRICS: Dict[str, Any] = {
 }
 _RECENT_REQUESTS: Deque[Tuple[float, int, int]] = deque(maxlen=15000)
 _REDIS_RATE_LIMITER = None
-SLOW_REQUEST_THRESHOLD_MS = max(
-    250,
-    int(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "1200") or 1200),
-)
-FAILURE_SPIKE_WINDOW_SECONDS = max(
-    10,
-    int(os.getenv("FAILURE_SPIKE_WINDOW_SECONDS", "60") or 60),
-)
-FAILURE_SPIKE_THRESHOLD = max(
-    5,
-    int(os.getenv("FAILURE_SPIKE_THRESHOLD", "15") or 15),
-)
-FAILURE_SPIKE_COOLDOWN_SECONDS = max(
-    10,
-    int(os.getenv("FAILURE_SPIKE_COOLDOWN_SECONDS", "60") or 60),
-)
+SLOW_REQUEST_THRESHOLD_MS = _env_int("SLOW_REQUEST_THRESHOLD_MS", 1200, minimum=250)
+FAILURE_SPIKE_WINDOW_SECONDS = _env_int("FAILURE_SPIKE_WINDOW_SECONDS", 60, minimum=10)
+FAILURE_SPIKE_THRESHOLD = _env_int("FAILURE_SPIKE_THRESHOLD", 15, minimum=5)
+FAILURE_SPIKE_COOLDOWN_SECONDS = _env_int("FAILURE_SPIKE_COOLDOWN_SECONDS", 60, minimum=10)
 
 if RATE_LIMIT_STORE == "redis":
     if not redis or not REDIS_URL:
