@@ -31,6 +31,12 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
   const [googleLoginUrl, setGoogleLoginUrl] = useState(getGoogleLoginUrl());
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
   const navigate = useNavigate();
+  const isFirebaseNotConfiguredError = (err: unknown) => {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    const message = err instanceof Error ? err.message : '';
+    const merged = `${detail || ''} ${message}`.toLowerCase();
+    return merged.includes('firebase authentication is not configured');
+  };
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
@@ -74,11 +80,29 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
     setError('');
     console.log('Login attempt:', { email, firebaseEnabled });
     try {
-      const response = firebaseEnabled
-        ? await signInWithFirebasePassword(email, password)
-        : await api.post('/auth/token', new URLSearchParams({ username: email, password }), {
+      let response: { access_token: string };
+      if (firebaseEnabled) {
+        try {
+          response = await signInWithFirebasePassword(email, password);
+        } catch (firebaseErr) {
+          if (isFirebaseNotConfiguredError(firebaseErr)) {
+            setFirebaseEnabled(false);
+            response = await api
+              .post('/auth/token', new URLSearchParams({ username: email, password }), {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              })
+              .then((res) => res.data);
+          } else {
+            throw firebaseErr;
+          }
+        }
+      } else {
+        response = await api
+          .post('/auth/token', new URLSearchParams({ username: email, password }), {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          }).then((res) => res.data);
+          })
+          .then((res) => res.data);
+      }
 
       console.log('Login response:', response);
       setToken(response.access_token);
@@ -109,6 +133,11 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
           navigate('/home');
         })
         .catch((err: unknown) => {
+          if (isFirebaseNotConfiguredError(err) && googleConfigured) {
+            setFirebaseEnabled(false);
+            window.location.href = googleLoginUrl;
+            return;
+          }
           if (isFirebaseUnauthorizedDomainError(err) && googleConfigured) {
             window.location.href = googleLoginUrl;
             return;

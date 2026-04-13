@@ -28,6 +28,12 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
   const [googleLoginUrl, setGoogleLoginUrl] = useState(getGoogleLoginUrl());
   const navigate = useNavigate();
+  const isFirebaseNotConfiguredError = (err: unknown) => {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+    const message = err instanceof Error ? err.message : '';
+    const merged = `${detail || ''} ${message}`.toLowerCase();
+    return merged.includes('firebase authentication is not configured');
+  };
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
@@ -65,9 +71,21 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
     e.preventDefault();
     setError('');
     try {
-      const response = firebaseEnabled
-        ? await registerWithFirebasePassword(email, password)
-        : await api.post('/auth/register', { email, password }).then((res) => res.data);
+      let response: { access_token?: string };
+      if (firebaseEnabled) {
+        try {
+          response = await registerWithFirebasePassword(email, password);
+        } catch (firebaseErr) {
+          if (isFirebaseNotConfiguredError(firebaseErr)) {
+            setFirebaseEnabled(false);
+            response = await api.post('/auth/register', { email, password }).then((res) => res.data);
+          } else {
+            throw firebaseErr;
+          }
+        }
+      } else {
+        response = await api.post('/auth/register', { email, password }).then((res) => res.data);
+      }
       const accessToken = response.access_token;
       if (accessToken && setToken) {
         setToken(accessToken);
@@ -104,6 +122,11 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
           navigate('/home');
         })
         .catch((err: unknown) => {
+          if (isFirebaseNotConfiguredError(err) && googleConfigured) {
+            setFirebaseEnabled(false);
+            window.location.href = googleLoginUrl;
+            return;
+          }
           if (isFirebaseUnauthorizedDomainError(err) && googleConfigured) {
             window.location.href = googleLoginUrl;
             return;
