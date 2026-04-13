@@ -18,6 +18,10 @@ interface GoogleStatusResponse {
   configured: boolean;
 }
 
+interface FirebaseStatusResponse {
+  configured: boolean;
+}
+
 const Login: React.FC<LoginProps> = ({ setToken }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -30,9 +34,18 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
-    setFirebaseEnabled(localFirebaseAvailability);
-    void getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability).then((enabled) => {
-      setFirebaseEnabled(localFirebaseAvailability && enabled);
+    setFirebaseEnabled(false);
+    void Promise.allSettled([
+      getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
+      api.get<FirebaseStatusResponse>('/auth/firebase/status'),
+    ]).then(([flagResult, firebaseStatusResult]) => {
+      const remoteFlagEnabled =
+        flagResult.status === 'fulfilled' ? !!flagResult.value : localFirebaseAvailability;
+      const backendFirebaseConfigured =
+        firebaseStatusResult.status === 'fulfilled'
+          ? !!firebaseStatusResult.value?.data?.configured
+          : false;
+      setFirebaseEnabled(localFirebaseAvailability && remoteFlagEnabled && backendFirebaseConfigured);
     });
     setGoogleLoginUrl(getGoogleLoginUrl());
     api
