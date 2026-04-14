@@ -44,6 +44,11 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 14
 BACKEND_URL = (os.getenv("BACKEND_URL") or "http://localhost:8010").rstrip("/")
 FRONTEND_URL = (os.getenv("FRONTEND_URL") or "http://localhost:5173").rstrip("/")
+EXTRA_FRONTEND_URLS = [
+    value.strip().rstrip("/")
+    for value in (os.getenv("EXTRA_FRONTEND_URLS") or "").split(",")
+    if value.strip()
+]
 EMAIL_VERIFICATION_REQUIRED = os.getenv(
     "REQUIRE_EMAIL_VERIFICATION", "1" if APP_ENV == "production" else "0"
 ).strip().lower() in {"1", "true", "yes"}
@@ -90,6 +95,65 @@ ALLOW_VERCEL_PREVIEW_FRONTEND_REDIRECTS = os.getenv(
 VERCEL_PREVIEW_HOST_RE = re.compile(r"^[a-z0-9-]+-[a-z0-9-]+\.vercel\.app$")
 _INMEM_REFRESH_STORE: dict[str, dict[str, Any]] = {}
 _INMEM_REFRESH_LOCK = Lock()
+
+
+def _origin_from_url(raw_url: str) -> Optional[str]:
+    candidate = str(raw_url or "").strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _trusted_frontend_origins() -> set[str]:
+    origins = set()
+    primary = _origin_from_url(FRONTEND_URL)
+    if primary:
+        origins.add(primary)
+    for entry in EXTRA_FRONTEND_URLS:
+        normalized = _origin_from_url(entry)
+        if normalized:
+            origins.add(normalized)
+    if APP_ENV != "production":
+        origins.update(
+            {
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://localhost:5174",
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:5174",
+            }
+        )
+    return origins
+
+
+def _enforce_trusted_browser_origin(request: Request) -> None:
+    """Reject cross-site browser calls on cookie-backed auth state mutations."""
+    origin = str(request.headers.get("origin") or "").strip()
+    referer = str(request.headers.get("referer") or "").strip()
+    # Non-browser clients usually don't send origin/referer; allow them.
+    if not origin and not referer:
+        return
+
+    trusted = _trusted_frontend_origins()
+
+    if origin:
+        normalized_origin = _origin_from_url(origin)
+        if not normalized_origin or normalized_origin not in trusted:
+            raise HTTPException(status_code=403, detail="Untrusted request origin.")
+        return
+
+    normalized_referer = _origin_from_url(referer)
+    if not normalized_referer or normalized_referer not in trusted:
+        raise HTTPException(status_code=403, detail="Untrusted request origin.")
 
 
 # ---------------------------------------------------------------------------
@@ -1328,6 +1392,7 @@ async def firebase_session_exchange(
 async def oauth_exchange(
     payload: OAuthExchangeIn, request: Request, response: Response
 ):
+    _enforce_trusted_browser_origin(request)
     code = str(payload.code or "").strip()
     access_token = _consume_oauth_handoff_token(code)
     if not access_token:
@@ -1352,6 +1417,7 @@ async def refresh_session(
     response: Response,
     repo: ResearchRepository = Depends(get_research_repository),
 ):
+    _enforce_trusted_browser_origin(request)
     raw_refresh_token = str(
         request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or ""
     ).strip()
@@ -1380,6 +1446,7 @@ async def refresh_session(
 
 @router.post("/logout")
 async def logout(request: Request, response: Response):
+    _enforce_trusted_browser_origin(request)
     raw_refresh_token = str(
         request.cookies.get(REFRESH_TOKEN_COOKIE_NAME) or ""
     ).strip()
@@ -1627,10 +1694,12 @@ async def google_callback(
 
 @router.patch("/me")
 async def update_profile(
+    request: Request,
     profile_data: ProfileUpdate,
     repo: ResearchRepository = Depends(get_research_repository),
     current_user: Any = Depends(get_current_user),
 ):
+    _enforce_trusted_browser_origin(request)
     if profile_data.name is not None:
         current_user.name = profile_data.name
     repo.save(current_user)
@@ -1639,10 +1708,12 @@ async def update_profile(
 
 @router.post("/change-password")
 async def change_password(
+    request: Request,
     password_data: PasswordChange,
     repo: ResearchRepository = Depends(get_research_repository),
     current_user: Any = Depends(get_current_user),
 ):
+    _enforce_trusted_browser_origin(request)
     # Only allow password change for non-Google users
     if not current_user.hashed_password:
         raise HTTPException(
@@ -1663,10 +1734,12 @@ async def change_password(
 
 @router.delete("/me")
 async def delete_account(
+    request: Request,
     delete_data: DeleteAccountRequest,
     repo: ResearchRepository = Depends(get_research_repository),
     current_user: Any = Depends(get_current_user),
 ):
+    _enforce_trusted_browser_origin(request)
     if delete_data.confirm_email.strip().lower() != current_user.email.lower():
         raise HTTPException(
             status_code=400, detail="Confirmation email does not match your account"
