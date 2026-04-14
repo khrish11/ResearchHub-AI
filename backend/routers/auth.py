@@ -135,6 +135,32 @@ def _trusted_frontend_origins() -> set[str]:
     return origins
 
 
+def _origin_is_trusted(origin_value: str, trusted: set[str]) -> bool:
+    normalized = _origin_from_url(origin_value)
+    if not normalized:
+        return False
+    if normalized in trusted:
+        return True
+
+    try:
+        parsed = urlparse(normalized)
+        host = (parsed.hostname or "").strip().lower()
+        scheme = (parsed.scheme or "").strip().lower()
+    except Exception:
+        return False
+
+    if scheme != "https":
+        return False
+    if not _is_vercel_preview_host(host):
+        return False
+    if not ALLOW_VERCEL_PREVIEW_FRONTEND_REDIRECTS:
+        return False
+
+    configured = urlparse(FRONTEND_URL)
+    configured_host = (configured.hostname or "").strip().lower()
+    return configured_host.endswith(".vercel.app")
+
+
 def _enforce_trusted_browser_origin(request: Request) -> None:
     """Reject cross-site browser calls on cookie-backed auth state mutations."""
     origin = str(request.headers.get("origin") or "").strip()
@@ -146,13 +172,11 @@ def _enforce_trusted_browser_origin(request: Request) -> None:
     trusted = _trusted_frontend_origins()
 
     if origin:
-        normalized_origin = _origin_from_url(origin)
-        if not normalized_origin or normalized_origin not in trusted:
+        if not _origin_is_trusted(origin, trusted):
             raise HTTPException(status_code=403, detail="Untrusted request origin.")
         return
 
-    normalized_referer = _origin_from_url(referer)
-    if not normalized_referer or normalized_referer not in trusted:
+    if not _origin_is_trusted(referer, trusted):
         raise HTTPException(status_code=403, detail="Untrusted request origin.")
 
 
