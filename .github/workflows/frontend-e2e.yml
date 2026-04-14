@@ -3,8 +3,18 @@ name: Frontend E2E
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-e2e.yml"
   pull_request:
     branches: [ main, master ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-e2e.yml"
+
+concurrency:
+  group: frontend-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   playwright:

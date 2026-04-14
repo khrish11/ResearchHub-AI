@@ -80,6 +80,7 @@ from repositories import FirebaseResearchRepository
 from services.paper_check_service import JOB_TIMEOUT_SECONDS, get_paper_check_metrics_snapshot
 from utils.cloud_logging import setup_google_cloud_logging
 from utils.firebase_admin_client import verify_firebase_app_check_token
+from utils.runtime_config import validate_runtime_configuration
 
 #
 
@@ -139,6 +140,16 @@ TRUSTED_PROXY_IPS = {
 RATE_LIMIT_STORE = (os.getenv("RATE_LIMIT_STORE") or "memory").strip().lower()
 REDIS_URL = (os.getenv("REDIS_URL") or "").strip()
 
+validate_runtime_configuration(
+    app_env=APP_ENV,
+    rate_limit_enabled=RATE_LIMIT_ENABLED,
+    rate_limit_store=RATE_LIMIT_STORE,
+    redis_url=REDIS_URL,
+    firebase_appcheck_enforced=FIREBASE_APPCHECK_ENFORCED,
+    metrics_auth_token=METRICS_AUTH_TOKEN,
+    logger=logger,
+)
+
 AI_RATE_LIMIT_PER_MINUTE = _env_int("AI_RATE_LIMIT_PER_MINUTE", 10, minimum=1)
 _AI_RATE_LIMIT_BUCKETS: Dict[str, Deque[float]] = {}
 _AI_RATE_LIMIT_LOCK = Lock()
@@ -170,6 +181,10 @@ FAILURE_SPIKE_COOLDOWN_SECONDS = _env_int("FAILURE_SPIKE_COOLDOWN_SECONDS", 60, 
 
 if RATE_LIMIT_STORE == "redis":
     if not redis or not REDIS_URL:
+        if APP_ENV.strip().lower() == "production":
+            raise RuntimeError(
+                "RATE_LIMIT_STORE=redis configured but redis client/REDIS_URL unavailable in production."
+            )
         logger.warning(
             "RATE_LIMIT_STORE=redis is configured but redis client/REDIS_URL is unavailable; falling back to memory."
         )
@@ -178,6 +193,10 @@ if RATE_LIMIT_STORE == "redis":
             _REDIS_RATE_LIMITER = redis.Redis.from_url(REDIS_URL, decode_responses=True)
             _REDIS_RATE_LIMITER.ping()
         except Exception as exc:
+            if APP_ENV.strip().lower() == "production":
+                raise RuntimeError(
+                    f"Redis rate limiter init failed in production: {exc}"
+                )
             logger.warning(
                 "Redis rate limiter init failed (%s); falling back to memory.", exc
             )

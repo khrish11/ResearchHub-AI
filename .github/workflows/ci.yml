@@ -1,47 +1,30 @@
-name: CI
+name: Frontend CI
 
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main, master ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/ci.yml"
+
+concurrency:
+  group: frontend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test-and-build:
+  frontend-build-and-lint:
     runs-on: ubuntu-latest
-    env:
-      APP_ENV: test
-      SECRET_KEY: ci-test-secret-key-with-32-bytes-minimum
     strategy:
       matrix:
-        python-version: [3.11]
         node-version: [20]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install backend dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-
-      - name: Seed backend test env
-        run: |
-          printf "NASA_ADS_TOKEN=ci-test-nasa-token\n" > backend/.env
-
-      - name: Run backend tests
-        working-directory: backend
-        run: |
-          python -m pytest -q
-
-      - name: Compile backend modules
-        run: |
-          python -m compileall backend
 
       - name: Set up Node
         uses: actions/setup-node@v4

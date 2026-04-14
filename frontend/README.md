@@ -1,75 +1,74 @@
-# React + TypeScript + Vite
+# Soyog AI Frontend
 
-See the top-level `README.md` for project-specific setup, testing, and CI.
+Frontend stack: React + TypeScript + Vite.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Prerequisites
 
-Currently, two official plugins are available:
+1. Node.js 20+
+2. npm 10+
+3. Backend API running (default `http://localhost:8010`)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Environment
 
-## React Compiler
+Create `frontend/.env` (or copy from repository `.env.example`) with at least:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```env
+VITE_API_URL=http://localhost:8010
+VITE_API_TIMEOUT_MS=120000
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_APP_ID=...
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Notes:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+1. `VITE_API_URL` is preferred for local development.
+2. `VITE_API_BASE` is also supported for deployment platforms.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Local Development
+
+Install and run:
+
+```bash
+npm ci
+npm run dev
 ```
+
+Default local URL:
+
+1. `http://localhost:5173`
+
+## Quality Gates
+
+Commands used by CI:
+
+```bash
+npm run lint
+npm run build
+npm run test:e2e
+npm run a11y:ci
+```
+
+## E2E Testing
+
+Playwright configuration lives in `playwright.config.ts`.
+
+Run smoke tests:
+
+```bash
+npm run test:e2e
+```
+
+Run headed locally:
+
+```bash
+npm run test:e2e:headed
+```
+
+## Troubleshooting
+
+1. If login appears stuck, verify backend `/auth/me` works and cookies are enabled.
+2. If CORS fails, verify backend `FRONTEND_URL` and `EXTRA_FRONTEND_URLS` values.
+3. If Firebase auth fails, verify all `VITE_FIREBASE_*` values and authorized domains.

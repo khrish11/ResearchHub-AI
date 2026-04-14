@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 ## 1. System Architecture
-- **Backend**: FastAPI with Python 3.12, containerized via Docker.
+- **Backend**: FastAPI with Python 3.11, containerized via Docker.
 - **Frontend**: React + Vite + TypeScript (Static Build).
 - **Database/Auth**: Firebase Firestore & Firebase Auth (Serverless).
 - **AI**: Groq API integration for low latency LLM inference.
@@ -53,6 +53,8 @@ ADMIN_USER_IDS=firebase_uid_1,firebase_uid_2
 RATE_LIMIT_ENABLED=1
 RATE_LIMIT_WINDOW_SECONDS=60
 RATE_LIMIT_API_PER_WINDOW=300
+RATE_LIMIT_STORE=redis
+REDIS_URL=redis://your-redis-host:6379/0
 AI_RATE_LIMIT_PER_MINUTE=20
 ```
 

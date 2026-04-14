@@ -14,6 +14,10 @@ on:
   schedule:
     - cron: "0 3 * * 1"
 
+concurrency:
+  group: security-scans-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-and-sast:
     runs-on: ubuntu-latest
@@ -79,18 +83,70 @@ jobs:
           import json, pathlib, sys
           base = pathlib.Path("security-reports")
           bandit_file = base / "bandit.json"
+          pip_audit_file = base / "pip-audit.json"
+          npm_audit_file = base / "npm-audit.json"
+          gitleaks_file = base / "gitleaks.json"
           high_or_critical = 0
+          pip_vulns = 0
+          npm_high_or_critical = 0
+          gitleaks_findings = 0
+
+          def _load_json(path: pathlib.Path):
+            if not path.exists():
+              return None
+            try:
+              return json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+              print(f"Failed to parse {path}: {exc}")
+              return None
+
           if bandit_file.exists():
-              data = json.loads(bandit_file.read_text(encoding="utf-8"))
+            data = _load_json(bandit_file) or {}
               for item in data.get("results", []):
                   sev = str(item.get("issue_severity", "")).upper()
                   if sev in {"HIGH", "CRITICAL"}:
                       high_or_critical += 1
+
+          pip_data = _load_json(pip_audit_file)
+          if isinstance(pip_data, list):
+            for dep in pip_data:
+              vulns = dep.get("vulns", []) if isinstance(dep, dict) else []
+              pip_vulns += len(vulns)
+          elif isinstance(pip_data, dict):
+            # Backward compatibility in case output shape changes.
+            pip_vulns = len(pip_data.get("vulnerabilities", []))
+
+          npm_data = _load_json(npm_audit_file) or {}
+          metadata = npm_data.get("metadata", {}) if isinstance(npm_data, dict) else {}
+          vulnerabilities = metadata.get("vulnerabilities", {}) if isinstance(metadata, dict) else {}
+          npm_high_or_critical = int(vulnerabilities.get("high", 0)) + int(vulnerabilities.get("critical", 0))
+
+          gitleaks_data = _load_json(gitleaks_file)
+          if isinstance(gitleaks_data, list):
+            gitleaks_findings = len(gitleaks_data)
+
           print(f"bandit_high_or_critical={high_or_critical}")
+          print(f"pip_audit_vulns={pip_vulns}")
+          print(f"npm_high_or_critical={npm_high_or_critical}")
+          print(f"gitleaks_findings={gitleaks_findings}")
+
+          failed = False
           if high_or_critical > 0:
               print("Failing: high/critical Bandit findings present.")
-              sys.exit(1)
-          print("Risk gate passed: no high/critical Bandit findings.")
+            failed = True
+          if pip_vulns > 0:
+            print("Failing: pip-audit vulnerabilities present.")
+            failed = True
+          if npm_high_or_critical > 0:
+            print("Failing: npm audit high/critical vulnerabilities present.")
+            failed = True
+          if gitleaks_findings > 0:
+            print("Failing: gitleaks findings present.")
+            failed = True
+
+          if failed:
+            sys.exit(1)
+          print("Risk gate passed: no blocking findings.")
           PY
 
   owasp-zap-baseline:

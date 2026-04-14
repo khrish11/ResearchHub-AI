@@ -109,8 +109,11 @@ cd ..
 Recommended on Windows:
 
 ```powershell
+./scripts/dev-doctor.ps1
 .\run_dev.ps1
 ```
+
+`dev-doctor.ps1` verifies required tools and env files before starting services.
 
 `run_dev.ps1` starts:
 
@@ -156,6 +159,12 @@ Optional Makefile shortcuts:
 - `make start-frontend`
 - `make test`
 - `make build-frontend`
+
+Validate local environment (Windows):
+
+```powershell
+./scripts/dev-doctor.ps1
+```
 
 ## Additional Docs
 

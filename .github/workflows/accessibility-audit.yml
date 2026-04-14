@@ -3,7 +3,14 @@ name: Accessibility Audit
 on:
   pull_request:
     branches: [ main, master ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/accessibility-audit.yml"
   workflow_dispatch:
+
+concurrency:
+  group: frontend-a11y-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pa11y-audit:
