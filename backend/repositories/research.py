@@ -40,6 +40,13 @@ def _normalize_email_key(value: str | None) -> str:
     return str(value or "").strip().lower()
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 _ENV_ESCAPE_REVERSE = {
     "\a": "a",
     "\b": "b",
@@ -613,6 +620,15 @@ class FirebaseResearchRepository:
         )
 
     @staticmethod
+    def _user_doc_from_snapshot(snapshot: Any) -> Dict[str, Any]:
+        doc = snapshot.to_dict() or {}
+        if doc.get("id") is None:
+            snapshot_id = _coerce_int(getattr(snapshot, "id", None), 0)
+            if snapshot_id > 0:
+                doc["id"] = snapshot_id
+        return doc
+
+    @staticmethod
     def _paper_from_doc(doc: Dict[str, Any]) -> Paper:
         return Paper(
             id=int(doc["id"]),
@@ -752,7 +768,14 @@ class FirebaseResearchRepository:
         snapshot = self.users.document(str(user_id)).get()
         if not snapshot.exists:
             return None
-        return self._user_from_doc(snapshot.to_dict() or {})
+        doc = self._user_doc_from_snapshot(snapshot)
+        try:
+            return self._user_from_doc(doc)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Skipping malformed user record for id=%s", user_id, exc_info=True
+            )
+            return None
 
     def get_user_by_email(self, email: str) -> Optional[User]:
         normalized = _normalize_email_key(email)
@@ -764,11 +787,25 @@ class FirebaseResearchRepository:
         target = str(google_id or "").strip()
         if not target:
             return None
+        fallback_user: Optional[User] = None
         for snapshot in self.users.where(
             filter=FieldFilter("google_id", "==", target)
         ).stream():
-            return self._user_from_doc(snapshot.to_dict() or {})
-        return None
+            doc = self._user_doc_from_snapshot(snapshot)
+            try:
+                candidate = self._user_from_doc(doc)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Skipping malformed Google-linked user for google_id=%s",
+                    target,
+                    exc_info=True,
+                )
+                continue
+            if _coerce_int(getattr(candidate, "id", None), 0) > 0:
+                return candidate
+            if fallback_user is None:
+                fallback_user = candidate
+        return fallback_user
 
     def get_user_by_verification_token(self, token: str) -> Optional[User]:
         value = str(token or "").strip()
@@ -777,7 +814,14 @@ class FirebaseResearchRepository:
         for snapshot in self.users.where(
             filter=FieldFilter("verification_token", "==", value)
         ).stream():
-            return self._user_from_doc(snapshot.to_dict() or {})
+            doc = self._user_doc_from_snapshot(snapshot)
+            try:
+                return self._user_from_doc(doc)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Skipping malformed verification-token user", exc_info=True
+                )
+                continue
         return None
 
     def list_users_for_normalized_email(self, normalized_email: str) -> list[User]:
@@ -785,27 +829,39 @@ class FirebaseResearchRepository:
         if not normalized:
             return []
         docs: list[Dict[str, Any]] = []
-        seen_ids: set[int] = set()
+        seen_keys: set[str] = set()
         for snapshot in self.users.where(
             filter=FieldFilter("email", "==", normalized)
         ).stream():
-            doc = snapshot.to_dict() or {}
-            doc_id = int(doc.get("id") or 0)
-            if doc_id in seen_ids:
+            doc = self._user_doc_from_snapshot(snapshot)
+            doc_id = _coerce_int(doc.get("id"), 0)
+            dedupe_key = str(doc_id or getattr(snapshot, "id", ""))
+            if dedupe_key in seen_keys:
                 continue
-            seen_ids.add(doc_id)
+            seen_keys.add(dedupe_key)
             docs.append(doc)
         for snapshot in self.users.where(
             filter=FieldFilter("google_email", "==", normalized)
         ).stream():
-            doc = snapshot.to_dict() or {}
-            doc_id = int(doc.get("id") or 0)
-            if doc_id in seen_ids:
+            doc = self._user_doc_from_snapshot(snapshot)
+            doc_id = _coerce_int(doc.get("id"), 0)
+            dedupe_key = str(doc_id or getattr(snapshot, "id", ""))
+            if dedupe_key in seen_keys:
                 continue
-            seen_ids.add(doc_id)
+            seen_keys.add(dedupe_key)
             docs.append(doc)
-        docs.sort(key=lambda doc: int(doc.get("id") or 0))
-        return [self._user_from_doc(doc) for doc in docs]
+        docs.sort(key=lambda doc: _coerce_int(doc.get("id"), 0))
+        users: list[User] = []
+        for doc in docs:
+            try:
+                users.append(self._user_from_doc(doc))
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Skipping malformed user record while listing email=%s",
+                    normalized,
+                    exc_info=True,
+                )
+        return users
 
     def list_users(
         self,
@@ -814,7 +870,7 @@ class FirebaseResearchRepository:
         limit: Optional[int] = None,
         offset: int = 0,
     ) -> list[User]:
-        docs = [(snapshot.to_dict() or {}) for snapshot in self.users.stream()]
+        docs = [self._user_doc_from_snapshot(snapshot) for snapshot in self.users.stream()]
         trimmed = str(query or "").strip().lower()
         if trimmed:
             docs = [
@@ -826,13 +882,22 @@ class FirebaseResearchRepository:
         docs.sort(
             key=lambda doc: (
                 -(doc.get("created_at") or _utcnow()).timestamp(),
-                -int(doc.get("id") or 0),
+                -_coerce_int(doc.get("id"), 0),
             )
         )
         docs = docs[max(0, int(offset)) :]
         if limit is not None:
             docs = docs[: max(0, int(limit))]
-        return [self._user_from_doc(doc) for doc in docs]
+        users: list[User] = []
+        for doc in docs:
+            try:
+                users.append(self._user_from_doc(doc))
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Skipping malformed user record while listing users",
+                    exc_info=True,
+                )
+        return users
 
     def create_user(
         self,
@@ -1194,7 +1259,8 @@ class FirebaseResearchRepository:
 
     def save(self, instance: object) -> object:
         if isinstance(instance, User):
-            if instance.id is None:
+            resolved_user_id = _coerce_int(getattr(instance, "id", None), 0)
+            if resolved_user_id <= 0:
                 created = self.create_user(
                     email=instance.email,
                     hashed_password=instance.hashed_password,
@@ -1210,7 +1276,8 @@ class FirebaseResearchRepository:
                 instance.id = created.id
                 instance.created_at = created.created_at
                 instance.updated_at = created.updated_at
-                return instance
+            else:
+                instance.id = resolved_user_id
             instance.email = _normalize_email_key(instance.email)
             if instance.google_email:
                 instance.google_email = _normalize_email_key(instance.google_email)

@@ -1563,16 +1563,49 @@ async def google_callback(
 
     user_id = _safe_int(getattr(user, "id", None), 0)
     if user_id <= 0:
-        logging.error(
-            "Google callback produced non-numeric user id for %s: %r",
+        logging.warning(
+            "Google callback produced invalid user id for %s (%r). Attempting repair.",
             email,
             getattr(user, "id", None),
         )
-        return _google_error_redirect(
-            "Sign-in succeeded but account id is invalid. Please contact support.",
-            frontend_redirect,
-            clear_state_cookie=True,
-        )
+        try:
+            repaired_user = User(
+                id=None,
+                email=email,
+                hashed_password=getattr(user, "hashed_password", None),
+                google_id=google_id,
+                google_email=email,
+                name=name or getattr(user, "name", None),
+                profile_pic=picture or getattr(user, "profile_pic", None),
+                is_active=bool(getattr(user, "is_active", True)),
+                is_verified=True,
+                verification_token=getattr(user, "verification_token", None),
+                verification_token_expires=getattr(
+                    user, "verification_token_expires", None
+                ),
+                role=getattr(user, "role", "user") or "user",
+                is_pro=bool(getattr(user, "is_pro", False)),
+                feature_flags=dict(getattr(user, "feature_flags", {}) or {}),
+                has_completed_onboarding=bool(
+                    getattr(user, "has_completed_onboarding", False)
+                ),
+            )
+            user = repo.save(repaired_user)
+            user_id = _safe_int(getattr(user, "id", None), 0)
+        except Exception:
+            logging.exception("Failed to repair invalid Google user id for %s", email)
+
+        if user_id <= 0:
+            logging.error(
+                "Google callback still has invalid user id for %s: %r",
+                email,
+                getattr(user, "id", None),
+            )
+            return _google_error_redirect(
+                "Sign-in succeeded but account id is invalid. Please contact support.",
+                frontend_redirect,
+                clear_state_cookie=True,
+            )
 
     try:
         access_token = create_access_token(
