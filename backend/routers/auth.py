@@ -322,13 +322,27 @@ def _normalize_email(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _merge_duplicate_users_for_email(
     repo: ResearchRepository, normalized_email: str
 ) -> Optional[Any]:
     if not normalized_email:
         return None
 
-    users = repo.list_users_for_normalized_email(normalized_email)
+    try:
+        users = repo.list_users_for_normalized_email(normalized_email)
+    except Exception:
+        logging.exception(
+            "Failed to list users while merging duplicate accounts for email '%s'",
+            normalized_email,
+        )
+        return repo.get_user_by_email(normalized_email)
     if not users:
         return None
     if len(users) == 1:
@@ -340,17 +354,26 @@ def _merge_duplicate_users_for_email(
             and _normalize_email(user.google_email) != normalized_email
         ):
             user.google_email = normalized_email
-        return repo.save(user)
+        try:
+            return repo.save(user)
+        except Exception:
+            logging.exception(
+                "Failed to normalize single user record for email '%s'", normalized_email
+            )
+            return user
 
     def _score(candidate: Any) -> Tuple[int, int, int, int, int]:
-        workspaces = repo.list_workspaces_for_user(candidate.id)
+        candidate_id = _safe_int(getattr(candidate, "id", None), 0)
+        if candidate_id <= 0:
+            return (0, 0, 0, 0, 0)
+        workspaces = repo.list_workspaces_for_user(candidate_id)
         workspace_count = len(workspaces)
         paper_count = sum(
             len(repo.list_papers_for_workspace(workspace.id))
             for workspace in workspaces
         )
-        search_count = repo.count_search_history_for_user(candidate.id)
-        doc_count = repo.count_documents_for_user(candidate.id)
+        search_count = repo.count_search_history_for_user(candidate_id)
+        doc_count = repo.count_documents_for_user(candidate_id)
         auth_score = int(bool(candidate.google_id)) + int(
             bool(candidate.hashed_password)
         )
@@ -360,16 +383,25 @@ def _merge_duplicate_users_for_email(
             int(workspace_count),
             int(search_count + doc_count),
             int(auth_score),
-            -int(candidate.id),
+            -candidate_id,
         )
 
-    primary = sorted(users, key=_score, reverse=True)[0]
+    try:
+        primary = sorted(users, key=_score, reverse=True)[0]
+    except Exception:
+        logging.exception(
+            "Failed to score duplicate users for email '%s'; using first user",
+            normalized_email,
+        )
+        primary = users[0]
     primary.email = normalized_email
     if primary.google_email:
         primary.google_email = normalized_email
 
     for other in users:
-        if other.id == primary.id:
+        if _safe_int(getattr(other, "id", None), 0) == _safe_int(
+            getattr(primary, "id", None), 0
+        ):
             continue
         if not primary.google_id and other.google_id:
             primary.google_id = other.google_id
@@ -384,10 +416,27 @@ def _merge_duplicate_users_for_email(
         if not primary.name and other.name:
             primary.name = other.name
 
-        repo.save(primary)
-        repo.merge_user_accounts(primary.id, other.id)
+        try:
+            repo.save(primary)
+            primary_id = _safe_int(getattr(primary, "id", None), 0)
+            other_id = _safe_int(getattr(other, "id", None), 0)
+            if primary_id > 0 and other_id > 0:
+                repo.merge_user_accounts(primary_id, other_id)
+        except Exception:
+            logging.exception(
+                "Failed to merge duplicate user accounts for email '%s' (primary=%s, secondary=%s)",
+                normalized_email,
+                getattr(primary, "id", None),
+                getattr(other, "id", None),
+            )
 
-    return repo.save(primary)
+    try:
+        return repo.save(primary)
+    except Exception:
+        logging.exception(
+            "Failed final save after duplicate merge for email '%s'", normalized_email
+        )
+        return primary
 
 
 class UserCreate(BaseModel):
@@ -1438,49 +1487,71 @@ async def google_callback(
 
     # Reconcile fragmented accounts by email first (handles legacy rows with
     # mixed casing/spacing or rows that only had google_email set).
-    merged_email_user = _merge_duplicate_users_for_email(repo, email)
-    user_by_google = repo.get_user_by_google_id(google_id)
-
-    if (
-        user_by_google
-        and merged_email_user
-        and user_by_google.id != merged_email_user.id
-    ):
-        # Keep the richer merged-email account as primary and move Google identity to it.
-        merged_email_user.google_id = google_id
-        merged_email_user.google_email = email
-        merged_email_user.email = email
-        merged_email_user.name = merged_email_user.name or name
-        merged_email_user.profile_pic = merged_email_user.profile_pic or picture
-        merged_email_user.is_verified = True
-
-        user = merged_email_user
-        repo.merge_user_accounts(merged_email_user.id, user_by_google.id)
-    elif user_by_google:
-        user = user_by_google
-    elif merged_email_user:
-        user = merged_email_user
-        user.google_id = google_id
-        user.google_email = email
-        user.email = email
-    else:
-        user = User(
-            id=None,
-            email=email,
-            google_id=google_id,
-            google_email=email,
-            name=name,
-            profile_pic=picture,
-            is_verified=True,
-        )
-
-    user.email = email
-    user.google_email = email
-    user.google_id = google_id
-    user.name = name or user.name
-    user.profile_pic = picture or user.profile_pic
-    user.is_verified = True
     try:
+        merged_email_user = _merge_duplicate_users_for_email(repo, email)
+    except Exception:
+        logging.exception(
+            "Failed to merge duplicate accounts during Google callback for %s", email
+        )
+        merged_email_user = None
+
+    try:
+        user_by_google = repo.get_user_by_google_id(google_id)
+    except Exception:
+        logging.exception(
+            "Failed to lookup user by google_id during callback for %s", email
+        )
+        user_by_google = None
+
+    try:
+        if (
+            user_by_google
+            and merged_email_user
+            and _safe_int(user_by_google.id, -1) != _safe_int(merged_email_user.id, -1)
+        ):
+            # Keep the richer merged-email account as primary and move Google identity to it.
+            merged_email_user.google_id = google_id
+            merged_email_user.google_email = email
+            merged_email_user.email = email
+            merged_email_user.name = merged_email_user.name or name
+            merged_email_user.profile_pic = merged_email_user.profile_pic or picture
+            merged_email_user.is_verified = True
+
+            user = merged_email_user
+            try:
+                repo.merge_user_accounts(
+                    _safe_int(merged_email_user.id, 0), _safe_int(user_by_google.id, 0)
+                )
+            except Exception:
+                logging.exception(
+                    "Failed merging Google/email users during callback (primary=%s secondary=%s)",
+                    getattr(merged_email_user, "id", None),
+                    getattr(user_by_google, "id", None),
+                )
+        elif user_by_google:
+            user = user_by_google
+        elif merged_email_user:
+            user = merged_email_user
+            user.google_id = google_id
+            user.google_email = email
+            user.email = email
+        else:
+            user = User(
+                id=None,
+                email=email,
+                google_id=google_id,
+                google_email=email,
+                name=name,
+                profile_pic=picture,
+                is_verified=True,
+            )
+
+        user.email = email
+        user.google_email = email
+        user.google_id = google_id
+        user.name = name or user.name
+        user.profile_pic = picture or user.profile_pic
+        user.is_verified = True
         user = repo.save(user)
     except Exception:
         logging.exception("Failed to persist Google user during callback")
@@ -1490,14 +1561,35 @@ async def google_callback(
             clear_state_cookie=True,
         )
 
-    access_token = create_access_token(
-        data={"sub": user.email, "uid": int(user.id)},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    handoff_code = _store_oauth_handoff_token(access_token)
-    response = _build_frontend_oauth_handoff_redirect(frontend_redirect, handoff_code)
-    _clear_google_state_cookie(response)
-    return response
+    user_id = _safe_int(getattr(user, "id", None), 0)
+    if user_id <= 0:
+        logging.error(
+            "Google callback produced non-numeric user id for %s: %r",
+            email,
+            getattr(user, "id", None),
+        )
+        return _google_error_redirect(
+            "Sign-in succeeded but account id is invalid. Please contact support.",
+            frontend_redirect,
+            clear_state_cookie=True,
+        )
+
+    try:
+        access_token = create_access_token(
+            data={"sub": str(user.email), "uid": user_id},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        )
+        handoff_code = _store_oauth_handoff_token(access_token)
+        response = _build_frontend_oauth_handoff_redirect(frontend_redirect, handoff_code)
+        _clear_google_state_cookie(response)
+        return response
+    except Exception:
+        logging.exception("Failed to finalize Google OAuth callback handoff")
+        return _google_error_redirect(
+            "Sign-in handoff failed. Please retry.",
+            frontend_redirect,
+            clear_state_cookie=True,
+        )
 
 
 @router.patch("/me")
