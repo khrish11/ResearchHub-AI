@@ -139,12 +139,16 @@ TRUSTED_PROXY_IPS = {
 }
 RATE_LIMIT_STORE = (os.getenv("RATE_LIMIT_STORE") or "memory").strip().lower()
 REDIS_URL = (os.getenv("REDIS_URL") or "").strip()
+ENFORCE_DISTRIBUTED_RATE_LIMIT = os.getenv(
+    "ENFORCE_DISTRIBUTED_RATE_LIMIT", "0"
+).strip().lower() in {"1", "true", "yes"}
 
 validate_runtime_configuration(
     app_env=APP_ENV,
     rate_limit_enabled=RATE_LIMIT_ENABLED,
     rate_limit_store=RATE_LIMIT_STORE,
     redis_url=REDIS_URL,
+    enforce_distributed_rate_limit=ENFORCE_DISTRIBUTED_RATE_LIMIT,
     firebase_appcheck_enforced=FIREBASE_APPCHECK_ENFORCED,
     metrics_auth_token=METRICS_AUTH_TOKEN,
     logger=logger,
