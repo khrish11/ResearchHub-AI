@@ -2860,7 +2860,29 @@ class InMemoryResearchRepository:
 
     def save(self, instance: object) -> object:
         # Keep save conservative; only support document/user/session updates used by UI.
-        if isinstance(instance, User) and instance.id is not None:
+        if isinstance(instance, User):
+            resolved_user_id = _coerce_int(getattr(instance, "id", None), 0)
+            if resolved_user_id <= 0:
+                created = self.create_user(
+                    email=instance.email,
+                    hashed_password=instance.hashed_password,
+                    google_id=instance.google_id,
+                    google_email=instance.google_email,
+                    name=instance.name,
+                    profile_pic=instance.profile_pic,
+                    is_active=instance.is_active,
+                    is_verified=instance.is_verified,
+                    verification_token=instance.verification_token,
+                    verification_token_expires=instance.verification_token_expires,
+                    has_completed_onboarding=bool(
+                        getattr(instance, "has_completed_onboarding", False)
+                    ),
+                )
+                instance.id = created.id
+                instance.created_at = created.created_at
+                instance.updated_at = created.updated_at
+                return instance
+            instance.id = resolved_user_id
             instance.updated_at = _utcnow()
             self._users[int(instance.id)] = instance
             return instance
