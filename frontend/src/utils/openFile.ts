@@ -36,7 +36,7 @@ export const openFileUrl = async (rawUrl: string, fallbackFilename = 'file.bin')
   const relativePath = `${parsed.pathname}${parsed.search || ''}`;
   const response = await api.get(relativePath, { responseType: 'blob' });
   const blob = new Blob([response.data], {
-    type: response.headers['content-type'] || 'application/octet-stream',
+    type: String(response.headers['content-type'] || 'application/octet-stream'),
   });
   const objectUrl = window.URL.createObjectURL(blob);
   const opened = window.open(objectUrl, '_blank', 'noopener,noreferrer');
