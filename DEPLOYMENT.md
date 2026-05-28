@@ -14,18 +14,41 @@ The backend is packaged using a multi-worker ASGI setup (`gunicorn` + `uvicorn`)
 
 ## 3. Deployment Steps
 
-### Backend Deployment (e.g., Google Cloud Run, AWS AppRunner, Render)
+### Backend Deployment (e.g., Google Cloud Run, AWS AppRunner, Azure Container Apps)
 1. Ensure all environment variables (see below) are configured in the cloud provider's secrets manager.
 2. Build the Docker image:
    ```bash
    cd backend
    docker build -t soyog-ai-backend .
    ```
-3. Run or deploy the image exposing port `8080`:
+3. Run or deploy the image exposing port `8000`:
    ```bash
-   docker run -p 8080:8080 --env-file .env.prod soyog-ai-backend
+   docker run -p 8000:8000 --env-file .env.prod soyog-ai-backend
    ```
-4. Set HTTPS: Ensure your cloud provider (like Cloud Run) handles SSL termination natively. Do not expose the internal port 8080 directly to the internet without an HTTPS proxy/load balancer.
+4. Set HTTPS: Ensure your cloud provider (like Cloud Run) handles SSL termination natively. Do not expose the internal port 8000 directly to the internet without an HTTPS proxy/load balancer.
+
+### Azure Container Apps (recommended Azure path)
+1. Create Azure resources (one-time):
+   - Resource Group
+   - Azure Container Registry (ACR)
+   - Container Apps Environment
+2. Build and push backend image to ACR:
+   ```bash
+   az acr build --registry <acr-name> --image researchhub-backend:latest --file backend/Dockerfile backend
+   ```
+3. Create/update the Container App with ingress:
+   ```bash
+   az containerapp up \
+     --name researchhub-backend \
+     --resource-group <rg-name> \
+     --environment <aca-env-name> \
+     --ingress external \
+     --target-port 8000 \
+     --registry-server <acr-name>.azurecr.io \
+     --image <acr-name>.azurecr.io/researchhub-backend:latest
+   ```
+4. Add runtime secrets/environment variables in Container App configuration (same backend env contract used today).
+5. Set `BACKEND_URL` and `GOOGLE_REDIRECT_URI` to the Container App public URL and redeploy frontend with updated `VITE_API_URL` / `VITE_API_BASE`.
 
 ### Frontend Deployment (e.g., Vercel, Netlify)
 1. Add environment variables to your Vercel/Netlify dashboard:
