@@ -219,6 +219,8 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
             <div className="flex items-center gap-3">
               {canManageCollaborators && collaborator.role !== 'owner' ? (
                 <select
+                  aria-label={`Role for ${collaborator.email}`}
+                  title="Collaborator role"
                   value={collaborator.role}
                   onChange={(e) => handleUpdateRole(collaborator.id, e.target.value as PermissionLevel)}
                   disabled={updatingRole === collaborator.id}
@@ -308,6 +310,8 @@ const WorkspaceCollaboration: React.FC<WorkspaceCollaborationProps> = ({
                   Permission Level
                 </label>
                 <select
+                  aria-label="Invite permission level"
+                  title="Invite permission level"
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value as PermissionLevel)}
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent"

@@ -85,13 +85,21 @@ interface WritingSuggestionResponse {
 
 const TOOL_CONFIG: Record<
   ToolType,
-  { label: string; prompt: string; color: string; icon: LucideIcon; details: string }
+  {
+    label: string;
+    prompt: string;
+    icon: LucideIcon;
+    details: string;
+    iconClass: string;
+    buttonClass: string;
+  }
 > = {
   summaries: {
     label: 'AI Summaries',
     prompt:
       'For each paper below, create a detailed analysis with sections: Problem, Method, Data/Benchmarks, Key Results, Limitations, and Practical Takeaways. Use bullet points and cite Paper N for non-trivial claims.\n\n',
-    color: '#4f46e5',
+    iconClass: 'bg-indigo-100/70 text-indigo-600',
+    buttonClass: 'bg-[linear-gradient(120deg,#4f46e5,#4338ca)]',
     icon: FileText,
     details: 'Detailed per-paper breakdown with method, evidence, and limitations.',
   },
@@ -99,7 +107,8 @@ const TOOL_CONFIG: Record<
     label: 'Key Insights',
     prompt:
       'Extract 10-14 cross-paper insights, recurring themes, contradictions, and risk areas. Include confidence (High/Medium/Low) for each insight and cite Paper N.\n\n',
-    color: '#f97316',
+    iconClass: 'bg-orange-100/70 text-orange-600',
+    buttonClass: 'bg-[linear-gradient(120deg,#f97316,#ea580c)]',
     icon: Lightbulb,
     details: 'Cross-paper synthesis with contradictions, confidence, and next actions.',
   },
@@ -107,7 +116,8 @@ const TOOL_CONFIG: Record<
     label: 'Literature Review',
     prompt:
       'Write a long-form structured literature review with sections: Introduction, Taxonomy of Methods, Comparative Findings, Key Insights, Gaps and Risks, Future Research Directions, and Execution Plan. Cite Paper N throughout.\n\n',
-    color: '#059669',
+    iconClass: 'bg-emerald-100/70 text-emerald-600',
+    buttonClass: 'bg-[linear-gradient(120deg,#059669,#047857)]',
     icon: BookOpen,
     details: 'Long-form review draft with evidence-grounded synthesis and roadmap.',
   },
@@ -440,7 +450,7 @@ const AITools: React.FC = () => {
         nodes.push(text.slice(lastIndex, match.index));
       }
       nodes.push(
-        <a key={`${href}-${match.index}`} href={href} target="_blank" rel="noreferrer" className="mindmap-inline-link">
+        <a key={`${href}-${match.index}`} href={href} target="_blank" rel="noopener noreferrer" className="mindmap-inline-link">
           {label}
         </a>
       );
@@ -562,6 +572,8 @@ const AITools: React.FC = () => {
               Workspace
             </label>
             <select
+              aria-label="Workspace"
+              title="Workspace"
               value={selectedWsId ?? ''}
               onChange={(e) => setSelectedWsId(Number(e.target.value))}
               className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -584,6 +596,8 @@ const AITools: React.FC = () => {
                 Detail level
               </label>
               <select
+                aria-label="Detail level"
+                title="Detail level"
                 value={detailLevel}
                 onChange={(e) => setDetailLevel(e.target.value as DetailLevel)}
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -598,6 +612,8 @@ const AITools: React.FC = () => {
                 Focus mode
               </label>
               <select
+                aria-label="Focus mode"
+                title="Focus mode"
                 value={focusMode}
                 onChange={(e) => setFocusMode(e.target.value as FocusMode)}
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -700,12 +716,12 @@ const AITools: React.FC = () => {
                   </span>
                 )}
               </div>
-              <div className="h-2.5 w-full rounded-full bg-slate-200 overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-cyan-500 to-emerald-500 transition-all"
-                  style={{ width: `${Math.max(4, Math.min(100, draftScore))}%` }}
-                />
-              </div>
+              <progress
+                className="h-2.5 w-full overflow-hidden rounded-full"
+                max={100}
+                value={Math.max(4, Math.min(100, draftScore))}
+                aria-label="Draft quality score"
+              />
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <span className="rounded-full bg-indigo-50 text-indigo-700 px-2.5 py-1 font-semibold">
                   Draft score {draftScore}/100
@@ -889,8 +905,7 @@ const AITools: React.FC = () => {
                 <article key={toolKey} className="studio-panel p-4">
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <div
-                      className="studio-icon-chip"
-                      style={{ background: `${config.color}1f`, color: config.color }}
+                      className={`studio-icon-chip ${config.iconClass}`}
                     >
                       <Icon className="h-4.5 w-4.5" />
                     </div>
@@ -905,8 +920,7 @@ const AITools: React.FC = () => {
                   <button
                     onClick={() => runTool(toolKey)}
                     disabled={loadingTool || papers.length === 0}
-                    className="mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold text-white inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{ background: `linear-gradient(120deg, ${config.color}, ${config.color}cc)` }}
+                    className={`mt-3 w-full rounded-xl px-3 py-2 text-sm font-semibold text-white inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${config.buttonClass}`}
                   >
                     {loadingTool && activeTool === toolKey ? (
                       <>

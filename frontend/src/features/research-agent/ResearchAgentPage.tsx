@@ -708,6 +708,8 @@ const ResearchAgent: React.FC = () => {
               placeholder="Year from"
             />
             <select
+              aria-label="Workspace"
+              title="Workspace"
               value={selectedWorkspace ?? ''}
               onChange={(e) => setSelectedWorkspace(e.target.value ? Number(e.target.value) : null)}
               className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
@@ -1033,6 +1035,8 @@ const ResearchAgent: React.FC = () => {
             >
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <select
+                  aria-label="Chat style"
+                  title="Chat style"
                   value={chatStyle}
                   onChange={(event) => setChatStyle(event.target.value as 'concise' | 'balanced' | 'deep')}
                   className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
@@ -1264,6 +1268,8 @@ const ResearchAgent: React.FC = () => {
           <Card title="Smart Reading + Comparator + Feed + Citation Verifier" subtitle="Advanced intelligence operations" icon={<BrainCircuit className="h-5 w-5" />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <select
+              aria-label="Smart read paper"
+              title="Smart read paper"
               value={smartPaperId ?? ''}
               onChange={(e) => setSmartPaperId(e.target.value ? Number(e.target.value) : null)}
               className="rounded-xl border border-slate-200 px-3 py-2 text-sm"

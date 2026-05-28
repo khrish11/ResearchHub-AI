@@ -142,6 +142,8 @@ const AskWorkspace: React.FC = () => {
                   Workspace
                 </label>
                 <select
+                  aria-label="Workspace"
+                  title="Workspace"
                   value={workspaceId ?? ''}
                   onChange={(event) => setWorkspaceId(Number(event.target.value))}
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"

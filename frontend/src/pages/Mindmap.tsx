@@ -700,9 +700,9 @@ const Mindmap = () => {
 
     const bulletMatch = line.match(/^(\s*)-\s+(.*)$/);
     if (bulletMatch) {
-      const indent = Math.min(24, Math.max(0, Math.floor(bulletMatch[1].length / 2) * 10));
+      const indentLevel = Math.min(12, Math.max(0, Math.floor(bulletMatch[1].length / 2)));
       return (
-        <p key={`bullet-${idx}`} className="mindmap-preview-bullet" style={{ marginLeft: indent }}>
+        <p key={`bullet-${idx}`} className={`mindmap-preview-bullet mindmap-indent-${indentLevel}`}>
           {renderInlineLinks(bulletMatch[2])}
         </p>
       );
@@ -793,6 +793,8 @@ const Mindmap = () => {
                         Workspace
                       </label>
                       <select
+                        aria-label="Workspace"
+                        title="Workspace"
                         value={selectedWorkspaceId ?? ''}
                         onChange={(event) => {
                           const nextId = Number(event.target.value);
@@ -818,6 +820,8 @@ const Mindmap = () => {
                         Depth
                       </label>
                       <select
+                        aria-label="Report depth"
+                        title="Report depth"
                         value={depth}
                         onChange={(event) => {
                           setDepth(event.target.value as ReportDepth);
@@ -866,6 +870,8 @@ const Mindmap = () => {
                         Focus mode
                       </label>
                       <select
+                        aria-label="Focus mode"
+                        title="Focus mode"
                         value={focusMode}
                         onChange={(event) => {
                           setFocusMode(event.target.value as ReportFocus);
@@ -1003,6 +1009,8 @@ const Mindmap = () => {
                       <button
                         type="button"
                         onClick={() => setVisualZoom((prev) => Math.max(0.65, Number((prev - 0.1).toFixed(2))))}
+                        aria-label="Zoom out"
+                        title="Zoom out"
                         className="rounded border border-slate-200 px-2 py-1 text-xs"
                       >
                         <ZoomOut className="h-3.5 w-3.5" />
@@ -1013,6 +1021,8 @@ const Mindmap = () => {
                       <button
                         type="button"
                         onClick={() => setVisualZoom((prev) => Math.min(1.8, Number((prev + 0.1).toFixed(2))))}
+                        aria-label="Zoom in"
+                        title="Zoom in"
                         className="rounded border border-slate-200 px-2 py-1 text-xs"
                       >
                         <ZoomIn className="h-3.5 w-3.5" />
@@ -1026,6 +1036,8 @@ const Mindmap = () => {
                           setVisualQuery('');
                           setIsVisualPanning(false);
                         }}
+                        aria-label="Reset view"
+                        title="Reset view"
                         className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600"
                       >
                         <Crosshair className="h-3.5 w-3.5" />

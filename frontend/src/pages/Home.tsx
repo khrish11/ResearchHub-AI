@@ -296,7 +296,8 @@ const Home = () => {
       title: 'Signal Search',
       desc: 'Probe multi-source paper indexes with richer relevance and live source diagnostics.',
       icon: Search,
-      color: '#4f46e5',
+      iconClass: 'bg-indigo-100/70 text-indigo-600',
+      ctaClass: 'text-indigo-600',
       to: '/search',
       cta: 'Open Search',
     },
@@ -304,7 +305,8 @@ const Home = () => {
       title: 'Context Chat',
       desc: 'Ask long-horizon research questions and keep context pinned to your workspace.',
       icon: MessageSquare,
-      color: '#0284c7',
+      iconClass: 'bg-sky-100/70 text-sky-600',
+      ctaClass: 'text-sky-600',
       to: '/ai-tools',
       cta: 'Open AI Tools',
     },
@@ -312,7 +314,8 @@ const Home = () => {
       title: 'Doc Studio',
       desc: 'Draft, refine, and structure manuscripts with AI-guided editing workflows.',
       icon: FileText,
-      color: '#0f766e',
+      iconClass: 'bg-teal-100/70 text-teal-700',
+      ctaClass: 'text-teal-700',
       to: '/docs',
       cta: 'Open DocSpace',
     },
@@ -320,7 +323,8 @@ const Home = () => {
       title: 'Review Engine',
       desc: 'Synthesize connected literature clusters instead of isolated single-paper summaries.',
       icon: BookOpen,
-      color: '#9333ea',
+      iconClass: 'bg-violet-100/70 text-violet-600',
+      ctaClass: 'text-violet-600',
       to: '/mindmap',
       cta: 'Open Mindmap',
     },
@@ -581,21 +585,21 @@ const Home = () => {
 
       <section className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-7">
         <div className="stat-tile">
-          <div className="stat-icon" style={{ background: 'rgba(79, 70, 229, 0.12)', color: '#4f46e5' }}>
+          <div className="stat-icon bg-indigo-100/70 text-indigo-600">
             <Orbit className="h-5 w-5" />
           </div>
           <p className="stat-label">Search Fabric</p>
           <p className="stat-value">28+ Source Rails</p>
         </div>
         <div className="stat-tile">
-          <div className="stat-icon" style={{ background: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
+          <div className="stat-icon bg-sky-100/70 text-sky-600">
             <BrainCircuit className="h-5 w-5" />
           </div>
           <p className="stat-label">AI Core</p>
           <p className="stat-value">Context Aware</p>
         </div>
         <div className="stat-tile">
-          <div className="stat-icon" style={{ background: 'rgba(147, 51, 234, 0.12)', color: '#9333ea' }}>
+          <div className="stat-icon bg-violet-100/70 text-violet-600">
             <Layers3 className="h-5 w-5" />
           </div>
           <p className="stat-label">Workspace Stack</p>
@@ -610,12 +614,12 @@ const Home = () => {
             const Icon = card.icon;
             return (
               <Link key={card.title} to={card.to} className="feature-surface group cursor-pointer">
-                <div className="feature-icon" style={{ background: `${card.color}1f`, color: card.color }}>
+                <div className={`feature-icon ${card.iconClass}`}>
                   <Icon className="h-5 w-5" />
                 </div>
                 <h4 className="text-base font-semibold text-slate-900 mt-3">{card.title}</h4>
                 <p className="text-sm text-slate-600 mt-1 leading-relaxed">{card.desc}</p>
-                <span className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: card.color }}>
+                <span className={`mt-3 inline-flex items-center gap-1.5 text-xs font-semibold ${card.ctaClass}`}>
                   {card.cta} <ArrowRight className="h-3.5 w-3.5 transition-transform duration-150 group-hover:translate-x-0.5" />
                 </span>
               </Link>

@@ -185,6 +185,7 @@ h6 {
     linear-gradient(170deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.97));
   border: 1px solid rgba(165, 180, 252, 0.18);
   box-shadow: 0 20px 40px rgba(15, 23, 42, 0.25);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -263,6 +264,7 @@ h6 {
   border-radius: 1rem;
   padding: 0.72rem 0.9rem;
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
 }
 
@@ -858,6 +860,7 @@ h6 {
   border: 1px solid rgba(203, 213, 225, 0.36);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 24px 42px rgba(2, 6, 23, 0.24);
+  -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   padding: 1.5rem;
 }
@@ -1105,6 +1108,7 @@ h6 {
     linear-gradient(rgba(255, 255, 255, 0.5) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.42) 1px, transparent 1px);
   background-size: 84px 84px;
+  -webkit-mask-image: radial-gradient(circle at center, black 45%, transparent 100%);
   mask-image: radial-gradient(circle at center, black 45%, transparent 100%);
   opacity: 0.22;
 }
@@ -1126,8 +1130,23 @@ h6 {
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(148, 163, 184, 0.25);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
+
+.mindmap-indent-0 { margin-left: 0; }
+.mindmap-indent-1 { margin-left: 10px; }
+.mindmap-indent-2 { margin-left: 20px; }
+.mindmap-indent-3 { margin-left: 30px; }
+.mindmap-indent-4 { margin-left: 40px; }
+.mindmap-indent-5 { margin-left: 50px; }
+.mindmap-indent-6 { margin-left: 60px; }
+.mindmap-indent-7 { margin-left: 70px; }
+.mindmap-indent-8 { margin-left: 80px; }
+.mindmap-indent-9 { margin-left: 90px; }
+.mindmap-indent-10 { margin-left: 100px; }
+.mindmap-indent-11 { margin-left: 110px; }
+.mindmap-indent-12 { margin-left: 120px; }
 
 .landing-brand {
   display: inline-flex;

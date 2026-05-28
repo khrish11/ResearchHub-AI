@@ -1100,6 +1100,8 @@ const SearchPapers: React.FC = () => {
                   </span>
                 </div>
                 <input
+                  aria-label="Results per search"
+                  title="Results per search"
                   type="range"
                   min={SEARCH_MIN_RESULTS}
                   max={maxResultsCap}
@@ -1143,6 +1145,8 @@ const SearchPapers: React.FC = () => {
                 </label>
 
                 <select
+                  aria-label="Year filter"
+                  title="Year filter"
                   value={yearFilter}
                   onChange={(event) => setYearFilter(event.target.value as YearFilter)}
                   className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
@@ -1156,6 +1160,8 @@ const SearchPapers: React.FC = () => {
                 </select>
 
                 <select
+                  aria-label="Sort mode"
+                  title="Sort mode"
                   value={sortMode}
                   onChange={(event) => setSortMode(event.target.value as SortMode)}
                   className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
@@ -1167,6 +1173,8 @@ const SearchPapers: React.FC = () => {
                 </select>
 
                 <select
+                  aria-label="Source filter"
+                  title="Source filter"
                   value={sourceFilter}
                   onChange={(event) => setSourceFilter(canonicalSourceKey(event.target.value) || 'all')}
                   className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
@@ -1180,6 +1188,8 @@ const SearchPapers: React.FC = () => {
                 </select>
 
                 <select
+                  aria-label="Citation style"
+                  title="Citation style"
                   value={citationStyle}
                   onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
                   className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
@@ -1192,6 +1202,8 @@ const SearchPapers: React.FC = () => {
                 </select>
 
                 <select
+                  aria-label="Result view"
+                  title="Result view"
                   value={resultView}
                   onChange={(event) => setResultView(event.target.value as ResultView)}
                   className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
@@ -1383,7 +1395,7 @@ const SearchPapers: React.FC = () => {
             <a
               href="https://www.jstage.jst.go.jp/"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="inline-flex items-center gap-1 font-medium text-slate-900 underline underline-offset-2"
             >
               Powered by J-STAGE

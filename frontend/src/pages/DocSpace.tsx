@@ -297,6 +297,8 @@ const DocSpace: React.FC = () => {
               </div>
             ) : (
               <select
+                aria-label="Workspace"
+                title="Workspace"
                 value={selectedWsId ?? ''}
                 onChange={(e) => setSelectedWsId(Number(e.target.value))}
                 className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"

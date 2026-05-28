@@ -22,9 +22,9 @@ jobs:
     timeout-minutes: 30
 
     env:
-      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
-      AZURE_CONTAINER_APP_NAME: ${{ secrets.AZURE_CONTAINER_APP_NAME }}
-      AZURE_ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ secrets['AZURE_RESOURCE_GROUP'] }}
+      AZURE_CONTAINER_APP_NAME: ${{ secrets['AZURE_CONTAINER_APP_NAME'] }}
+      AZURE_ACR_NAME: ${{ secrets['AZURE_ACR_NAME'] }}
       IMAGE_REPOSITORY: researchhub-backend
 
     steps:
@@ -44,7 +44,7 @@ jobs:
       - name: Azure Login
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          creds: ${{ secrets['AZURE_CREDENTIALS'] }}
 
       - name: Build image in ACR
         run: |

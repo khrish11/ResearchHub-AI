@@ -679,29 +679,25 @@ const Dashboard = () => {
       label: 'Workspaces',
       value: workspaces.length,
       icon: Folder,
-      color: '#4f46e5',
-      bg: 'rgba(79,70,229,0.12)',
+      iconClass: 'bg-indigo-100/70 text-indigo-600',
     },
     {
       label: 'Papers Imported',
       value: totalPapers,
       icon: FileText,
-      color: '#0ea5e9',
-      bg: 'rgba(14,165,233,0.12)',
+      iconClass: 'bg-sky-100/70 text-sky-600',
     },
     {
       label: 'Indexed Characters',
       value: formatNum(totalChars),
       icon: Database,
-      color: '#9333ea',
-      bg: 'rgba(147,51,234,0.12)',
+      iconClass: 'bg-violet-100/70 text-violet-600',
     },
     {
       label: 'AI Context',
       value: 'Ready',
       icon: BrainCircuit,
-      color: '#0f766e',
-      bg: 'rgba(15,118,110,0.12)',
+      iconClass: 'bg-teal-100/70 text-teal-700',
     },
   ];
 
@@ -822,12 +818,12 @@ const Dashboard = () => {
                 <span className="font-semibold uppercase tracking-[0.16em] text-slate-500">Progress</span>
                 <span className="font-semibold text-slate-700">{demoProgressPct}%</span>
               </div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-cyan-500 to-emerald-500 transition-all duration-500"
-                  style={{ width: `${demoProgressPct}%` }}
-                />
-              </div>
+              <progress
+                className="mt-2 h-2 w-full overflow-hidden rounded-full"
+                max={100}
+                value={demoProgressPct}
+                aria-label="Demo progress"
+              />
               <div className="mt-3 grid grid-cols-5 gap-1.5">
                 {(demoState?.steps || []).map((step) => (
                   <button
@@ -975,12 +971,12 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-cyan-500 to-emerald-500 transition-all duration-500"
-              style={{ width: `${onboardingProgressPct}%` }}
-            />
-          </div>
+          <progress
+            className="mt-3 h-2 w-full overflow-hidden rounded-full"
+            max={100}
+            value={onboardingProgressPct}
+            aria-label="Onboarding progress"
+          />
 
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
             {(onboarding?.steps || []).map((step) => (
@@ -1075,7 +1071,7 @@ const Dashboard = () => {
           const Icon = s.icon;
           return (
             <div key={s.label} className="stat-tile">
-              <div className="stat-icon" style={{ background: s.bg, color: s.color }}>
+              <div className={`stat-icon ${s.iconClass}`}>
                 <Icon className="h-4 w-4 md:h-5 md:w-5" />
               </div>
               <p className="stat-label">{s.label}</p>
@@ -1158,6 +1154,8 @@ const Dashboard = () => {
           <div className="flex flex-wrap items-center gap-2">
             {workspaces.length > 1 && (
               <select
+                aria-label="Insights workspace"
+                title="Insights workspace"
                 value={activeInsightsWorkspaceId ?? ''}
                 onChange={(event) => setActiveInsightsWorkspaceId(Number(event.target.value) || null)}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
@@ -1264,6 +1262,8 @@ const Dashboard = () => {
               <BellRing className="h-3.5 w-3.5" /> {feedUnreadCount} unread
             </span>
             <select
+              aria-label="Feed sort order"
+              title="Feed sort order"
               value={feedSort}
               onChange={(event) => setFeedSort(event.target.value as 'importance' | 'recent')}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
@@ -1432,11 +1432,16 @@ const Dashboard = () => {
       ) : null}
 
       {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center px-3" style={{ background: 'rgba(2,6,23,0.52)' }}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-3">
           <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-slate-100">
             <div className="flex items-center justify-between mb-5">
               <h4 className="text-lg font-bold text-slate-900">Create Workspace</h4>
-              <button onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-slate-600">
+              <button
+                onClick={() => setShowCreate(false)}
+                aria-label="Close create workspace dialog"
+                title="Close"
+                className="text-slate-400 hover:text-slate-600"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -1489,8 +1494,7 @@ const Dashboard = () => {
               <button
                 onClick={handleCreate}
                 disabled={creating || !newName.trim()}
-                className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 transition-opacity disabled:opacity-50"
-                style={{ background: 'linear-gradient(120deg, #4f46e5, #0284c7)' }}
+                className="flex-1 py-2.5 rounded-xl bg-[linear-gradient(120deg,#4f46e5,#0284c7)] text-sm font-semibold text-white flex items-center justify-center gap-2 transition-opacity disabled:opacity-50"
               >
                 {creating ? (
                   <>
@@ -1546,7 +1550,12 @@ const Dashboard = () => {
                     </button>
                   </div>
                 ) : (
-                  <button onClick={() => setDeleteId(ws.id)} className="text-slate-300 hover:text-red-500 transition-colors">
+                  <button
+                    onClick={() => setDeleteId(ws.id)}
+                    aria-label={`Delete workspace ${ws.name}`}
+                    title="Delete workspace"
+                    className="text-slate-300 hover:text-red-500 transition-colors"
+                  >
                     <Trash2 className="h-4 w-4" />
                   </button>
                 )}

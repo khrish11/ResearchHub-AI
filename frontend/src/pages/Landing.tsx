@@ -19,43 +19,37 @@ const featureCards = [
     title: 'Search Fabric',
     description: 'Scan 28+ connected research rails from one search surface instead of jumping across fragmented portals.',
     icon: Search,
-    bg: 'rgba(79, 70, 229, 0.12)',
-    color: '#4f46e5',
+    iconClass: 'bg-indigo-100/70 text-indigo-600',
   },
   {
     title: 'Workspace Memory',
     description: 'Keep papers, AI context, notes, and exports pinned to one real project instead of one-off sessions.',
     icon: Workflow,
-    bg: 'rgba(14, 165, 233, 0.12)',
-    color: '#0284c7',
+    iconClass: 'bg-sky-100/70 text-sky-600',
   },
   {
     title: 'AI Synthesis',
     description: 'Move from paper discovery to summaries, fault detection, review drafting, and context-aware chat.',
     icon: BrainCircuit,
-    bg: 'rgba(16, 185, 129, 0.12)',
-    color: '#059669',
+    iconClass: 'bg-emerald-100/70 text-emerald-600',
   },
   {
     title: 'Reading Layer',
     description: 'Inspect imported papers, resolve access, open full text, and keep evidence review close to the workspace.',
     icon: FileText,
-    bg: 'rgba(236, 72, 153, 0.12)',
-    color: '#db2777',
+    iconClass: 'bg-pink-100/70 text-pink-600',
   },
   {
     title: 'Control Surface',
     description: 'Use account, workspace, and data-rights flows that fit a real product instead of a demo shell.',
     icon: ShieldCheck,
-    bg: 'rgba(15, 118, 110, 0.12)',
-    color: '#0f766e',
+    iconClass: 'bg-teal-100/70 text-teal-700',
   },
   {
     title: 'Portable Output',
     description: 'Export citations, workspace data, and report artifacts without losing the structure of your research flow.',
     icon: Database,
-    bg: 'rgba(245, 158, 11, 0.12)',
-    color: '#d97706',
+    iconClass: 'bg-amber-100/70 text-amber-600',
   },
 ];
 
@@ -177,8 +171,7 @@ const Landing: React.FC = () => {
                 return (
                   <article key={feature.title} className="landing-feature-card">
                     <div
-                      className="landing-feature-icon"
-                      style={{ background: feature.bg, color: feature.color }}
+                      className={`landing-feature-icon ${feature.iconClass}`}
                     >
                       <Icon className="h-4.5 w-4.5" />
                     </div>

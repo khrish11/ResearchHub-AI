@@ -420,9 +420,12 @@ export default function UnifiedCopilotPanel({
           ) : null}
         </div>
 
-        <div className="mb-4 h-2 overflow-hidden rounded-full bg-slate-100">
-          <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-emerald-500" style={{ width: `${confidencePct}%` }} />
-        </div>
+        <progress
+          className="mb-4 h-2 w-full overflow-hidden rounded-full"
+          max={100}
+          value={confidencePct}
+          aria-label="Confidence score"
+        />
 
         <div>{renderContent()}</div>
 

@@ -336,29 +336,25 @@ const Workspace: React.FC = () => {
         label: 'Papers',
         value: workspace.papers.length.toString(),
         icon: FileText,
-        bg: 'rgba(79, 70, 229, 0.12)',
-        color: '#4f46e5',
+        iconClass: 'bg-indigo-100/70 text-indigo-600',
       },
       {
         label: 'Chat turns',
         value: workspace.chats.length.toString(),
         icon: MessageSquare,
-        bg: 'rgba(14, 165, 233, 0.12)',
-        color: '#0284c7',
+        iconClass: 'bg-sky-100/70 text-sky-600',
       },
       {
         label: 'Indexed chars',
         value: `${Math.max(1, Math.round(abstractChars / 1000))}k`,
         icon: Workflow,
-        bg: 'rgba(16, 185, 129, 0.12)',
-        color: '#059669',
+        iconClass: 'bg-emerald-100/70 text-emerald-600',
       },
       {
         label: 'AI state',
         value: 'Ready',
         icon: BrainCircuit,
-        bg: 'rgba(236, 72, 153, 0.12)',
-        color: '#db2777',
+        iconClass: 'bg-pink-100/70 text-pink-600',
       },
     ];
   }, [workspace]);
@@ -723,10 +719,7 @@ const Workspace: React.FC = () => {
                 return (
                   <article key={stat.label} className="studio-stat-card">
                     <div className="studio-stat-top">
-                      <div
-                        className="studio-icon-chip"
-                        style={{ background: stat.bg, color: stat.color }}
-                      >
+                      <div className={`studio-icon-chip ${stat.iconClass}`}>
                         <Icon className="h-4.5 w-4.5" />
                       </div>
                     </div>
@@ -1294,6 +1287,8 @@ const Workspace: React.FC = () => {
                               </p>
                             </div>
                             <select
+                              aria-label="Citation style"
+                              title="Citation style"
                               value={citationStyle}
                               onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
                               className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
@@ -1611,6 +1606,8 @@ const Workspace: React.FC = () => {
                         Fault Detection Paper
                       </label>
                       <select
+                        aria-label="Fault detection paper"
+                        title="Fault detection paper"
                         value={faultPaperId ?? ''}
                         onChange={(event) => setFaultPaperId(event.target.value ? Number(event.target.value) : null)}
                         className="w-full rounded-xl border border-slate-300 py-2.5 px-3.5 text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
