@@ -435,7 +435,7 @@ def generate_chicago(metadata: CitationMetadata) -> str:
         elif len(authors) == 2:
             author_text = f"{_format_author_mla(authors[0])} and {authors[1].strip()}"
         else:
-            author_text = f"{_format_author_mla(authors[0])} et al."
+            author_text = f"{_format_author_mla(authors[0])} et al"
     segments = []
     if author_text:
         segments.append(f"{author_text}.")

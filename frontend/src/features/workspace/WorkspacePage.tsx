@@ -26,6 +26,7 @@ import api from '../../api';
 import { apiErrorMessage } from '../../utils/apiError';
 import { useToast } from '../../contexts/ToastContext';
 import { openFileUrl } from '../../utils/openFile';
+import { downloadTextFile } from '../../utils/exportUtils';
 import type { ChatItem, FaultResult, Paper, WorkspaceTab } from './types';
 import { useWorkspaceData, type WorkspaceRestoreState } from './hooks/useWorkspaceData';
 import {
@@ -192,17 +193,12 @@ const Workspace: React.FC = () => {
       const res = await api.get(`/workspaces/${workspace.id}/export?format=${format}`, {
         responseType: 'blob',
       });
-      const blob = new Blob([res.data], {
-        type: format === 'csv' ? 'text/csv' : 'application/x-bibtex',
-      });
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${workspace.name.replace(/\s+/g, '_')}.${format === 'csv' ? 'csv' : 'bib'}`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
+      const content = await res.data.text();
+      downloadTextFile(
+        `${workspace.name.replace(/\s+/g, '_')}.${format === 'csv' ? 'csv' : 'bib'}`,
+        content,
+        format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/x-bibtex'
+      );
     } catch {
       setError('Failed to export workspace.');
     }
@@ -238,15 +234,11 @@ const Workspace: React.FC = () => {
     }
     try {
       const response = await fetchPaperCitation(selectedPaper.id, 'bibtex');
-      const blob = new Blob([response.citation], { type: 'application/x-bibtex' });
-      const url = window.URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${selectedPaper.title.replace(/\s+/g, '_')}.bib`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.URL.revokeObjectURL(url);
+      downloadTextFile(
+        `${selectedPaper.title.replace(/\s+/g, '_')}.bib`,
+        response.citation,
+        'application/x-bibtex'
+      );
     } catch (err: unknown) {
       toastError(apiErrorMessage(err, 'Failed to export BibTeX.'));
     }

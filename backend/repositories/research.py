@@ -437,6 +437,11 @@ class ResearchRepository(Protocol):
         attempt_history: Optional[List[Dict[str, Any]]] = None,
     ) -> PaperCheckJob: ...
     def get_paper_check_job(self, job_id: str) -> Optional[PaperCheckJob]: ...
+    def find_latest_paper_check_job(
+        self,
+        paper_id: int,
+        user_id: int,
+    ) -> Optional[PaperCheckJob]: ...
     def update_paper_check_job(
         self,
         job_id: str,
@@ -1553,6 +1558,38 @@ class FirebaseResearchRepository:
         if not snapshot.exists:
             return None
         return self._paper_check_job_from_doc(snapshot.to_dict() or {})
+
+    @staticmethod
+    def _paper_check_job_completion_sort_key(job: PaperCheckJob) -> datetime:
+        completed_at = job.processing_completed_at or job.updated_at or job.created_at
+        if completed_at.tzinfo is None:
+            return completed_at.replace(tzinfo=timezone.utc)
+        return completed_at.astimezone(timezone.utc)
+
+    def find_latest_paper_check_job(
+        self,
+        paper_id: int,
+        user_id: int,
+    ) -> Optional[PaperCheckJob]:
+        docs = [
+            snapshot.to_dict() or {}
+            for snapshot in self.paper_check_jobs.where(
+                filter=FieldFilter("user_id", "==", int(user_id))
+            ).where(
+                filter=FieldFilter("paper_id", "==", int(paper_id))
+            ).where(
+                filter=FieldFilter("status", "==", "completed")
+            ).stream()
+        ]
+        jobs = [
+            self._paper_check_job_from_doc(doc)
+            for doc in docs
+            if str(doc.get("status") or "").strip().lower() == "completed"
+        ]
+        if not jobs:
+            return None
+        jobs.sort(key=self._paper_check_job_completion_sort_key, reverse=True)
+        return jobs[0]
 
     def update_paper_check_job(
         self,

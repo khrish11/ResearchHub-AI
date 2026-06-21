@@ -8,6 +8,8 @@ export interface CitationMetadata {
   authors?: string[];
   year?: string | number | null;
   venue?: string | null;
+  journal?: string | null;
+  publisher?: string | null;
   doi?: string | null;
   url?: string | null;
   pages?: string | null;
@@ -193,7 +195,11 @@ export const buildCitationPayload = (metadata: CitationMetadata, style: Citation
   title: String(metadata.title || '').trim(),
   authors: Array.isArray(metadata.authors) ? metadata.authors.filter(Boolean) : [],
   year: parseYear(metadata.year ?? metadata.published),
-  venue: String(metadata.venue || metadata.publication_name || metadata.publication_title || metadata.source || '').trim() || null,
+  venue: String(
+    metadata.venue || metadata.journal || metadata.publication_name || metadata.publication_title || metadata.source || ''
+  ).trim() || null,
+  journal: String(metadata.journal || metadata.publication_name || metadata.publication_title || '').trim() || null,
+  publisher: String(metadata.publisher || metadata.source || '').trim() || null,
   doi: String(metadata.doi || '').trim() || null,
   url: String(metadata.url || '').trim() || null,
   pages: String(metadata.pages || '').trim() || null,

@@ -4078,6 +4078,66 @@ async def _paper_check_status_response(
     return row
 
 
+async def _paper_check_latest_response(
+    paper_id: int,
+    workspace_id: int,
+    repo: ResearchRepository,
+    current_user: User,
+):
+    paper = repo.find_paper_for_user(int(paper_id), int(current_user.id))
+    if not paper or int(getattr(paper, "workspace_id", 0) or 0) != int(workspace_id):
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "job_not_found",
+                    "message": "Paper check job not found.",
+                    "retryable": False,
+                }
+            },
+        )
+
+    row = repo.find_latest_paper_check_job(int(paper_id), int(current_user.id))
+    if not row:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": {
+                    "code": "job_not_found",
+                    "message": "Paper check job not found.",
+                    "retryable": False,
+                }
+            },
+        )
+    return {
+        "job_id": row.job_id,
+        "status": row.status,
+        "result": row.result if row.status == "completed" else None,
+        "error": (
+            {
+                "message": row.error,
+                "retryable": bool(row.retryable),
+            }
+            if row.error
+            else None
+        ),
+        "created_at": (row.created_at or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z"),
+        "updated_at": (row.updated_at or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z"),
+        "fingerprint": row.fingerprint,
+        "latency_ms": row.latency_ms,
+    }
+
+
+@router.get("/paper-check/latest")
+async def paper_check_latest_job(
+    paper_id: int,
+    workspace_id: int,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    return await _paper_check_latest_response(paper_id, workspace_id, repo, current_user)
+
+
 @router.get("/paper-check/{job_id}")
 async def paper_check_job_status(
     job_id: str,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -84,6 +85,77 @@ def test_post_citation_returns_structured_payload(
     assert isinstance(data["warnings"], list)
 
 
+def test_mla_citation(
+    test_client: TestClient,
+    auth_headers: dict,
+):
+    response = test_client.post(
+        "/papers/citation",
+        json={
+            "title": "Reliable Graph Detection",
+            "authors": ["Alice Smith", "Bob Chen", "Cara Diaz"],
+            "year": "2024",
+            "venue": "Journal of Reliable Systems",
+            "url": "https://example.org/papers/reliable-graph-detection",
+            "style": "mla",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["style"] == "mla"
+    assert "Reliable Graph Detection" in data["citation"]
+    assert "et al." in data["citation"]
+
+
+def test_ieee_citation(
+    test_client: TestClient,
+    auth_headers: dict,
+):
+    response = test_client.post(
+        "/papers/citation",
+        json={
+            "title": "Reliable Graph Detection",
+            "authors": ["Alice Smith", "Bob Chen"],
+            "year": "2024",
+            "venue": "Journal of Reliable Systems",
+            "doi": "10.1000/example-doi",
+            "style": "ieee",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["style"] == "ieee"
+    assert "Reliable Graph Detection" in data["citation"]
+    assert "2024" in data["citation"]
+
+
+def test_chicago_citation(
+    test_client: TestClient,
+    auth_headers: dict,
+):
+    response = test_client.post(
+        "/papers/citation",
+        json={
+            "title": "Reliable Graph Detection",
+            "authors": ["Alice Smith", "Bob Chen"],
+            "year": "2024",
+            "venue": "Journal of Reliable Systems",
+            "style": "chicago",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["style"] == "chicago"
+    assert "Reliable Graph Detection" in data["citation"]
+    assert "(2024)" in data["citation"]
+
+
 def test_get_paper_citation_uses_saved_paper(
     test_client: TestClient,
     auth_headers: dict,
@@ -103,6 +175,130 @@ def test_get_paper_citation_uses_saved_paper(
     assert data["style"] == "ieee"
     assert "Reliable Graph Detection" in data["citation"]
     assert data["metadata"]["doi"] == "10.1000/example-doi"
+
+
+def test_workspace_bibtex_export(
+    test_client: TestClient,
+    auth_headers: dict,
+    repo: FirebaseResearchRepository,
+    mock_user: User,
+    monkeypatch,
+):
+    monkeypatch.setattr("routers.workspaces.storage_is_configured", lambda: False)
+    workspace, _paper = _create_workspace_and_paper(repo, mock_user)
+    repo.create_paper(
+        workspace_id=workspace.id,
+        title="Second Reference Paper",
+        authors="Dana Liu, Evan Park",
+        abstract="A companion paper used to verify workspace exports include all papers.",
+    )
+
+    response = test_client.get(
+        f"/workspaces/{workspace.id}/export",
+        params={"format": "bibtex"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert body.count("@") == 2
+    assert "Reliable Graph Detection" in body
+    assert "Second Reference Paper" in body
+
+
+def test_latest_paper_check_job_returns_completed_job(
+    test_client: TestClient,
+    auth_headers: dict,
+    repo: FirebaseResearchRepository,
+    mock_user: User,
+):
+    workspace, paper = _create_workspace_and_paper(repo, mock_user)
+    job = repo.create_paper_check_job(
+        job_id="job-latest-completed",
+        user_id=int(mock_user.id or 0),
+        paper_id=paper.id,
+        input_data={"workspace_id": workspace.id},
+        status="completed",
+        result={"paper_analysis": {"snapshot": {"summary": "latest"}}},
+        processing_completed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    response = test_client.get(
+        "/research/paper-check/latest",
+        params={"paper_id": paper.id, "workspace_id": workspace.id},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job_id"] == job.job_id
+    assert data["status"] == "completed"
+    assert data["result"]["paper_analysis"]["snapshot"]["summary"] == "latest"
+
+
+def test_latest_paper_check_job_selects_newest_completed(
+    test_client: TestClient,
+    auth_headers: dict,
+    repo: FirebaseResearchRepository,
+    mock_user: User,
+):
+    workspace, paper = _create_workspace_and_paper(repo, mock_user)
+    repo.create_paper_check_job(
+        job_id="job-old-completed",
+        user_id=int(mock_user.id or 0),
+        paper_id=paper.id,
+        input_data={"workspace_id": workspace.id},
+        status="completed",
+        result={"paper_analysis": {"snapshot": {"summary": "old"}}},
+        processing_completed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    repo.create_paper_check_job(
+        job_id="job-running-newer",
+        user_id=int(mock_user.id or 0),
+        paper_id=paper.id,
+        input_data={"workspace_id": workspace.id},
+        status="running",
+        claimed_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    repo.create_paper_check_job(
+        job_id="job-new-completed",
+        user_id=int(mock_user.id or 0),
+        paper_id=paper.id,
+        input_data={"workspace_id": workspace.id},
+        status="completed",
+        result={"paper_analysis": {"snapshot": {"summary": "new"}}},
+        processing_completed_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+
+    response = test_client.get(
+        "/research/paper-check/latest",
+        params={"paper_id": paper.id, "workspace_id": workspace.id},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["job_id"] == "job-new-completed"
+    assert data["result"]["paper_analysis"]["snapshot"]["summary"] == "new"
+
+
+def test_latest_paper_check_job_returns_404_when_missing(
+    test_client: TestClient,
+    auth_headers: dict,
+    repo: FirebaseResearchRepository,
+    mock_user: User,
+):
+    workspace, paper = _create_workspace_and_paper(repo, mock_user)
+
+    response = test_client.get(
+        "/research/paper-check/latest",
+        params={"paper_id": paper.id, "workspace_id": workspace.id},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 404
+    data = response.json()
+    assert data["error"]["code"] == "job_not_found"
 
 
 def test_paper_check_raw_text_falls_back_without_ai_service(

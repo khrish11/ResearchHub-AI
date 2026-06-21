@@ -17,6 +17,7 @@ import PaperCheckReport from '../components/PaperCheckReport';
 import api from '../api';
 import { apiErrorMessage } from '../utils/apiError';
 import { useToast } from '../contexts/ToastContext';
+import { downloadTextFile } from '../utils/exportUtils';
 import {
   citationMissingFieldLabel,
   extractPaperTitleFromFilename,
@@ -147,13 +148,11 @@ const UploadPDF: React.FC = () => {
     if (!extractedText) {
       return;
     }
-    const blob = new Blob([extractedText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${file?.name.replace('.pdf', '') || 'extracted'}.txt`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadTextFile(
+      `${file?.name.replace('.pdf', '') || 'extracted'}.txt`,
+      extractedText,
+      'text/plain;charset=utf-8;'
+    );
   };
 
   const resetUpload = () => {
@@ -232,13 +231,11 @@ const UploadPDF: React.FC = () => {
       const response = savedPaperId
         ? await fetchPaperCitation(savedPaperId, 'bibtex')
         : await fetchCitation(uploadCitationMetadata, 'bibtex');
-      const blob = new Blob([response.citation], { type: 'application/x-bibtex' });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${extractPaperTitleFromFilename(file?.name || 'uploaded-paper').replace(/\s+/g, '_')}.bib`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      downloadTextFile(
+        `${extractPaperTitleFromFilename(file?.name || 'uploaded-paper').replace(/\s+/g, '_')}.bib`,
+        response.citation,
+        'application/x-bibtex'
+      );
     } catch (err: unknown) {
       toastError(apiErrorMessage(err, 'Failed to export BibTeX.'));
     }

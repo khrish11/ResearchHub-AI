@@ -5,7 +5,7 @@ Soyog AI is an AI-native research workspace for searching, synthesizing, and ana
 ## Live Deployment
 
 - Production frontend: <https://research-hub-ai-lime.vercel.app>
-- Production backend docs: <https://soyog-ai-backend-568566718388.us-central1.run.app/docs>
+- Production backend docs: <https://researchhub-ai-r8j3.onrender.com/docs>
 
 ## Platform Highlights
 
@@ -24,10 +24,10 @@ Soyog AI is an AI-native research workspace for searching, synthesizing, and ana
 
 ### Production and operations
 
-- Frontend deployed on Vercel and backend deployed on Google Cloud Run.
+- Frontend deployed on Vercel and backend deployed on Render.
 - Dynamic CORS handling for stable Vercel production and preview subdomains.
 - Sentry error tracking, Prometheus-compatible metrics, health probes, structured logging, and production security headers.
-- Backend build optimization via [`backend/.gcloudignore`](backend/.gcloudignore).
+- Backend deployment is driven by the repository root [`render.yaml`](render.yaml) and the Render guide in [`deploy/render-backend.md`](deploy/render-backend.md).
 
 ## Tech Stack
 
@@ -38,7 +38,7 @@ Soyog AI is an AI-native research workspace for searching, synthesizing, and ana
 | AI Models | Groq-hosted Llama 3.3 and DeepSeek R1 variants |
 | Auth | Firebase Authentication, Google OAuth, email/password |
 | Storage | Firestore, Firebase Storage, compatibility SQLAlchemy code |
-| Hosting | Google Cloud Run, Vercel |
+| Hosting | Render, Vercel |
 | Observability | Sentry, Prometheus metrics, Google Cloud Logging |
 
 ## Repository Layout

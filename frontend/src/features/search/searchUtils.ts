@@ -181,14 +181,18 @@ export const loadSavedQueries = (): SavedQuery[] => {
 };
 
 export const getCitationMetadata = (paper: Paper) => ({
-  title: paper.title,
-  authors: paper.authors,
-  published: paper.published,
-  publication_name: paper.publication_name,
-  publication_title: paper.publication_title,
-  source: paper.source,
-  doi: paper.doi,
-  url: paper.url,
+  title: String(paper.title || '').trim(),
+  authors: Array.isArray(paper.authors) && paper.authors.length > 0
+    ? paper.authors.map((author) => String(author || '').trim()).filter(Boolean)
+    : ['Unknown Author'],
+  published: String(paper.published || '').trim() || 'n.d.',
+  publication_name: String(paper.publication_name || paper.publication_title || '').trim(),
+  publication_title: String(paper.publication_title || paper.publication_name || '').trim(),
+  journal: String(paper.publication_name || paper.publication_title || '').trim(),
+  publisher: String(paper.source || '').trim(),
+  source: String(paper.source || '').trim(),
+  doi: String(paper.doi || '').trim(),
+  url: String(paper.url || '').trim(),
 });
 
 export const citationCacheKey = (paper: Paper, style: CitationStyle) => `${normalizeKey(paper)}::${style}`;

@@ -4,6 +4,7 @@ import { ArrowLeft, Loader2, Copy, Info, CheckCircle, AlertTriangle, Sparkles } 
 import Layout from '../components/Layout';
 import api from '../api';
 import { useToast } from '../contexts/ToastContext';
+import { fetchPaperCitation } from '../utils/researchArtifacts';
 
 interface CompareResponse {
   comparison: {
@@ -27,6 +28,7 @@ const ComparePapers: React.FC = () => {
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<CompareResponse | null>(null);
+  const [copyingPaperId, setCopyingPaperId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!idsParam) {
@@ -78,6 +80,24 @@ ${comparison.contradictions}
 ${comparison.final_summary}
     `.trim();
     navigator.clipboard.writeText(text).then(() => toastSuccess('Copied to clipboard.'));
+  };
+
+  const handleCopyCitation = async (paper: any) => {
+    if (!paper?.id) {
+      toastError('Unable to copy citation for this paper.');
+      return;
+    }
+
+    setCopyingPaperId(paper.id);
+    try {
+      const response = await fetchPaperCitation(paper.id, 'apa');
+      await navigator.clipboard.writeText(response.citation);
+      toastSuccess('Citation copied to clipboard.');
+    } catch {
+      toastError('Failed to copy citation.');
+    } finally {
+      setCopyingPaperId(null);
+    }
   };
 
   return (
@@ -147,11 +167,22 @@ ${comparison.final_summary}
               </h2>
               <ul className="space-y-3">
                 {data.source_papers.map((p, idx) => (
-                  <li key={p.id || idx} className="flex flex-col gap-0.5 border-l-2 border-indigo-200 pl-4">
-                    <span className="font-medium text-slate-900 line-clamp-1">{p.title}</span>
-                    <span className="text-sm text-slate-500">
-                      {Array.isArray(p.authors) ? p.authors.join(', ') : p.authors}
-                    </span>
+                  <li key={p.id || idx} className="flex flex-wrap items-start justify-between gap-3 border-l-2 border-indigo-200 pl-4">
+                    <div className="min-w-0 flex-1">
+                      <span className="block font-medium text-slate-900 line-clamp-1">{p.title}</span>
+                      <span className="text-sm text-slate-500">
+                        {Array.isArray(p.authors) ? p.authors.join(', ') : p.authors}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyCitation(p)}
+                      disabled={copyingPaperId === p.id}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {copyingPaperId === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}
+                      Copy Citation
+                    </button>
                   </li>
                 ))}
               </ul>

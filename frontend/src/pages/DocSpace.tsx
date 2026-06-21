@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import api from '../api';
+import { useToast } from '../contexts/ToastContext';
+import { fetchPaperCitation } from '../utils/researchArtifacts';
 
 interface Paper {
   id: number;
@@ -52,6 +54,9 @@ const DocSpace: React.FC = () => {
   const [docUpdatedAt, setDocUpdatedAt] = useState<string | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState('');
+  const [citationInserting, setCitationInserting] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { success: toastSuccess, error: toastError } = useToast();
 
   const buildSnapshot = useCallback((title: string, content: string) => `${title}\n---\n${content}`, []);
 
@@ -203,6 +208,42 @@ const DocSpace: React.FC = () => {
       `${selectedPaper.abstract || 'No abstract available.'}\n`;
     setDocContent((prev) => `${prev}${prev.endsWith('\n') || prev.length === 0 ? '' : '\n'}${abstractBlock}`);
   }, [selectedPaper]);
+
+  const handleInsertCitation = useCallback(async () => {
+    if (!selectedPaper) {
+      toastError('Select a paper first.');
+      return;
+    }
+
+    setCitationInserting(true);
+    try {
+      const response = await fetchPaperCitation(selectedPaper.id, 'apa');
+      const citationText = String(response.citation || '').trim();
+      if (!citationText) {
+        throw new Error('Citation service returned an empty result.');
+      }
+
+      setDocContent((prev) => {
+        const textarea = textareaRef.current;
+        const currentValue = prev;
+        const start = textarea?.selectionStart ?? currentValue.length;
+        const end = textarea?.selectionEnd ?? currentValue.length;
+        const before = currentValue.slice(0, start);
+        const after = currentValue.slice(end);
+        const prefix = before.length > 0 && !before.endsWith('\n') ? '\n' : '';
+        const suffix = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
+        return `${before}${prefix}${citationText}${suffix}${after}`;
+      });
+
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+      toastSuccess('Citation inserted.');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to insert citation.';
+      toastError(message);
+    } finally {
+      setCitationInserting(false);
+    }
+  }, [selectedPaper, toastError, toastSuccess]);
 
   const filteredPapers = useMemo(
     () =>
@@ -430,6 +471,7 @@ const DocSpace: React.FC = () => {
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   <textarea
+                    ref={textareaRef}
                     value={docContent}
                     onChange={(e) => setDocContent(e.target.value)}
                     placeholder="Write notes, draft sections, and references here. Changes auto-save."
@@ -451,6 +493,14 @@ const DocSpace: React.FC = () => {
                       className="hero-btn-secondary disabled:opacity-50"
                     >
                       Insert paper reference
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleInsertCitation()}
+                      disabled={!selectedPaper || citationInserting}
+                      className="hero-btn-secondary disabled:opacity-50"
+                    >
+                      {citationInserting ? 'Inserting...' : 'Insert Citation'}
                     </button>
                     <button
                       type="button"
