@@ -9,8 +9,27 @@ interface UseWorkspaceSummaryResult {
   setLoading: Dispatch<SetStateAction<boolean>>;
   totalPapers: number;
   totalChars: number;
+  isUserCreatedWorkspace: boolean;
   fetchWorkspaces: () => Promise<void>;
 }
+
+const isUserCreatedWorkspace = (workspace: Workspace): boolean => {
+  const candidate = workspace as Workspace & { is_user_created?: boolean | null };
+  if (typeof candidate.is_user_created === 'boolean') {
+    return candidate.is_user_created;
+  }
+  const name = String(workspace.name || '').trim().toLowerCase();
+  if (!name) {
+    return false;
+  }
+  if (['my research workspace', 'default workspace', 'research workspace', 'workspace'].includes(name)) {
+    return false;
+  }
+  if (name.includes('default') || name.includes('auto') || name.includes('system')) {
+    return false;
+  }
+  return true;
+};
 
 export const useWorkspaceSummary = (): UseWorkspaceSummaryResult => {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -35,27 +54,15 @@ export const useWorkspaceSummary = (): UseWorkspaceSummaryResult => {
             );
             papers += pc;
             chars += cc;
-            return { ...ws, paperCount: pc };
+            return { ...ws, paperCount: pc, is_user_created: isUserCreatedWorkspace(ws) };
           } catch {
-            return { ...ws, paperCount: 0 };
+            return { ...ws, paperCount: 0, is_user_created: isUserCreatedWorkspace(ws) };
           }
         })
       );
       setWorkspaces(enriched);
       setTotalPapers(papers);
       setTotalChars(chars);
-
-      if (enriched.length === 0) {
-        try {
-          const defaultWs = await api.post('/workspaces/', {
-            name: 'My Research Workspace',
-            description: 'Default workspace for organizing research papers',
-          });
-          setWorkspaces([{ ...defaultWs.data, paperCount: 0 }]);
-        } catch {
-          // Keep existing behavior: silent fallback create failure.
-        }
-      }
     } finally {
       setLoading(false);
     }
@@ -68,6 +75,7 @@ export const useWorkspaceSummary = (): UseWorkspaceSummaryResult => {
     setLoading,
     totalPapers,
     totalChars,
+    isUserCreatedWorkspace: workspaces.some(isUserCreatedWorkspace),
     fetchWorkspaces,
   };
 };

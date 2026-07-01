@@ -132,6 +132,8 @@ const diversifyRecommendations = (
 
 const Home = () => {
   const [resumeState, setResumeState] = useState<SessionState | null>(null);
+  const [workspaceCount, setWorkspaceCount] = useState(0);
+  const [hasHomeActivity, setHasHomeActivity] = useState(false);
   const [recommendations, setRecommendations] = useState<RecommendationPaper[]>([]);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [recommendationError, setRecommendationError] = useState<string | null>(null);
@@ -161,6 +163,13 @@ const Home = () => {
         .slice(0, 4);
       setHistorySeeds(historySeedQueries);
       const workspaces = workspaceRes.data || [];
+      setWorkspaceCount(workspaces.length);
+      const hasActivity = Boolean(
+        historySeedQueries.length > 0 ||
+          session.last_query ||
+          (session.page_path && session.page_path !== '/home')
+      );
+      setHasHomeActivity(hasActivity);
 
       let recs: RecommendationPaper[] = [];
       let recKeywords: string[] = [];
@@ -203,7 +212,7 @@ const Home = () => {
         }
       }
 
-      if (recs.length === 0) {
+      if (recs.length === 0 && (workspaces.length > 0 || hasActivity)) {
         const fallbackQueries = [...historySeedQueries, 'graph neural networks', 'federated learning security', 'renewable energy storage'];
         const dedup = new Map<string, RecommendationPaper>();
         for (const query of fallbackQueries) {
@@ -378,6 +387,12 @@ const Home = () => {
       copy: 'Use AI Tools, Research Chat, or Mindmap once the workspace contains enough strong material.',
     },
   ];
+  const showEmptyStart =
+    !recommendationLoading &&
+    workspaceCount === 0 &&
+    !hasHomeActivity &&
+    recommendations.length === 0;
+  const showRecommendationsEmptyState = !recommendationLoading && !recommendationError && !showEmptyStart && recommendations.length === 0;
 
   return (
     <Layout>
@@ -422,6 +437,32 @@ const Home = () => {
             </div>
             <Link to={resumeState.page_path} className="hero-btn-primary">
               Continue where you left off <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </section>
+      )}
+
+      {showEmptyStart && (
+        <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm sm:p-6">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <h3 className="text-2xl font-bold text-slate-900">Welcome to ResearchHub AI</h3>
+          <p className="mx-auto mt-2 max-w-md text-sm text-slate-600">
+            Start your first research project.
+          </p>
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+            <Link to="/search" className="hero-btn-primary justify-center">
+              <Search className="h-4 w-4" />
+              Search Papers
+            </Link>
+            <Link to="/upload" className="hero-btn-secondary justify-center">
+              <Upload className="h-4 w-4" />
+              Upload PDF
+            </Link>
+            <Link to="/dashboard" className="hero-btn-secondary justify-center">
+              Create Workspace
+              <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
         </section>
@@ -538,7 +579,7 @@ const Home = () => {
         {!recommendationLoading && recommendationError && (
           <p className="text-sm text-amber-700">{recommendationError}</p>
         )}
-        {!recommendationLoading && !recommendationError && recommendations.length === 0 && (
+        {showRecommendationsEmptyState && (
           <p className="text-sm text-slate-500">
             Add papers to a workspace to unlock live topic-based recommendations.
           </p>

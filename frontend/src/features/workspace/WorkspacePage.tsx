@@ -38,8 +38,20 @@ import {
   fallbackCitation,
   fetchPaperExplanation,
   fetchPaperCitation,
+  getLatestPaperCheck,
   runPaperCheck,
 } from '../../utils/researchArtifacts';
+
+const formatPaperCheckDate = (value?: string): string => {
+  if (!value) {
+    return 'unknown date';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'unknown date';
+  }
+  return date.toLocaleString();
+};
 
 const Workspace: React.FC = () => {
   const { success: toastSuccess, error: toastError } = useToast();
@@ -65,7 +77,9 @@ const Workspace: React.FC = () => {
   const [citationLoading, setCitationLoading] = useState(false);
   const [paperCheckCache, setPaperCheckCache] = useState<Record<number, CompletedPaperCheckResult>>({});
   const [paperCheckLoading, setPaperCheckLoading] = useState(false);
+  const [paperCheckRestoringId, setPaperCheckRestoringId] = useState<number | null>(null);
   const [paperCheckStatus, setPaperCheckStatus] = useState('');
+  const [paperCheckRestoreError, setPaperCheckRestoreError] = useState('');
   const [paperExplainCache, setPaperExplainCache] = useState<Record<number, PaperExplanationResponse>>({});
   const [paperExplainLoading, setPaperExplainLoading] = useState(false);
   const [paperExplainError, setPaperExplainError] = useState<string | null>(null);
@@ -250,13 +264,21 @@ const Workspace: React.FC = () => {
     }
     setPaperCheckLoading(true);
     setPaperCheckStatus('Running advisory paper analysis...');
+    setPaperCheckRestoreError('');
     setError(null);
     try {
       const response = await runPaperCheck({
         paper_id: selectedPaper.id,
         workspace_id: workspace.id,
       });
-      setPaperCheckCache((prev) => ({ ...prev, [selectedPaper.id]: response }));
+      const completedResponse = {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          processed_at: response.metadata?.processed_at || new Date().toISOString(),
+        },
+      };
+      setPaperCheckCache((prev) => ({ ...prev, [selectedPaper.id]: completedResponse }));
       setPaperCheckStatus(response.job_id ? 'Queued analysis completed successfully.' : 'Paper analysis completed successfully.');
       toastSuccess('AI checker complete');
     } catch (err: unknown) {
@@ -484,12 +506,55 @@ const Workspace: React.FC = () => {
   useEffect(() => {
     if (!selectedPaper) {
       setPaperCheckStatus('');
+      setPaperCheckRestoreError('');
       return;
     }
     if (!paperCheckCache[selectedPaper.id]) {
       setPaperCheckStatus('');
     }
   }, [paperCheckCache, selectedPaper]);
+
+  useEffect(() => {
+    if (!workspace || !selectedPaper) {
+      setPaperCheckRestoringId(null);
+      setPaperCheckRestoreError('');
+      return;
+    }
+    if (selectedPaperCheck) {
+      setPaperCheckRestoreError('');
+      return;
+    }
+
+    let cancelled = false;
+    setPaperCheckRestoringId(selectedPaper.id);
+    setPaperCheckRestoreError('');
+    void getLatestPaperCheck(selectedPaper.id, workspace.id)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        if (!response) {
+          setPaperCheckStatus('');
+          return;
+        }
+        setPaperCheckCache((prev) => ({ ...prev, [selectedPaper.id]: response }));
+        setPaperCheckStatus('Previous Paper Check report restored.');
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPaperCheckRestoreError('Unable to load previous Paper Check report.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPaperCheckRestoringId(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPaper, selectedPaperCheck, workspace]);
 
   const resolveWorkspacePaperAccess = async () => {
     if (!workspace) return;
@@ -1398,20 +1463,59 @@ const Workspace: React.FC = () => {
                           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
                             <p className="mt-2 text-sm text-slate-700">
-                              {paperCheckLoading
+                              {paperCheckRestoringId === selectedPaper.id
+                                ? 'Restoring previous Paper Check report...'
+                                : paperCheckLoading
                                 ? paperCheckStatus || 'Running advisory paper analysis...'
                                 : paperCheckStatus || 'Ready to analyze the selected paper.'}
                             </p>
+                            {paperCheckRestoringId === selectedPaper.id && (
+                              <div className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-slate-500">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                Loading saved report
+                              </div>
+                            )}
+                            {paperCheckRestoreError && (
+                              <p className="mt-3 text-sm text-amber-700">{paperCheckRestoreError}</p>
+                            )}
                             <p className="mt-2 text-xs text-slate-500">
                               This output is advisory and must not be treated as proof of AI authorship.
                             </p>
                           </div>
 
                           {selectedPaperCheck && (
-                            <PaperCheckReport
-                              result={selectedPaperCheck}
-                              title={`Paper checker report for ${selectedPaper.title}`}
-                            />
+                            <div className="space-y-2">
+                              <p className="text-xs font-semibold text-slate-500">
+                                Last checked: {formatPaperCheckDate(selectedPaperCheck.metadata?.processed_at)}
+                              </p>
+                              <PaperCheckReport
+                                result={selectedPaperCheck}
+                                title={`Paper checker report for ${selectedPaper.title}`}
+                                retryPayload={{
+                                  paper_id: selectedPaper.id,
+                                  workspace_id: workspace.id,
+                                }}
+                                onRetryComplete={(response) => {
+                                  const completedResponse = {
+                                    ...response,
+                                    metadata: {
+                                      ...response.metadata,
+                                      processed_at: response.metadata?.processed_at || new Date().toISOString(),
+                                    },
+                                  };
+                                  setPaperCheckCache((prev) => ({
+                                    ...prev,
+                                    [selectedPaper.id]: completedResponse,
+                                  }));
+                                  setPaperCheckStatus('Paper analysis completed successfully.');
+                                  toastSuccess('AI checker complete');
+                                }}
+                                onRetryError={(message) => {
+                                  setError(message);
+                                  toastError(message);
+                                }}
+                              />
+                            </div>
                           )}
                         </div>
                       ) : (

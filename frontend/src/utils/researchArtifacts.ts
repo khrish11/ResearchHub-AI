@@ -167,6 +167,14 @@ interface StructuredErrorResponse {
   };
 }
 
+interface LatestPaperCheckResponse extends StructuredErrorResponse {
+  job_id?: string | null;
+  status?: string;
+  result?: Partial<CompletedPaperCheckResult> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 type InitialPaperCheckResponse =
   | CompletedPaperCheckResult
   | QueuedPaperCheckResponse
@@ -330,6 +338,41 @@ export const runPaperCheck = async (
   }
 
   throw new Error(`Paper check exceeded ${Math.round(maxWaitMs / 1000)}s. Try again.`);
+};
+
+export const getLatestPaperCheck = async (
+  paperId: number,
+  workspaceId?: number
+): Promise<CompletedPaperCheckResult | null> => {
+  if (!paperId || !workspaceId) {
+    return null;
+  }
+  try {
+    const response = await api.get<LatestPaperCheckResponse>('/research/paper-check/latest', {
+      params: {
+        paper_id: paperId,
+        workspace_id: workspaceId,
+      },
+    });
+    const data = response.data;
+    if (data?.status !== 'completed' || !data.result) {
+      return null;
+    }
+    const result = normalizeCompletedPaperCheck(data.result, data.job_id ?? null);
+    const completedAt = result.metadata.processed_at || data.updated_at || data.created_at || undefined;
+    return {
+      ...result,
+      metadata: {
+        ...result.metadata,
+        processed_at: completedAt,
+      },
+    };
+  } catch (err: unknown) {
+    if ((err as { response?: { status?: number } })?.response?.status === 404) {
+      return null;
+    }
+    throw err;
+  }
 };
 
 export const researchFeatureError = (error: unknown, fallback: string): string =>

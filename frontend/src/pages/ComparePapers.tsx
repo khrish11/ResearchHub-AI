@@ -6,6 +6,12 @@ import api from '../api';
 import { useToast } from '../contexts/ToastContext';
 import { fetchPaperCitation } from '../utils/researchArtifacts';
 
+interface ComparePaper {
+  id?: number;
+  title?: string;
+  authors?: string[] | string;
+}
+
 interface CompareResponse {
   comparison: {
     contributions: string;
@@ -15,7 +21,7 @@ interface CompareResponse {
     contradictions: string;
     final_summary: string;
   };
-  source_papers: any[];
+  source_papers: ComparePaper[];
 }
 
 const ComparePapers: React.FC = () => {
@@ -39,7 +45,10 @@ const ComparePapers: React.FC = () => {
     const fetchComparison = async () => {
       try {
         const payload = {
-          paper_ids: idsParam.split(',').map(Number),
+          paper_ids: idsParam
+            .split(',')
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value)),
           workspace_id: workspaceIdParam ? Number(workspaceIdParam) : undefined,
         };
         const res = await api.post<CompareResponse>('/papers/compare', payload);
@@ -82,7 +91,7 @@ ${comparison.final_summary}
     navigator.clipboard.writeText(text).then(() => toastSuccess('Copied to clipboard.'));
   };
 
-  const handleCopyCitation = async (paper: any) => {
+  const handleCopyCitation = async (paper: ComparePaper) => {
     if (!paper?.id) {
       toastError('Unable to copy citation for this paper.');
       return;

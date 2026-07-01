@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
-import { useState, useEffect, useRef, lazy, Suspense, type ReactElement } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense, type ComponentType, type ReactElement } from 'react';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -12,14 +12,14 @@ import { trackRouteView } from './utils/firebaseClient';
 import { notifyAuthLogin, setBackendToken } from './utils/authSession';
 import { handleFirebaseRedirectResult, firebaseAuthAvailable } from './utils/firebaseAuth';
 
-const lazyWithRetry = <T extends React.ComponentType<any>>(
-  importer: () => Promise<{ default: T }>,
+const lazyWithRetry = (
+  importer: () => Promise<unknown>,
   key: string
 ) =>
   lazy(async () => {
     const retryKey = `soyog.route-chunk-retry:${key}`;
     try {
-      const mod = await importer();
+      const mod = (await importer()) as { default: ComponentType<Record<string, unknown>> };
       if (typeof window !== 'undefined') {
         window.sessionStorage.removeItem(retryKey);
       }
@@ -47,33 +47,33 @@ const lazyWithRetry = <T extends React.ComponentType<any>>(
     }
   });
 
-const Landing = lazyWithRetry(() => import('./pages/Landing'), 'landing');
-const Login = lazyWithRetry(() => import('./pages/Login'), 'login');
-const Register = lazyWithRetry(() => import('./pages/Register'), 'register');
-const EmailVerification = lazyWithRetry(() => import('./pages/EmailVerification'), 'email-verification');
-const Settings = lazyWithRetry(() => import('./pages/Settings'), 'settings');
-const AccountSettings = lazyWithRetry(() => import('./pages/AccountSettings'), 'account-settings');
-const Home = lazyWithRetry(() => import('./pages/Home'), 'home');
-const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'), 'dashboard');
-const SearchPapers = lazyWithRetry(() => import('./pages/SearchPapers'), 'search-papers');
-const Workspace = lazyWithRetry(() => import('./pages/Workspace'), 'workspace');
-const Mindmap = lazyWithRetry(() => import('./pages/Mindmap'), 'mindmap');
-const ComparePapers = lazyWithRetry(() => import('./pages/ComparePapers'), 'compare-papers');
-const ResearchReport = lazyWithRetry(() => import('./pages/ResearchReport'), 'research-report');
-const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools');
-const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent');
-const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf');
-const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space');
-const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat');
-const AskWorkspace = lazyWithRetry(() => import('./pages/AskWorkspace'), 'ask-workspace');
-const DeveloperConsole = lazyWithRetry(() => import('./pages/DeveloperConsole'), 'developer-console');
-const AnalyticsDashboard = lazyWithRetry(() => import('./pages/AnalyticsDashboard'), 'analytics-dashboard');
-const PrivacyPolicy = lazyWithRetry(() => import('./pages/PrivacyPolicy'), 'privacy-policy');
-const TermsOfService = lazyWithRetry(() => import('./pages/TermsOfService'), 'terms-of-service');
-const CookiePolicy = lazyWithRetry(() => import('./pages/CookiePolicy'), 'cookie-policy');
-const DataRights = lazyWithRetry(() => import('./pages/DataRights'), 'data-rights');
-const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'), 'forgot-password');
-const ResetPassword = lazyWithRetry(() => import('./pages/ResetPassword'), 'reset-password');
+const Landing = lazyWithRetry(() => import('./pages/Landing'), 'landing') as unknown as ComponentType<Record<string, unknown>>;
+const Login = lazyWithRetry(() => import('./pages/Login'), 'login') as unknown as ComponentType<{ setToken: (token: string) => void }>;
+const Register = lazyWithRetry(() => import('./pages/Register'), 'register') as unknown as ComponentType<{ setToken?: (token: string) => void }>;
+const EmailVerification = lazyWithRetry(() => import('./pages/EmailVerification'), 'email-verification') as unknown as ComponentType<Record<string, unknown>>;
+const Settings = lazyWithRetry(() => import('./pages/Settings'), 'settings') as unknown as ComponentType<Record<string, unknown>>;
+const AccountSettings = lazyWithRetry(() => import('./pages/AccountSettings'), 'account-settings') as unknown as ComponentType<Record<string, unknown>>;
+const Home = lazyWithRetry(() => import('./pages/Home'), 'home') as unknown as ComponentType<Record<string, unknown>>;
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'), 'dashboard') as unknown as ComponentType<Record<string, unknown>>;
+const SearchPapers = lazyWithRetry(() => import('./pages/SearchPapers'), 'search-papers') as unknown as ComponentType<Record<string, unknown>>;
+const Workspace = lazyWithRetry(() => import('./pages/Workspace'), 'workspace') as unknown as ComponentType<Record<string, unknown>>;
+const Mindmap = lazyWithRetry(() => import('./pages/Mindmap'), 'mindmap') as unknown as ComponentType<Record<string, unknown>>;
+const ComparePapers = lazyWithRetry(() => import('./pages/ComparePapers'), 'compare-papers') as unknown as ComponentType<Record<string, unknown>>;
+const ResearchReport = lazyWithRetry(() => import('./pages/ResearchReport'), 'research-report') as unknown as ComponentType<Record<string, unknown>>;
+const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools') as unknown as ComponentType<Record<string, unknown>>;
+const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent') as unknown as ComponentType<Record<string, unknown>>;
+const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf') as unknown as ComponentType<Record<string, unknown>>;
+const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space') as unknown as ComponentType<Record<string, unknown>>;
+const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat') as unknown as ComponentType<Record<string, unknown>>;
+const AskWorkspace = lazyWithRetry(() => import('./pages/AskWorkspace'), 'ask-workspace') as unknown as ComponentType<Record<string, unknown>>;
+const DeveloperConsole = lazyWithRetry(() => import('./pages/DeveloperConsole'), 'developer-console') as unknown as ComponentType<Record<string, unknown>>;
+const AnalyticsDashboard = lazyWithRetry(() => import('./pages/AnalyticsDashboard'), 'analytics-dashboard') as unknown as ComponentType<Record<string, unknown>>;
+const PrivacyPolicy = lazyWithRetry(() => import('./pages/PrivacyPolicy'), 'privacy-policy') as unknown as ComponentType<Record<string, unknown>>;
+const TermsOfService = lazyWithRetry(() => import('./pages/TermsOfService'), 'terms-of-service') as unknown as ComponentType<Record<string, unknown>>;
+const CookiePolicy = lazyWithRetry(() => import('./pages/CookiePolicy'), 'cookie-policy') as unknown as ComponentType<Record<string, unknown>>;
+const DataRights = lazyWithRetry(() => import('./pages/DataRights'), 'data-rights') as unknown as ComponentType<Record<string, unknown>>;
+const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'), 'forgot-password') as unknown as ComponentType<Record<string, unknown>>;
+const ResetPassword = lazyWithRetry(() => import('./pages/ResetPassword'), 'reset-password') as unknown as ComponentType<Record<string, unknown>>;
 
 const RouteLoader = () => {
   const [showRecovery, setShowRecovery] = useState(false);

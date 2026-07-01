@@ -1,18 +1,18 @@
 import { useEffect, useState, useRef } from 'react';
 
-type RealtimeConfig = {
+type RealtimeConfig<T> = {
   url: string;
-  onData: (data: any) => void;
+  onData: (data: T) => void;
   pollingIntervalMs?: number;
   onPollingTick?: () => void;
 };
 
-export function useRealtimeData({
+export function useRealtimeData<T = unknown>({
   url,
   onData,
   pollingIntervalMs = 30000,
   onPollingTick
-}: RealtimeConfig) {
+}: RealtimeConfig<T>) {
   const [isStreaming, setIsStreaming] = useState(false);
   const streamAttemptFailed = useRef(false);
 
@@ -50,8 +50,8 @@ export function useRealtimeData({
           try {
             const data = JSON.parse(event.data);
             onData(data);
-          } catch (e) {
-            console.error('Failed to parse realtime stream payload', e);
+          } catch (err) {
+            console.error('Failed to parse realtime stream payload', err);
           }
         };
 
@@ -64,6 +64,7 @@ export function useRealtimeData({
           startPolling();
         };
       } catch (err) {
+        console.warn('Real-time stream setup failed, falling back to polling.', err);
         streamAttemptFailed.current = true;
         startPolling();
       }

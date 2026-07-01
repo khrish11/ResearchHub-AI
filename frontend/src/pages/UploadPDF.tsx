@@ -27,6 +27,7 @@ import {
   fallbackCitation,
   fetchCitation,
   fetchPaperCitation,
+  getLatestPaperCheck,
   runPaperCheck,
 } from '../utils/researchArtifacts';
 
@@ -37,25 +38,80 @@ interface Workspace {
 
 type UploadState = 'idle' | 'uploading' | 'done' | 'error';
 
+interface UploadPaperSession {
+  paperId: number;
+  workspaceId?: number;
+  charCount?: number;
+}
+
+const uploadPaperSessionKey = 'researchhub:last-uploaded-paper';
+
+const readUploadPaperSession = (): UploadPaperSession | null => {
+  try {
+    const raw = window.localStorage.getItem(uploadPaperSessionKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<UploadPaperSession>;
+    const paperId = Number(parsed.paperId || 0);
+    if (!paperId) {
+      return null;
+    }
+    const workspaceId = Number(parsed.workspaceId || 0);
+    return {
+      paperId,
+      workspaceId: workspaceId || undefined,
+      charCount: Number(parsed.charCount || 0) || undefined,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeUploadPaperSession = (session: UploadPaperSession) => {
+  try {
+    window.localStorage.setItem(uploadPaperSessionKey, JSON.stringify(session));
+  } catch {
+    // Restoring Paper Check is a convenience; upload must still succeed without local storage.
+  }
+};
+
+const clearUploadPaperSession = () => {
+  try {
+    window.localStorage.removeItem(uploadPaperSessionKey);
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
 const UploadPDF: React.FC = () => {
   const { success: toastSuccess, error: toastError } = useToast();
+  const restoredUploadSession = useRef(readUploadPaperSession());
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [uploadState, setUploadState] = useState<UploadState>('idle');
+  const [uploadState, setUploadState] = useState<UploadState>(
+    restoredUploadSession.current ? 'done' : 'idle'
+  );
   const [errorMsg, setErrorMsg] = useState('');
   const [extractedText, setExtractedText] = useState('');
   const [aiSummary, setAiSummary] = useState('');
-  const [charCount, setCharCount] = useState(0);
-  const [savedPaperId, setSavedPaperId] = useState<number | null>(null);
+  const [charCount, setCharCount] = useState(restoredUploadSession.current?.charCount || 0);
+  const [savedPaperId, setSavedPaperId] = useState<number | null>(
+    restoredUploadSession.current?.paperId || null
+  );
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | ''>('');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | ''>(
+    restoredUploadSession.current?.workspaceId || ''
+  );
   const [summarize, setSummarize] = useState(true);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
   const [citationResult, setCitationResult] = useState<CitationResponse | null>(null);
   const [citationLoading, setCitationLoading] = useState(false);
   const [paperCheckResult, setPaperCheckResult] = useState<CompletedPaperCheckResult | null>(null);
   const [paperCheckLoading, setPaperCheckLoading] = useState(false);
+  const [paperCheckRestoring, setPaperCheckRestoring] = useState(false);
   const [paperCheckStatus, setPaperCheckStatus] = useState('');
+  const [paperCheckRestoreError, setPaperCheckRestoreError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -65,7 +121,7 @@ const UploadPDF: React.FC = () => {
         const wsList: Workspace[] = res.data;
         setWorkspaces(wsList);
         if (wsList.length > 0) {
-          setSelectedWorkspaceId(wsList[0].id);
+          setSelectedWorkspaceId((current) => current || wsList[0].id);
           return;
         }
         try {
@@ -98,6 +154,8 @@ const UploadPDF: React.FC = () => {
     setCitationResult(null);
     setPaperCheckResult(null);
     setPaperCheckStatus('');
+    setPaperCheckRestoreError('');
+    clearUploadPaperSession();
   };
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -121,6 +179,8 @@ const UploadPDF: React.FC = () => {
     setCitationResult(null);
     setPaperCheckResult(null);
     setPaperCheckStatus('');
+    setPaperCheckRestoreError('');
+    clearUploadPaperSession();
 
     const formData = new FormData();
     formData.append('file', file);
@@ -138,6 +198,13 @@ const UploadPDF: React.FC = () => {
       setCharCount(res.data.char_count);
       setSavedPaperId(res.data.paper_id);
       setUploadState('done');
+      if (res.data.paper_id) {
+        writeUploadPaperSession({
+          paperId: Number(res.data.paper_id),
+          workspaceId: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
+          charCount: Number(res.data.char_count || 0) || undefined,
+        });
+      }
     } catch (err: unknown) {
       setErrorMsg(apiErrorMessage(err, 'Upload failed. Please try again.'));
       setUploadState('error');
@@ -165,6 +232,8 @@ const UploadPDF: React.FC = () => {
     setCitationResult(null);
     setPaperCheckResult(null);
     setPaperCheckStatus('');
+    setPaperCheckRestoreError('');
+    clearUploadPaperSession();
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -212,8 +281,52 @@ const UploadPDF: React.FC = () => {
     if (!citationResult) {
       return;
     }
+    if (String(citationResult.style || '').toLowerCase() === citationStyle) {
+      return;
+    }
     void handleGenerateCitation(true);
-  }, [citationStyle, handleGenerateCitation]);
+  }, [citationResult, citationStyle, handleGenerateCitation]);
+
+  useEffect(() => {
+    if (!savedPaperId) {
+      setPaperCheckRestoreError('');
+      return;
+    }
+    const workspaceId = selectedWorkspaceId === '' ? undefined : selectedWorkspaceId;
+    if (!workspaceId) {
+      return;
+    }
+
+    let cancelled = false;
+    setPaperCheckRestoring(true);
+    setPaperCheckRestoreError('');
+    void getLatestPaperCheck(savedPaperId, workspaceId)
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        if (!response) {
+          setPaperCheckStatus('');
+          return;
+        }
+        setPaperCheckResult(response);
+        setPaperCheckStatus('Previous Paper Check report restored.');
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPaperCheckRestoreError('Unable to load previous Paper Check report.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setPaperCheckRestoring(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [savedPaperId, selectedWorkspaceId]);
 
   const handleCopyCitation = async () => {
     const resolved = citationResult || (await handleGenerateCitation(true));
@@ -249,6 +362,7 @@ const UploadPDF: React.FC = () => {
     setPaperCheckLoading(true);
     setPaperCheckStatus('Running advisory paper analysis...');
     setPaperCheckResult(null);
+    setPaperCheckRestoreError('');
     try {
       const response = await runPaperCheck({
         paper_id: savedPaperId || undefined,
@@ -256,7 +370,21 @@ const UploadPDF: React.FC = () => {
         workspace_id: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
         prefer_async: extractedText.length > 45000,
       });
-      setPaperCheckResult(response);
+      const completedResponse = {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          processed_at: response.metadata?.processed_at || new Date().toISOString(),
+        },
+      };
+      setPaperCheckResult(completedResponse);
+      if (savedPaperId) {
+        writeUploadPaperSession({
+          paperId: savedPaperId,
+          workspaceId: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
+          charCount: charCount || undefined,
+        });
+      }
       setPaperCheckStatus(
         response.job_id
           ? 'Queued analysis completed successfully.'
@@ -588,10 +716,21 @@ const UploadPDF: React.FC = () => {
                 <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Checker status</p>
                   <p className="mt-2 text-sm text-slate-700">
-                    {paperCheckLoading
+                    {paperCheckRestoring
+                      ? 'Restoring previous Paper Check report...'
+                      : paperCheckLoading
                       ? paperCheckStatus || 'Running advisory paper analysis...'
                       : paperCheckStatus || 'Ready to analyze the uploaded paper.'}
                   </p>
+                  {paperCheckRestoring && (
+                    <div className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-slate-500">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Loading saved report
+                    </div>
+                  )}
+                  {paperCheckRestoreError && (
+                    <p className="mt-3 text-sm text-amber-700">{paperCheckRestoreError}</p>
+                  )}
                   <p className="mt-2 text-xs text-slate-500">
                     Suspicious passage review is advisory only and not proof of AI authorship.
                   </p>
@@ -619,6 +758,32 @@ const UploadPDF: React.FC = () => {
           <PaperCheckReport
             result={paperCheckResult}
             title="Upload paper checker report"
+            retryPayload={
+              savedPaperId || extractedText.trim()
+                ? {
+                    paper_id: savedPaperId || undefined,
+                    raw_text: savedPaperId ? undefined : extractedText,
+                    workspace_id: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
+                    prefer_async: extractedText.length > 45000,
+                  }
+                : undefined
+            }
+            onRetryComplete={(response) => {
+              const completedResponse = {
+                ...response,
+                metadata: {
+                  ...response.metadata,
+                  processed_at: response.metadata?.processed_at || new Date().toISOString(),
+                },
+              };
+              setPaperCheckResult(completedResponse);
+              setPaperCheckStatus('Paper analysis completed successfully.');
+              toastSuccess('AI checker complete');
+            }}
+            onRetryError={(message) => {
+              setErrorMsg(message);
+              toastError(message);
+            }}
           />
         )}
 

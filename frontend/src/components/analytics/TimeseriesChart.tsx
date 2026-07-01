@@ -2,13 +2,25 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import type { TimeseriesPoint } from '../../types/api';
 import { motion } from 'framer-motion';
 
+interface TooltipPayloadEntry {
+  color?: string;
+  name?: string;
+  value?: string | number;
+}
+
+interface RechartsTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string | number;
+}
+
 // Custom Tooltip
-const CustomTooltip = ({ active, payload, label }: any) => {
+const CustomTooltip = ({ active, payload, label }: RechartsTooltipProps) => {
   if (active && payload && payload.length) {
     return (
       <div className="bg-slate-800 border border-slate-700/50 p-3 rounded-lg shadow-xl backdrop-blur-md">
         <p className="text-slate-300 text-sm font-medium mb-2">{label}</p>
-        {payload.map((entry: any, index: number) => (
+        {payload.map((entry, index) => (
           <div key={index} className="flex items-center gap-2 text-sm justify-between w-32">
             <span style={{ color: entry.color }}>{entry.name}:</span>
             <span className="font-mono font-medium text-slate-100">{entry.value}</span>

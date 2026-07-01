@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Command, Menu, X } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ThemeToggle from './ThemeToggle';
@@ -10,6 +11,7 @@ interface MobileLayoutProps {
   userInitials?: string;
   canAccessAnalytics?: boolean;
   isDeveloper?: boolean;
+  pageTitle?: string;
 }
 
 const MobileLayout: React.FC<MobileLayoutProps> = ({
@@ -18,12 +20,14 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
   userInitials,
   canAccessAnalytics = false,
   isDeveloper = false,
+  pageTitle = 'ResearchHub AI',
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
+  const lastActiveElementRef = useRef<HTMLElement | null>(null);
 
-  // Close sidebar on route change or when clicking outside
   useEffect(() => {
-    const handleRouteChange = () => setSidebarOpen(false);
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (sidebarOpen && !target.closest('.mobile-sidebar') && !target.closest('.mobile-menu-btn')) {
@@ -31,19 +35,52 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
       }
     };
 
-    window.addEventListener('popstate', handleRouteChange);
     document.addEventListener('mousedown', handleClickOutside);
 
     return () => {
-      window.removeEventListener('popstate', handleRouteChange);
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [sidebarOpen]);
 
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      return undefined;
+    }
+
+    lastActiveElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frameId = window.requestAnimationFrame(() => {
+      const focusTarget = sidebarRef.current?.querySelector<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      focusTarget?.focus();
+    });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSidebarOpen(false);
+      }
+    };
+
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+      lastActiveElementRef.current?.focus();
+    };
+  }, [sidebarOpen]);
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
+    <div className="min-h-screen overflow-x-hidden bg-slate-50 dark:bg-slate-900">
       {/* Mobile Header */}
-      <header className="md:hidden sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 px-4 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-800/90">
+      <header className="md:hidden sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 px-3 py-3 backdrop-blur dark:border-slate-700 dark:bg-slate-800/90">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <button
@@ -59,12 +96,12 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
                 Research shell
               </p>
               <h1 className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
-                Soyog AI
+                {pageTitle}
               </h1>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={openCommandPalette}
@@ -82,7 +119,13 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
       {sidebarOpen && (
         <div className="md:hidden fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
-          <div className="mobile-sidebar absolute left-0 top-0 h-full w-80 bg-white dark:bg-slate-800 shadow-xl transform transition-transform duration-300 ease-in-out">
+          <div
+            ref={sidebarRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+            className="mobile-sidebar absolute left-0 top-0 h-full w-[min(20rem,calc(100vw-0.75rem))] bg-white dark:bg-slate-800 shadow-xl transform transition-transform duration-300 ease-in-out"
+          >
             <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                 Menu
@@ -109,7 +152,7 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
       )}
 
       {/* Main Content */}
-      <div className="flex">
+      <div className="flex min-w-0">
         {/* Desktop Sidebar */}
         <div className="hidden md:block">
           <Sidebar
@@ -121,8 +164,8 @@ const MobileLayout: React.FC<MobileLayoutProps> = ({
         </div>
 
         {/* Page Content */}
-        <main className="flex-1 min-h-screen overflow-x-auto">
-          <div className="container mx-auto px-4 py-6 md:px-6 lg:px-8 max-w-7xl">
+        <main className="min-h-screen min-w-0 flex-1 overflow-x-hidden">
+          <div className="container mx-auto max-w-7xl px-3 py-5 sm:px-4 md:px-6 md:py-6 lg:px-8">
             {children}
           </div>
         </main>

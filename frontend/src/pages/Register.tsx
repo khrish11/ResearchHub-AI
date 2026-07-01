@@ -19,6 +19,13 @@ interface FirebaseStatusResponse {
   configured: boolean;
 }
 
+const buildGoogleAuthUrl = (targetPath = '/dashboard') => {
+  const baseUrl = getGoogleLoginUrl();
+  const url = new URL(baseUrl);
+  url.searchParams.set('frontend_redirect', `${window.location.origin}${targetPath}`);
+  return url.toString();
+};
+
 const Register: React.FC<RegisterProps> = ({ setToken }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -26,7 +33,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
   const [googleConfigured, setGoogleConfigured] = useState(true);
   const [firebaseEnabled, setFirebaseEnabled] = useState(false);
   const [googleRedirecting, setGoogleRedirecting] = useState(false);
-  const [googleLoginUrl, setGoogleLoginUrl] = useState(getGoogleLoginUrl());
+  const [googleLoginUrl, setGoogleLoginUrl] = useState(buildGoogleAuthUrl());
   const navigate = useNavigate();
   const isFirebaseNotConfiguredError = (err: unknown) => {
     const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -50,7 +57,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
           : false;
       setFirebaseEnabled(localFirebaseAvailability && remoteFlagEnabled && backendFirebaseConfigured);
     });
-    setGoogleLoginUrl(getGoogleLoginUrl());
+    setGoogleLoginUrl(buildGoogleAuthUrl());
     api
       .get('/auth/google/status')
       .then((res) => setGoogleConfigured(!!res.data?.configured))
@@ -89,7 +96,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
       const accessToken = response.access_token;
       if (accessToken && setToken) {
         setToken(accessToken);
-        navigate('/home');
+        navigate('/dashboard');
       } else {
         navigate('/login');
       }
@@ -119,7 +126,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
           if (setToken && accessToken) {
             setToken(accessToken);
           }
-          navigate('/home');
+          navigate('/dashboard');
         })
         .catch((err: unknown) => {
           if (isFirebaseNotConfiguredError(err) && googleConfigured) {

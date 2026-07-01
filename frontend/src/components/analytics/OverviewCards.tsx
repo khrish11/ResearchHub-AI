@@ -1,5 +1,5 @@
 import type { GlobalAnalytics as GlobalStats } from '../../types/api';
-import { BarChart3, Database, TrendingUp, Clock, AlertTriangle, XCircle, Zap } from 'lucide-react';
+import { BarChart3, Database, TrendingUp, Clock, AlertTriangle, XCircle, Zap, type LucideIcon } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 // Formatters
@@ -11,7 +11,7 @@ interface StatCardProps {
   label: string;
   value: string | number;
   subValue?: string;
-  icon: React.FC<any>;
+  icon: LucideIcon;
   trend?: 'up' | 'down' | 'neutral';
   color: string;
   delay?: number;

@@ -44,10 +44,20 @@ const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const isActive = (path: string) => {
+    const pathname = location.pathname;
     if (path === '/home') {
-      return location.pathname === '/home';
+      return pathname === '/home';
     }
-    return location.pathname.startsWith(path);
+    if (path === '/workspace') {
+      return pathname === '/workspace' || pathname.startsWith('/workspace/');
+    }
+    if (path === '/compare') {
+      return pathname === '/compare';
+    }
+    if (path === '/research-report') {
+      return pathname === '/research-report';
+    }
+    return pathname === path || pathname.startsWith(`${path}/`);
   };
 
   const handleLogout = () => {
@@ -80,11 +90,19 @@ const Sidebar: React.FC<SidebarProps> = ({
               <Link
                 key={item.path}
                 to={item.path}
-                className={`sidebar-nav-item ${active ? 'sidebar-nav-active' : 'sidebar-nav-idle'}`}
+                aria-current={active ? 'page' : undefined}
+                className={`sidebar-nav-item ${
+                  active
+                    ? 'sidebar-nav-active bg-white/18 text-white ring-1 ring-white/25 shadow-sm'
+                    : 'sidebar-nav-idle'
+                }`}
               >
-                <Icon className="h-4.5 w-4.5 flex-shrink-0" style={{ width: 18, height: 18 }} />
+                <Icon
+                  className={`h-4.5 w-4.5 flex-shrink-0 ${active ? 'text-white' : ''}`}
+                  style={{ width: 18, height: 18 }}
+                />
                 <span className="tracking-wide">{item.label}</span>
-                {active && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-white/70" />}
+                {active && <div className="ml-auto h-6 w-1 rounded-full bg-white/80" />}
               </Link>
             );
           })}

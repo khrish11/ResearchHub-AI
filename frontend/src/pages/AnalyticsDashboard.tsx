@@ -12,6 +12,13 @@ import type {
   TopIssue 
 } from '../types/api';
 
+interface AnalyticsPayload {
+  global?: GlobalStats;
+  timeseries?: TimeseriesPoint[];
+  performance?: RouteStat[];
+  summary?: InsightsSummary;
+}
+
 // Hooks
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { useRealtimeData } from '../hooks/useRealtimeData';
@@ -73,15 +80,15 @@ export default function AnalyticsDashboard() {
         fetchInsightsSummary(),
       ]);
 
-      if (globalRes.status === 'fulfilled') setGlobal(globalRes.value.data);
-      if (timeseriesRes.status === 'fulfilled') setTimeseries(timeseriesRes.value.data);
+      if (globalRes.status === 'fulfilled') setGlobal(globalRes.value.data as GlobalStats);
+      if (timeseriesRes.status === 'fulfilled') setTimeseries(timeseriesRes.value.data as TimeseriesPoint[]);
       if (perfRes.status === 'fulfilled') {
-        const perfData = perfRes.value.data as any;
-        setPerformance(perfData.routes || perfData || []);
+        const perfData = perfRes.value.data as { routes?: RouteStat[] } | RouteStat[] | undefined;
+        setPerformance(Array.isArray(perfData) ? perfData : perfData?.routes || []);
       }
       
       if (summaryRes.status === 'fulfilled') {
-        const newSummary = summaryRes.value.data;
+        const newSummary = summaryRes.value.data as InsightsSummary;
         setSummary(newSummary);
 
         // Real-Time Alert Trigger
@@ -107,7 +114,7 @@ export default function AnalyticsDashboard() {
   }, [fetchAll]);
 
   // Resilient Real-Time integration (SSE w/ Polling fallback)
-  useRealtimeData({
+  useRealtimeData<AnalyticsPayload>({
     url: `${import.meta.env.VITE_API_BASE || 'http://localhost:8010'}/analytics/stream`,
     pollingIntervalMs: 30000,
     onPollingTick: () => fetchAll(false),
@@ -117,7 +124,7 @@ export default function AnalyticsDashboard() {
        if (data.performance) setPerformance(data.performance);
        if (data.summary) {
          setSummary(data.summary);
-         const criticalIssues = (data.summary.top_issues || []).filter((i: any) => i.severity === 'CRITICAL');
+         const criticalIssues = (data.summary.top_issues || []).filter((issue) => issue.severity === 'CRITICAL');
          if (criticalIssues.length > 0) {
            toast.error(`${criticalIssues.length} Critical System Issues Detected!`, { id: 'critical-alerts' });
          }

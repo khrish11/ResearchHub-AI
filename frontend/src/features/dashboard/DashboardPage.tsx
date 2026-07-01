@@ -26,8 +26,6 @@ import {
   BellRing,
   CheckCircle2,
   Circle,
-  GraduationCap,
-  Rocket,
   PlayCircle,
   XCircle,
   Lightbulb,
@@ -53,7 +51,7 @@ import type {
 
 const Dashboard = () => {
   const location = useLocation();
-  const { workspaces, loading, totalPapers, totalChars, fetchWorkspaces } = useWorkspaceSummary();
+  const { workspaces, loading, totalPapers, totalChars, fetchWorkspaces, isUserCreatedWorkspace } = useWorkspaceSummary();
 
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
@@ -81,13 +79,13 @@ const Dashboard = () => {
   const [onboardingLoading, setOnboardingLoading] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
   const [demoBootstrapping, setDemoBootstrapping] = useState(false);
-  const [onboardingDismissUpdating, setOnboardingDismissUpdating] = useState(false);
   const [demoState, setDemoState] = useState<DemoModeStateResponse | null>(null);
   const [demoStateLoading, setDemoStateLoading] = useState(false);
   const [demoStepUpdating, setDemoStepUpdating] = useState(false);
   const [demoExiting, setDemoExiting] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
   const [demoGuideDismissed, setDemoGuideDismissed] = useLocalStorage<boolean>('soyog.demo.guide.dismissed', false);
+  const [hasExportedCitations, setHasExportedCitations] = useState(false);
   const feedSentinelRef = useRef<HTMLDivElement | null>(null);
   const demoAutoStartRef = useRef(false);
 
@@ -137,9 +135,9 @@ const Dashboard = () => {
     },
   ];
 
-  const parseApiError = (err: unknown, fallback: string) => {
+  const parseApiError = useCallback((err: unknown, fallback: string) => {
     return apiErrorMessage(err, fallback);
-  };
+  }, []);
 
   const fetchOnboardingStatus = useCallback(
     async (workspaceId?: number | null) => {
@@ -156,7 +154,7 @@ const Dashboard = () => {
         setOnboardingLoading(false);
       }
     },
-    []
+    [parseApiError]
   );
 
   const fetchDemoState = useCallback(
@@ -174,10 +172,10 @@ const Dashboard = () => {
         setDemoStateLoading(false);
       }
     },
-    []
+    [parseApiError]
   );
 
-  const fetchWorkspaceInsights = async (workspaceId: number, refresh = false) => {
+  const fetchWorkspaceInsights = useCallback(async (workspaceId: number, refresh = false) => {
     if (!workspaceId) {
       setInsights(null);
       return;
@@ -210,7 +208,7 @@ const Dashboard = () => {
         setInsightsLoading(false);
       }
     }
-  };
+  }, [parseApiError]);
 
   const fetchWorkspaceFeed = useCallback(
     async (
@@ -291,7 +289,7 @@ const Dashboard = () => {
         }
       }
     },
-    [feedSort]
+    [feedSort, parseApiError]
   );
 
   const handleFeedRefresh = useCallback(async () => {
@@ -314,7 +312,7 @@ const Dashboard = () => {
         setFeedError(parseApiError(err, 'Failed to update feed item state.'));
       }
     },
-    [activeInsightsWorkspaceId]
+    [activeInsightsWorkspaceId, parseApiError]
   );
 
   const handleDemoBootstrap = useCallback(async () => {
@@ -342,7 +340,6 @@ const Dashboard = () => {
     }
   }, [
     activeInsightsWorkspaceId,
-    fetchDemoState,
     fetchOnboardingStatus,
     fetchWorkspaceFeed,
     onboarding?.workspace_id,
@@ -350,6 +347,7 @@ const Dashboard = () => {
     workspaces,
     fetchWorkspaceInsights,
     fetchWorkspaces,
+    parseApiError,
   ]);
 
   const handleDemoStepComplete = useCallback(
@@ -371,7 +369,7 @@ const Dashboard = () => {
         setDemoStepUpdating(false);
       }
     },
-    [activeInsightsWorkspaceId, demoState?.workspace_id, onboarding?.workspace_id, workspaces]
+    [activeInsightsWorkspaceId, demoState?.workspace_id, onboarding?.workspace_id, parseApiError, workspaces]
   );
 
   const handleDemoStepAdvance = useCallback(async () => {
@@ -389,7 +387,7 @@ const Dashboard = () => {
     } finally {
       setDemoStepUpdating(false);
     }
-  }, [activeInsightsWorkspaceId, demoState?.workspace_id, onboarding?.workspace_id, workspaces]);
+  }, [activeInsightsWorkspaceId, demoState?.workspace_id, onboarding?.workspace_id, parseApiError, workspaces]);
 
   const handleExitDemoMode = useCallback(async () => {
     const targetWorkspaceId = demoState?.workspace_id || onboarding?.workspace_id || activeInsightsWorkspaceId || workspaces[0]?.id || null;
@@ -412,34 +410,14 @@ const Dashboard = () => {
     demoState?.workspace_id,
     fetchOnboardingStatus,
     onboarding?.workspace_id,
+    parseApiError,
     setDemoGuideDismissed,
     workspaces,
   ]);
 
-  const handleSetOnboardingDismissed = useCallback(
-    async (dismissed: boolean) => {
-      const targetWorkspaceId = onboarding?.workspace_id || activeInsightsWorkspaceId || workspaces[0]?.id || null;
-      if (!targetWorkspaceId) return;
-      setOnboardingDismissUpdating(true);
-      setOnboardingError(null);
-      try {
-        const response = await api.post<OnboardingStatusResponse>('/onboarding/dismiss', {
-          workspace_id: targetWorkspaceId,
-          dismissed,
-        });
-        setOnboarding(response.data);
-      } catch (err) {
-        setOnboardingError(parseApiError(err, 'Failed to update onboarding preferences.'));
-      } finally {
-        setOnboardingDismissUpdating(false);
-      }
-    },
-    [activeInsightsWorkspaceId, onboarding?.workspace_id, workspaces]
-  );
-
   useEffect(() => {
     void fetchWorkspaces();
-  }, []);
+  }, [fetchWorkspaces]);
 
   useEffect(() => {
     if (workspaces.length === 0) {
@@ -472,7 +450,7 @@ const Dashboard = () => {
       return;
     }
     void fetchWorkspaceInsights(activeInsightsWorkspaceId, false);
-  }, [activeInsightsWorkspaceId]);
+  }, [activeInsightsWorkspaceId, fetchWorkspaceInsights]);
 
   useEffect(() => {
     if (loading) {
@@ -701,22 +679,60 @@ const Dashboard = () => {
     },
   ];
 
-  const showOnboardingChecklist = Boolean(
-    onboarding &&
-      onboarding.needs_onboarding &&
-      !onboarding.dismissed &&
-      !onboarding.has_completed_onboarding &&
-      Number(onboarding.paper_count || 0) === 0
-  );
-  const showOnboardingHint = Boolean(
-    onboarding &&
-      onboarding.dismissed &&
-      !onboarding.has_completed_onboarding &&
-      Number(onboarding.paper_count || 0) === 0
-  );
-  const onboardingProgressPct = Math.round(Math.max(0, Math.min(1, Number(onboarding?.progress || 0))) * 100);
   const onboardingPrompts = (onboarding?.copilot_prompts || []).slice(0, 6);
   const demoFeedPreview = onboarding?.demo?.sample_feed_items || [];
+  const hasCompletedSearch = Boolean(workspaces.length > 0 || totalPapers > 0);
+  const hasUploadedPaper = Boolean(totalPapers > 0 || onboarding?.completed_steps?.includes('upload_paper'));
+  const hasCompletedPaperCheck = Boolean(
+    onboarding?.completed_steps?.some((step) => ['explain_paper', 'compare_papers', 'generate_report'].includes(step)) || totalPapers > 0
+  );
+  const gettingStartedItems = [
+    {
+      key: 'createWorkspace',
+      label: 'Create Workspace',
+      completed: isUserCreatedWorkspace,
+      actionLabel: 'Create Workspace',
+      action: (
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+        >
+          Create Workspace
+          <ArrowRight className="h-3.5 w-3.5" />
+        </button>
+      ),
+    },
+    {
+      key: 'searchPapers',
+      label: 'Search Papers',
+      completed: hasCompletedSearch,
+      actionLabel: 'Search Papers',
+      to: '/search',
+    },
+    {
+      key: 'uploadPdf',
+      label: 'Upload PDF',
+      completed: hasUploadedPaper,
+      actionLabel: 'Upload PDF',
+      to: '/upload',
+    },
+    {
+      key: 'runPaperCheck',
+      label: 'Run Paper Check',
+      completed: hasCompletedPaperCheck,
+      actionLabel: 'Run Paper Check',
+      to: '/upload',
+    },
+    {
+      key: 'exportCitations',
+      label: 'Export Citations',
+      completed: hasExportedCitations,
+      actionLabel: 'Export Citations',
+      to: activeInsightsWorkspaceId ? `/workspace/${activeInsightsWorkspaceId}` : '/dashboard#workspaces',
+    },
+  ];
+  const gettingStartedCompletedCount = gettingStartedItems.filter((item) => item.completed).length;
   const demoRequestedFromUrl = useMemo(() => new URLSearchParams(location.search).get('demo') === '1', [location.search]);
   const currentDemoStep = useMemo(() => {
     if (!demoState?.steps?.length) return null;
@@ -752,6 +768,7 @@ const Dashboard = () => {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+      setHasExportedCitations(true);
     } catch {
       // keep silent on export failure
     }
@@ -945,126 +962,61 @@ const Dashboard = () => {
         </section>
       ) : null}
 
-      {showOnboardingChecklist ? (
-        <section className="mb-6 feature-surface transition-all duration-300">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">First Insight Experience</p>
-              <h3 className="mt-1 text-xl font-bold text-slate-900">Guided onboarding</h3>
-              <p className="mt-1 text-sm text-slate-600">
-                Complete these four actions to learn the product in under a minute and unlock high-signal workflows.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
-                <GraduationCap className="h-3.5 w-3.5" /> {onboardingProgressPct}% complete
-              </span>
-              <button
-                onClick={() => {
-                  void handleSetOnboardingDismissed(true);
-                }}
-                disabled={onboardingDismissUpdating}
-                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-              >
-                Hide
-              </button>
-            </div>
+      <section className="mb-6 feature-surface">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">ResearchHub Getting Started</p>
+            <h3 className="mt-1 text-xl font-bold text-slate-900">First research workflow</h3>
+            <p className="mt-1 text-sm text-slate-600">Complete these actions to learn the core platform flow.</p>
           </div>
-
-          <progress
-            className="mt-3 h-2 w-full overflow-hidden rounded-full"
-            max={100}
-            value={onboardingProgressPct}
-            aria-label="Onboarding progress"
-          />
-
-          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-            {(onboarding?.steps || []).map((step) => (
-              <article key={step.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-slate-50">
-                    {step.completed ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    ) : (
-                      <Circle className="h-4 w-4 text-slate-400" />
-                    )}
-                  </div>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                      step.completed ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'border border-slate-200 bg-slate-50 text-slate-600'
-                    }`}
-                  >
-                    {step.completed ? 'Completed' : 'Pending'}
-                  </span>
+          <span className="inline-flex w-fit items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+            Completed {gettingStartedCompletedCount} / {gettingStartedItems.length}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {gettingStartedItems.map((item) => (
+            <article key={item.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full border ${
+                    item.completed ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                  }`}
+                >
+                  {item.completed ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <Circle className="h-4 w-4 text-slate-400" />
+                  )}
                 </div>
-                <h4 className="mt-2 text-base font-semibold text-slate-900">{step.title}</h4>
-                <p className="mt-1 text-sm text-slate-600">{step.description}</p>
-                <div className="mt-3">
-                  <Link
-                    to={step.action_path || '/dashboard'}
-                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                  >
-                    {step.action_label || 'Open'}
-                    <ArrowRight className="h-3.5 w-3.5" />
-                  </Link>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div id="demo-panel" className={`mt-4 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 ${highlightForDemoTarget('demo_panel')}`}>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-indigo-700">Demo Mode</p>
-                <h4 className="mt-1 text-base font-semibold text-slate-900">Load a guided demo instantly</h4>
-                <p className="mt-1 text-sm text-slate-700">
-                  Adds sample papers, a comparison, a report, and a research feed so you see value before uploading your own data.
-                </p>
-                {demoTooltipTextForTarget('demo_panel') ? (
-                  <p className="mt-2 inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
-                    <Lightbulb className="h-3.5 w-3.5" /> {demoTooltipTextForTarget('demo_panel')}
-                  </p>
-                ) : null}
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                    item.completed
+                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : 'border border-slate-200 bg-slate-50 text-slate-600'
+                  }`}
+                >
+                  {item.completed ? 'Done' : 'Next'}
+                </span>
               </div>
-              <button
-                onClick={() => {
-                  void handleDemoBootstrap();
-                }}
-                disabled={demoBootstrapping}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
-              >
-                {demoBootstrapping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
-                {demoBootstrapping ? 'Loading demo...' : 'Load demo workspace'}
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-              {(onboarding?.demo?.sample_papers || []).slice(0, 3).map((paper) => (
-                <div key={paper.title} className="rounded-xl border border-indigo-100 bg-white px-3 py-2">
-                  <p className="text-sm font-semibold text-slate-900 line-clamp-2">{paper.title}</p>
-                  <p className="mt-1 text-xs text-slate-500 line-clamp-2">{paper.authors}</p>
+              <h4 className="mt-3 text-sm font-semibold text-slate-900">{item.label}</h4>
+              {!item.completed && (
+                <div className="mt-3">
+                  {item.action || (
+                    <Link
+                      to={item.to || '/dashboard'}
+                      className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
+                    >
+                      {item.actionLabel}
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </Link>
+                  )}
                 </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      ) : showOnboardingHint ? (
-        <section className="mb-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-sm text-slate-700">
-              Onboarding is hidden. Re-open the checklist anytime to finish first actions and unlock demo mode.
-            </p>
-            <button
-              onClick={() => {
-                void handleSetOnboardingDismissed(false);
-              }}
-              disabled={onboardingDismissUpdating}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-            >
-              Show onboarding
-            </button>
-          </div>
-        </section>
-      ) : null}
+              )}
+            </article>
+          ))}
+        </div>
+      </section>
+
 
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-7">
         {stats.map((s) => {

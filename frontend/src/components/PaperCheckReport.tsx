@@ -4,14 +4,28 @@ import {
   BadgeCheck,
   FileSearch,
   FlaskConical,
+  Loader2,
   Quote,
   ShieldAlert,
 } from 'lucide-react';
-import type { CompletedPaperCheckResult } from '../utils/researchArtifacts';
+import { apiErrorMessage } from '../utils/apiError';
+import {
+  runPaperCheck,
+  type CompletedPaperCheckResult,
+  type PaperCheckPayload,
+} from '../utils/researchArtifacts';
+
+type PaperCheckReportResult = Partial<Omit<CompletedPaperCheckResult, 'status'>> & {
+  status?: string;
+  error?: string | { message?: string };
+};
 
 interface PaperCheckReportProps {
-  result: CompletedPaperCheckResult;
+  result: PaperCheckReportResult;
   title?: string;
+  retryPayload?: PaperCheckPayload;
+  onRetryComplete?: (result: CompletedPaperCheckResult) => void;
+  onRetryError?: (message: string) => void;
 }
 
 const scoreTone = (score?: number) => {
@@ -54,16 +68,80 @@ const ScoreCard: React.FC<{ label: string; score?: number; summary?: string }> =
   </div>
 );
 
-const PaperCheckReport: React.FC<PaperCheckReportProps> = ({ result, title }) => {
-  const analysis = result.paper_analysis || {};
+const retryableStatuses = new Set(['failed', 'timeout', 'timed_out']);
+
+const PaperCheckReport: React.FC<PaperCheckReportProps> = ({
+  result,
+  title,
+  retryPayload,
+  onRetryComplete,
+  onRetryError,
+}) => {
+  const [retrying, setRetrying] = React.useState(false);
+  const [retryError, setRetryError] = React.useState('');
+  const [retryResult, setRetryResult] = React.useState<CompletedPaperCheckResult | null>(null);
+  const displayedResult = retryResult || result;
+  const analysis = displayedResult.paper_analysis || {};
   const snapshot = analysis.snapshot || {};
   const methods = analysis.methods || {};
-  const segments = Array.isArray(result.ai_writing_likelihood?.segments)
-    ? result.ai_writing_likelihood.segments
+  const segments = Array.isArray(displayedResult.ai_writing_likelihood?.segments)
+    ? displayedResult.ai_writing_likelihood.segments
     : [];
+  const reportStatus = String(displayedResult.status || '').toLowerCase();
+  const showRetry = retryableStatuses.has(reportStatus);
+
+  React.useEffect(() => {
+    setRetryResult(null);
+    setRetryError('');
+  }, [result]);
+
+  const handleRetry = async () => {
+    if (!retryPayload || retrying) {
+      return;
+    }
+    setRetrying(true);
+    setRetryError('');
+    try {
+      const response = await runPaperCheck(retryPayload);
+      setRetryResult(response);
+      onRetryComplete?.(response);
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Paper Check retry failed.');
+      setRetryError(message);
+      onRetryError?.(message);
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   return (
     <section className="space-y-4">
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        Paper Check is advisory only and does not prove authorship.
+      </div>
+
+      {showRetry && (
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-slate-600">
+              This Paper Check did not complete. You can retry the analysis.
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleRetry()}
+              disabled={retrying || !retryPayload}
+              className="hero-btn-secondary disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {retrying && <Loader2 className="h-4 w-4 animate-spin" />}
+              Retry Paper Check
+            </button>
+          </div>
+          {retryError && (
+            <p className="mt-3 text-sm text-amber-700">{retryError}</p>
+          )}
+        </div>
+      )}
+
       <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -75,16 +153,16 @@ const PaperCheckReport: React.FC<PaperCheckReportProps> = ({ result, title }) =>
             </h3>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {result.metadata?.model_used && (
+            {displayedResult.metadata?.model_used && (
               <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 font-semibold text-indigo-700">
-                {result.metadata.model_used}
+                {displayedResult.metadata.model_used}
               </span>
             )}
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
-              {result.metadata?.suspicious_segment_count || 0} flagged segments
+              {displayedResult.metadata?.suspicious_segment_count || 0} flagged segments
             </span>
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">
-              {result.metadata?.cache_hit ? `cache:${result.metadata.cache_layer || 'memory'}` : 'live analysis'}
+              {displayedResult.metadata?.cache_hit ? `cache:${displayedResult.metadata.cache_layer || 'memory'}` : 'live analysis'}
             </span>
           </div>
         </div>
@@ -227,7 +305,7 @@ const PaperCheckReport: React.FC<PaperCheckReportProps> = ({ result, title }) =>
               Paragraph-level advisory classification on suspicious segments only.
             </p>
           </div>
-          {result.ai_writing_likelihood?.detection_error && (
+          {displayedResult.ai_writing_likelihood?.detection_error && (
             <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
               Partial model output
             </span>
@@ -275,14 +353,14 @@ const PaperCheckReport: React.FC<PaperCheckReportProps> = ({ result, title }) =>
           </div>
         )}
 
-        {result.ai_writing_likelihood?.detection_error && (
+        {displayedResult.ai_writing_likelihood?.detection_error && (
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            {result.ai_writing_likelihood.detection_error}
+            {displayedResult.ai_writing_likelihood.detection_error}
           </div>
         )}
 
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          {result.ai_writing_likelihood?.disclaimer || 'This analysis is advisory and may be incorrect. It should not be used as proof of AI authorship.'}
+          {displayedResult.ai_writing_likelihood?.disclaimer || 'This analysis is advisory and may be incorrect. It should not be used as proof of AI authorship.'}
         </div>
       </div>
     </section>

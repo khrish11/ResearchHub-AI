@@ -21,7 +21,7 @@ export const downloadTextFile = (
   URL.revokeObjectURL(url);
 };
 
-export function exportToJSON(data: any, filename: string) {
+export function exportToJSON<T>(data: T, filename: string) {
   downloadTextFile(
     `${filename}_${new Date().toISOString()}.json`,
     JSON.stringify(data, null, 2),
@@ -29,17 +29,17 @@ export function exportToJSON(data: any, filename: string) {
   );
 }
 
-export function exportToCSV(data: any[], filename: string) {
+export function exportToCSV<T extends object>(data: T[], filename: string) {
   if (!data || !data.length) return;
 
-  const headers = Object.keys(data[0]);
+  const headers = Object.keys(data[0] as Record<string, unknown>);
 
   const csvContent = [
     headers.join(','),
     ...data.map((row) =>
       headers
         .map((header) => {
-          const cell = row[header];
+          const cell = (row as Record<string, unknown>)[header];
           if (cell === null || cell === undefined) return '';
           if (typeof cell === 'object') return `"${JSON.stringify(cell).replace(/"/g, '""')}"`;
           const cellStr = String(cell);

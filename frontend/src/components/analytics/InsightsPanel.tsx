@@ -1,8 +1,7 @@
 import { cn } from '../../utils/cn';
 import { AlertCircle, CheckCircle2, Zap, Activity } from 'lucide-react';
 import { SEVERITY_COLORS, SeverityBadge } from './RouteTable';
-import type { InsightsSummary } from '../../types/api';
-;
+import type { InsightsSummary, TopIssue } from '../../types/api';
 
 const SEVERITY_ICON = {
   CRITICAL: AlertCircle,
@@ -21,7 +20,7 @@ export function RouteBadge({ route }: { route: string }) {
 interface InsightsPanelProps {
   summary: InsightsSummary | null;
   loading: boolean;
-  onIssueClick?: (issue: any) => void;
+  onIssueClick?: (issue: TopIssue) => void;
 }
 
 export default function InsightsPanel({ summary, loading, onIssueClick }: InsightsPanelProps) {

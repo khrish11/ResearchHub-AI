@@ -239,7 +239,7 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
           </span>
         </div>
 
-        <div className="mt-3 flex gap-1.5 lg:hidden">
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 lg:hidden">
           {mobileLinks.map((item) => {
             const Icon = item.icon;
             const active = location.pathname.startsWith(item.to);
@@ -247,7 +247,7 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
               <Link
                 key={item.to}
                 to={item.to}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                className={`inline-flex min-w-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition-colors ${
                   active
                     ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
                     : 'border-slate-200 bg-white text-slate-600'
