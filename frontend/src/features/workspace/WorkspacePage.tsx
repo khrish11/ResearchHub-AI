@@ -393,10 +393,7 @@ const Workspace: React.FC = () => {
     });
   }, [fullTextOnlyPapers, paperQuery, workspace]);
 
-  const selectedPaper = useMemo(
-    () => papersForDisplay.find((paper) => paper.id === selectedPaperId) || papersForDisplay[0] || null,
-    [papersForDisplay, selectedPaperId],
-  );
+  const selectedPaper = papersForDisplay.find((paper) => paper.id === selectedPaperId) || papersForDisplay[0] || null;
   const selectedCitationKey = selectedPaper ? `${selectedPaper.id}:${citationStyle}` : null;
   const selectedCitation = selectedCitationKey ? citationCache[selectedCitationKey] || null : null;
   const selectedPaperCheck = selectedPaper ? paperCheckCache[selectedPaper.id] || null : null;

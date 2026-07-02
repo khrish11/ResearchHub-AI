@@ -700,7 +700,13 @@ def _resolve_access_token(
     bearer_token: Optional[str] = Depends(oauth2_scheme),
 ) -> Optional[str]:
     if bearer_token:
-        return str(bearer_token).strip()
+        try:
+            jwt.decode(
+                bearer_token, SECRET_KEY, algorithms=[ALGORITHM]
+            )
+            return str(bearer_token).strip()
+        except InvalidTokenError:
+            pass
     cookie_token = request.cookies.get(ACCESS_TOKEN_COOKIE_NAME)
     if cookie_token:
         return str(cookie_token).strip()

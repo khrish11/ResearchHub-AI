@@ -86,22 +86,22 @@ const clearUploadPaperSession = () => {
 
 const UploadPDF: React.FC = () => {
   const { success: toastSuccess, error: toastError } = useToast();
-  const restoredUploadSession = useRef(readUploadPaperSession());
+  const [restoredUploadSession] = useState(() => readUploadPaperSession());
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [uploadState, setUploadState] = useState<UploadState>(
-    restoredUploadSession.current ? 'done' : 'idle'
+    restoredUploadSession ? 'done' : 'idle'
   );
   const [errorMsg, setErrorMsg] = useState('');
   const [extractedText, setExtractedText] = useState('');
   const [aiSummary, setAiSummary] = useState('');
-  const [charCount, setCharCount] = useState(restoredUploadSession.current?.charCount || 0);
+  const [charCount, setCharCount] = useState(restoredUploadSession?.charCount || 0);
   const [savedPaperId, setSavedPaperId] = useState<number | null>(
-    restoredUploadSession.current?.paperId || null
+    restoredUploadSession?.paperId || null
   );
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | ''>(
-    restoredUploadSession.current?.workspaceId || ''
+    restoredUploadSession?.workspaceId || ''
   );
   const [summarize, setSummarize] = useState(true);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>('apa');
@@ -466,6 +466,8 @@ const UploadPDF: React.FC = () => {
               ref={fileInputRef}
               type="file"
               accept=".pdf"
+              aria-label="Upload PDF file"
+              title="Upload PDF file"
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.[0]) {
@@ -483,6 +485,7 @@ const UploadPDF: React.FC = () => {
               <select
                 value={selectedWorkspaceId}
                 onChange={(e) => setSelectedWorkspaceId(e.target.value ? Number(e.target.value) : '')}
+                aria-label="Save to workspace"
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">Do not save</option>
@@ -605,6 +608,8 @@ const UploadPDF: React.FC = () => {
                   <select
                     value={citationStyle}
                     onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                    aria-label="Citation style"
+                    title="Citation style"
                     className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
                   >
                     <option value="apa">APA</option>

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { toAppPath } from './utils/routing';
 import { getAppCheckTokenValue } from './utils/firebaseClient';
-import { clearAuthSession, getBackendToken } from './utils/authSession';
+import { clearAuthSession, getBackendToken, setBackendToken } from './utils/authSession';
 import { apiErrorMessage, apiErrorMessageFromPayload } from './utils/apiError';
 
 const resolveApiUrl = (): string => {
@@ -114,8 +114,7 @@ const shouldSkipAutoAuthHandling = (path: string) =>
     path.includes('/auth/forgot-password') ||
     path.includes('/auth/reset-password') ||
     path.includes('/auth/refresh') ||
-    path.includes('/auth/logout') ||
-    path.includes('/auth/me');
+    path.includes('/auth/logout');
 
 api.interceptors.response.use(
     (response) => response,
@@ -130,7 +129,12 @@ api.interceptors.response.use(
             if (!refreshInFlight) {
                 refreshInFlight = api
                     .post('/auth/refresh')
-                    .then(() => undefined)
+                    .then((response) => {
+                        const newToken = response.data?.access_token;
+                        if (newToken) {
+                            setBackendToken(newToken);
+                        }
+                    })
                     .finally(() => {
                         refreshInFlight = null;
                     });

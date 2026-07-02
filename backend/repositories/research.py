@@ -989,17 +989,6 @@ class FirebaseResearchRepository:
         self.users.document(str(secondary_user_id)).delete()
 
     def list_workspaces_for_user(self, user_id: int) -> list[Workspace]:
-        paper_counts: Dict[int, int] = {}
-        for snapshot in self.papers.where(
-            filter=FieldFilter("user_id", "==", user_id)
-        ).stream():
-            doc = snapshot.to_dict() or {}
-            workspace_id = doc.get("workspace_id")
-            if workspace_id is None:
-                continue
-            workspace_key = int(workspace_id)
-            paper_counts[workspace_key] = paper_counts.get(workspace_key, 0) + 1
-
         docs = [
             (snapshot.to_dict() or {})
             for snapshot in self.workspaces.where(
@@ -1008,7 +997,6 @@ class FirebaseResearchRepository:
         ]
         docs.sort(
             key=lambda doc: (
-                -paper_counts.get(int(doc.get("id") or 0), 0),
                 -(doc.get("created_at") or _utcnow()).timestamp(),
             )
         )

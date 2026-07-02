@@ -194,7 +194,7 @@ function App() {
             }
             clearAuthArtifacts();
             notifyAuthLogin();
-            window.location.replace(toAppPath('/home'));
+            void refreshAuthState().then(() => window.clearTimeout(safetyTimeout));
             return;
           }
           // No Firebase result — fall through to OAuth / cookie check.
