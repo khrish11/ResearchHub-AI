@@ -650,8 +650,20 @@ def _set_auth_cookies(
 
 
 def _clear_auth_cookies(response: Response, request: Request) -> None:
-    response.delete_cookie(ACCESS_TOKEN_COOKIE_NAME, path="/", domain=COOKIE_DOMAIN)
-    response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME, path="/", domain=COOKIE_DOMAIN)
+    response.delete_cookie(
+        ACCESS_TOKEN_COOKIE_NAME,
+        path="/",
+        domain=COOKIE_DOMAIN,
+        secure=_cookie_secure(request),
+        samesite=COOKIE_SAMESITE,
+    )
+    response.delete_cookie(
+        REFRESH_TOKEN_COOKIE_NAME,
+        path="/",
+        domain=COOKIE_DOMAIN,
+        secure=_cookie_secure(request),
+        samesite=COOKIE_SAMESITE,
+    )
 
 
 def _persist_refresh_token(

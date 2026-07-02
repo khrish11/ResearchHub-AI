@@ -806,6 +806,8 @@ def _origin_is_allowed(origin: str) -> bool:
         return False
     if candidate in allowed_origins:
         return True
+    if not _cors_origin_regex:
+        return False
     try:
         return bool(re.match(_cors_origin_regex, candidate))
     except re.error:

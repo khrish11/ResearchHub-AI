@@ -142,11 +142,30 @@ api.interceptors.response.use(
             try {
                 await refreshInFlight;
                 return api(originalConfig);
-            } catch {
+            } catch (err) {
                 await clearAuthSession();
-                if (!window.location.pathname.endsWith('/login')) {
+                const pathName = window.location.pathname;
+                const publicPaths = [
+                    '/',
+                    '/login',
+                    '/register',
+                    '/privacy',
+                    '/terms',
+                    '/cookies',
+                    '/data-rights',
+                    '/verify-email',
+                    '/forgot-password',
+                    '/reset-password',
+                ];
+                const cleanPathName = pathName.replace(/\/+$/, '');
+                const isPublic = publicPaths.some((p) => {
+                    const cleanAppPath = toAppPath(p).replace(/\/+$/, '');
+                    return cleanPathName === cleanAppPath;
+                });
+                if (!isPublic && !pathName.endsWith('/login')) {
                     window.location.href = toAppPath('/login');
                 }
+                return Promise.reject(err);
             }
         }
 

@@ -123,11 +123,11 @@ function App() {
   const authBootstrapStarted = useRef(false);
 
   const refreshAuthState = async () => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 2500);
+
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
       const response = await api.get('/auth/me', { signal: controller.signal });
-      clearTimeout(timeoutId);
       setIsAuthenticated(true);
       setCanAccessAnalytics(Boolean(response?.data?.can_access_analytics));
       setIsDeveloper(Boolean(response?.data?.is_developer));
@@ -136,6 +136,7 @@ function App() {
       setCanAccessAnalytics(false);
       setIsDeveloper(false);
     } finally {
+      window.clearTimeout(timeoutId);
       setAuthChecked(true);
     }
   };
@@ -175,13 +176,10 @@ function App() {
 
     // Safety net: guarantee authChecked becomes true even if everything else hangs.
     const safetyTimeout = window.setTimeout(() => {
-      setAuthChecked((prev) => {
-        if (!prev) {
-          void refreshAuthState();
-        }
-        return prev;
-      });
-    }, 5000);
+      if (!authChecked) {
+        void refreshAuthState();
+      }
+    }, 2500);
 
     // Check for Firebase redirect / current-user result first.
     if (firebaseAuthAvailable()) {
@@ -194,7 +192,7 @@ function App() {
             }
             clearAuthArtifacts();
             notifyAuthLogin();
-            void refreshAuthState().then(() => window.clearTimeout(safetyTimeout));
+            void refreshAuthState().finally(() => window.clearTimeout(safetyTimeout));
             return;
           }
           // No Firebase result — fall through to OAuth / cookie check.
@@ -238,7 +236,7 @@ function App() {
         clearAuthArtifacts();
       }
 
-      void refreshAuthState().then(() => window.clearTimeout(safetyTimeout));
+      void refreshAuthState().finally(() => window.clearTimeout(safetyTimeout));
     }
   }, []);
 
