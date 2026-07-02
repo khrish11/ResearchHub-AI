@@ -91,8 +91,14 @@ class EmbeddingService:
         embedding_dim: int = _DEFAULT_EMBEDDING_DIM,
         max_text_chars: int = 12000,
     ) -> None:
+        enable_st = os.getenv("VECTOR_ENABLE_SENTENCE_TRANSFORMERS")
+        if enable_st is not None and enable_st.strip() in {"0", "false", "no"}:
+            provider_default = "hashing"
+        else:
+            provider_default = "auto"
+
         self.provider = str(
-            os.getenv("RAG_EMBEDDING_PROVIDER") or "auto"
+            os.getenv("RAG_EMBEDDING_PROVIDER") or provider_default
         ).strip().lower()
         self.allow_download = str(
             os.getenv("RAG_EMBEDDING_ALLOW_DOWNLOAD") or "0"

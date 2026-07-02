@@ -2584,6 +2584,11 @@ class InMemoryResearchRepository:
         self._research_reports: Dict[str, ResearchReport] = {}
         self._user_session_state: Dict[int, UserSessionState] = {}
         self._workspace_documents: Dict[int, WorkspaceDocument] = {}
+        self._chats: Dict[int, Chat] = {}
+        self._search_history: Dict[int, SearchHistory] = {}
+        self._workspace_files: Dict[int, WorkspaceFile] = {}
+        self._paper_check_jobs: Dict[str, PaperCheckJob] = {}
+        self._data_rights_requests: Dict[int, DataRightsRequest] = {}
 
     def _next_id(self, key: str) -> int:
         with self._lock:
@@ -2780,6 +2785,135 @@ class InMemoryResearchRepository:
         self._papers[int(paper.id)] = paper
         return paper
 
+    # --- Chats ----------------------------------------------------------------
+    def list_chats_for_workspace(
+        self,
+        workspace_id: int,
+        *,
+        ascending: bool = True,
+        limit: Optional[int] = None,
+    ) -> list[Chat]:
+        items = [c for c in self._chats.values() if int(c.workspace_id) == int(workspace_id)]
+        items.sort(key=lambda c: c.timestamp or _utcnow(), reverse=not ascending)
+        if limit is not None:
+            items = items[: max(0, int(limit))]
+        return items
+
+    def create_chat(self, workspace_id: int, message: str, response: str) -> Chat:
+        chat = Chat(
+            id=self._next_id("chat_id"),
+            message=message,
+            response=response,
+            workspace_id=int(workspace_id),
+            timestamp=_utcnow(),
+        )
+        self._chats[int(chat.id)] = chat
+        return chat
+
+    # --- Search History ------------------------------------------------------
+    def list_search_history_for_user(
+        self,
+        user_id: int,
+        *,
+        limit: Optional[int] = None,
+    ) -> list[SearchHistory]:
+        items = [s for s in self._search_history.values() if int(s.user_id) == int(user_id)]
+        items.sort(key=lambda s: s.created_at or _utcnow(), reverse=True)
+        if limit is not None:
+            items = items[: max(0, int(limit))]
+        return items
+
+    def count_search_history_for_user(self, user_id: int) -> int:
+        return len(self.list_search_history_for_user(user_id))
+
+    def record_search_history(
+        self,
+        *,
+        user_id: int,
+        query: str,
+        source: str,
+        result_count: int,
+        filters_json: Optional[str] = None,
+        dedupe_seconds: int = 240,
+        max_items: int = 250,
+    ) -> SearchHistory:
+        trimmed_query = (query or "").strip()
+        if not trimmed_query:
+            raise ValueError("query is required")
+        now_utc = _utcnow()
+        recent = self.list_search_history_for_user(user_id, limit=max(1, max_items))
+        latest = next((row for row in recent if row.source == source), None)
+        if latest and latest.query.strip().lower() == trimmed_query.lower():
+            created = latest.created_at or now_utc
+            if abs((now_utc - created).total_seconds()) <= max(1, int(dedupe_seconds)):
+                latest.result_count = max(0, int(result_count or 0))
+                latest.filters_json = filters_json
+                latest.created_at = now_utc
+                self.save(latest)
+                target = latest
+            else:
+                target = SearchHistory(
+                    id=self._next_id("search_history_id"),
+                    user_id=int(user_id),
+                    query=trimmed_query[:300],
+                    source=source,
+                    result_count=max(0, int(result_count or 0)),
+                    filters_json=filters_json,
+                    created_at=now_utc,
+                )
+                self._search_history[int(target.id)] = target
+        else:
+            target = SearchHistory(
+                id=self._next_id("search_history_id"),
+                user_id=int(user_id),
+                query=trimmed_query[:300],
+                source=source,
+                result_count=max(0, int(result_count or 0)),
+                filters_json=filters_json,
+                created_at=now_utc,
+            )
+            self._search_history[int(target.id)] = target
+
+        current = self.list_search_history_for_user(user_id, limit=max_items + 25)
+        for stale in current[max(0, int(max_items)) :]:
+            if stale.id is not None:
+                self._search_history.pop(int(stale.id), None)
+        return target
+
+    def delete_search_history(self, user_id: int, item_id: Optional[int] = None) -> int:
+        deleted = 0
+        if item_id is not None:
+            stale = self._search_history.get(int(item_id))
+            if not stale or int(stale.user_id) != int(user_id):
+                return 0
+            self._search_history.pop(int(item_id), None)
+            return 1
+        
+        to_delete = [
+            sid for sid, s in self._search_history.items()
+            if int(s.user_id) == int(user_id)
+        ]
+        for sid in to_delete:
+            self._search_history.pop(sid, None)
+            deleted += 1
+        return deleted
+
+    # --- Session State -------------------------------------------------------
+    def get_session_state_for_user(self, user_id: int) -> Optional[UserSessionState]:
+        for state in self._user_session_state.values():
+            if int(state.user_id) == int(user_id):
+                return state
+        return None
+
+    def create_session_state(self, user_id: int) -> UserSessionState:
+        state = UserSessionState(
+            id=self._next_id("session_state_id"),
+            user_id=int(user_id),
+            page_path="/home",
+        )
+        self._user_session_state[int(state.id)] = state
+        return state
+
     # --- Comparisons / Reports (caching) ------------------------------------
     def create_paper_comparison(
         self,
@@ -2883,8 +3017,767 @@ class InMemoryResearchRepository:
         self._workspace_documents[int(doc.id)] = doc
         return doc
 
+    # --- Workspace Files ----------------------------------------------------
+    def create_workspace_file(
+        self,
+        workspace_id: int,
+        user_id: int,
+        kind: str,
+        filename: str,
+        storage_bucket: str,
+        storage_path: str,
+        content_type: Optional[str] = None,
+        size_bytes: int = 0,
+        download_url: Optional[str] = None,
+        paper_id: Optional[int] = None,
+    ) -> WorkspaceFile:
+        record = WorkspaceFile(
+            id=self._next_id("workspace_file_id"),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            kind=kind,
+            filename=filename,
+            storage_bucket=storage_bucket,
+            storage_path=storage_path,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            download_url=download_url,
+            paper_id=paper_id,
+            created_at=_utcnow(),
+        )
+        self._workspace_files[int(record.id)] = record
+        return record
+
+    def list_workspace_files_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[WorkspaceFile]:
+        items = [
+            f for f in self._workspace_files.values()
+            if int(f.workspace_id) == int(workspace_id) and int(f.user_id) == int(user_id)
+        ]
+        items.sort(key=lambda f: f.created_at or _utcnow(), reverse=True)
+        return items
+
+    def get_workspace_file_for_user(
+        self, file_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]:
+        f = self._workspace_files.get(int(file_id))
+        if f and int(f.workspace_id) == int(workspace_id) and int(f.user_id) == int(user_id):
+            return f
+        return None
+
+    def get_workspace_file_for_paper(
+        self, paper_id: int, workspace_id: int, user_id: int
+    ) -> Optional[WorkspaceFile]:
+        items = [
+            f for f in self._workspace_files.values()
+            if int(f.paper_id or 0) == int(paper_id)
+            and int(f.workspace_id) == int(workspace_id)
+            and int(f.user_id) == int(user_id)
+        ]
+        items.sort(key=lambda f: f.created_at or _utcnow(), reverse=True)
+        if not items:
+            return None
+        return items[0]
+
+    # --- Data Rights Requests ------------------------------------------------
+    def create_data_rights_request(
+        self,
+        *,
+        user_id: Optional[int],
+        email: str,
+        request_type: str,
+        jurisdiction: Optional[str] = None,
+        details: Optional[str] = None,
+        status: str = "submitted",
+        resolved_at: Optional[datetime] = None,
+    ) -> DataRightsRequest:
+        row = DataRightsRequest(
+            id=self._next_id("data_rights_request_id"),
+            user_id=int(user_id) if user_id is not None else None,
+            email=_normalize_email_key(email),
+            request_type=request_type,
+            jurisdiction=jurisdiction,
+            details=details,
+            status=status,
+            submitted_at=_utcnow(),
+            resolved_at=resolved_at,
+        )
+        self._data_rights_requests[int(row.id)] = row
+        return row
+
+    def list_data_rights_requests_for_user(
+        self,
+        user_id: int,
+        *,
+        limit: Optional[int] = None,
+    ) -> list[DataRightsRequest]:
+        items = [
+            r for r in self._data_rights_requests.values()
+            if r.user_id is not None and int(r.user_id) == int(user_id)
+        ]
+        items.sort(key=lambda r: r.submitted_at or _utcnow(), reverse=True)
+        if limit is not None:
+            items = items[: max(0, int(limit))]
+        return items
+
+    # --- Job Operations ------------------------------------------------------
+    @staticmethod
+    def _same_claim_time(left: Optional[datetime], right: Optional[datetime]) -> bool:
+        if left is None and right is None:
+            return True
+        if left is None or right is None:
+            return False
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=timezone.utc)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=timezone.utc)
+        return abs((left - right).total_seconds()) < 0.001
+
+    @staticmethod
+    def _start_attempt_history(
+        history: Sequence[Dict[str, Any]] | None,
+        *,
+        started_at: datetime,
+        worker_id: str,
+    ) -> list[Dict[str, Any]]:
+        attempts = [dict(item) for item in (history or []) if isinstance(item, dict)]
+        attempts.append(
+            {
+                "started_at": started_at,
+                "ended_at": None,
+                "status": "running",
+                "worker_id": worker_id,
+            }
+        )
+        return attempts
+
+    @staticmethod
+    def _finish_attempt_history(
+        history: Sequence[Dict[str, Any]] | None,
+        *,
+        ended_at: datetime,
+        status: str,
+    ) -> list[Dict[str, Any]]:
+        attempts = [dict(item) for item in (history or []) if isinstance(item, dict)]
+        if not attempts:
+            attempts.append(
+                {
+                    "started_at": ended_at,
+                    "ended_at": ended_at,
+                    "status": status,
+                }
+            )
+            return attempts
+        attempts[-1]["ended_at"] = ended_at
+        attempts[-1]["status"] = status
+        return attempts
+
+    @staticmethod
+    def _compute_latency_ms(started_at: Optional[datetime], ended_at: datetime) -> Optional[int]:
+        if started_at is None:
+            return None
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        if ended_at.tzinfo is None:
+            ended_at = ended_at.replace(tzinfo=timezone.utc)
+        return max(0, int((ended_at - started_at).total_seconds() * 1000))
+
+    @staticmethod
+    def _paper_check_job_completion_sort_key(job: PaperCheckJob) -> datetime:
+        completed_at = job.processing_completed_at or job.updated_at or job.created_at
+        if completed_at.tzinfo is None:
+            return completed_at.replace(tzinfo=timezone.utc)
+        return completed_at.astimezone(timezone.utc)
+
+    def create_paper_check_job(
+        self,
+        *,
+        job_id: str,
+        user_id: int,
+        paper_id: Optional[int],
+        fingerprint: Optional[str] = None,
+        queue_partition: Optional[int] = None,
+        priority: str = "normal",
+        job_type: str = "fast",
+        input_data: Dict[str, Any],
+        status: str = "pending",
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        retryable: bool = False,
+        retry_count: int = 0,
+        max_retries: int = 2,
+        claimed_by: Optional[str] = None,
+        claimed_at: Optional[datetime] = None,
+        processing_started_at: Optional[datetime] = None,
+        processing_completed_at: Optional[datetime] = None,
+        latency_ms: Optional[int] = None,
+        attempt_history: Optional[List[Dict[str, Any]]] = None,
+    ) -> PaperCheckJob:
+        now = _utcnow()
+        record = PaperCheckJob(
+            job_id=str(job_id),
+            user_id=int(user_id),
+            paper_id=int(paper_id) if paper_id is not None else None,
+            fingerprint=str(fingerprint or "") or None,
+            queue_partition=(
+                max(0, int(queue_partition))
+                if queue_partition is not None
+                else None
+            ),
+            priority=_normalize_job_priority(priority),
+            job_type=_normalize_job_type(job_type),
+            status=_normalize_job_status(status or "pending"),
+            input_data=dict(input_data or {}),
+            result=result,
+            error=error,
+            retryable=bool(retryable),
+            retry_count=max(0, int(retry_count or 0)),
+            max_retries=max(0, int(2 if max_retries is None else max_retries)),
+            claimed_by=str(claimed_by or "") or None,
+            claimed_at=claimed_at,
+            processing_started_at=processing_started_at,
+            processing_completed_at=processing_completed_at,
+            latency_ms=max(0, int(latency_ms)) if latency_ms is not None else None,
+            attempt_history=[dict(item) for item in (attempt_history or []) if isinstance(item, dict)],
+            created_at=now,
+            updated_at=now,
+        )
+        self._paper_check_jobs[record.job_id] = record
+        return record
+
+    def get_paper_check_job(self, job_id: str) -> Optional[PaperCheckJob]:
+        return self._paper_check_jobs.get(str(job_id))
+
+    def find_latest_paper_check_job(
+        self,
+        paper_id: int,
+        user_id: int,
+    ) -> Optional[PaperCheckJob]:
+        jobs = [
+            j for j in self._paper_check_jobs.values()
+            if int(j.user_id) == int(user_id)
+            and j.paper_id is not None and int(j.paper_id) == int(paper_id)
+            and j.status == "completed"
+        ]
+        if not jobs:
+            return None
+        jobs.sort(key=self._paper_check_job_completion_sort_key, reverse=True)
+        return jobs[0]
+
+    def update_paper_check_job(
+        self,
+        job_id: str,
+        updates: Dict[str, Any],
+    ) -> Optional[PaperCheckJob]:
+        current = self.get_paper_check_job(job_id)
+        if current is None:
+            return None
+
+        for key, value in (updates or {}).items():
+            if key == "input_data":
+                current.input_data = dict(value or {})
+            elif key == "result":
+                current.result = value
+            elif key == "status":
+                if value is not None:
+                    normalized = _normalize_job_status(value)
+                    _validate_job_transition(current.status, normalized)
+                    current.status = normalized
+            elif key == "error":
+                current.error = value
+            elif key == "retryable":
+                current.retryable = bool(value)
+            elif key in {"retry_count", "max_retries"} and value is not None:
+                setattr(current, key, max(0, int(value)))
+            elif key == "claimed_by":
+                current.claimed_by = str(value or "") or None
+            elif key == "claimed_at":
+                current.claimed_at = value
+            elif key == "fingerprint":
+                current.fingerprint = str(value or "") or None
+            elif key == "queue_partition":
+                current.queue_partition = max(0, int(value)) if value is not None else None
+            elif key == "priority":
+                current.priority = _normalize_job_priority(value)
+            elif key == "job_type":
+                current.job_type = _normalize_job_type(value)
+            elif key in {"processing_started_at", "processing_completed_at"}:
+                setattr(current, key, value)
+            elif key == "latency_ms":
+                current.latency_ms = max(0, int(value)) if value is not None else None
+            elif key == "attempt_history":
+                current.attempt_history = [dict(item) for item in (value or []) if isinstance(item, dict)]
+
+        current.updated_at = _utcnow()
+        self._paper_check_jobs[current.job_id] = current
+        return current
+
+    def update_job_status(
+        self,
+        job_id: str,
+        updates: Dict[str, Any],
+    ) -> Optional[PaperCheckJob]:
+        return self.update_paper_check_job(job_id, updates)
+
+    def claim_next_job(self, worker_id: str) -> Optional[PaperCheckJob]:
+        worker_token = str(worker_id or "").strip()
+        if not worker_token:
+            raise ValueError("worker_id is required")
+
+        pending_jobs = [j for j in self._paper_check_jobs.values() if j.status == "pending"]
+        pending_jobs.sort(key=lambda j: j.created_at or _utcnow())
+
+        for job in pending_jobs:
+            now = _utcnow()
+            claimed = self.update_job_status(
+                job.job_id,
+                {
+                    "status": "running",
+                    "claimed_by": worker_token,
+                    "claimed_at": now,
+                    "processing_started_at": now,
+                    "processing_completed_at": None,
+                    "latency_ms": None,
+                    "attempt_history": self._start_attempt_history(
+                        job.attempt_history,
+                        started_at=now,
+                        worker_id=worker_token,
+                    ),
+                    "error": None,
+                    "retryable": False,
+                },
+            )
+            if claimed is not None and claimed.status == "running" and claimed.claimed_by == worker_token:
+                return claimed
+        return None
+
+    def get_stuck_jobs(self, timeout_seconds: int) -> list[PaperCheckJob]:
+        cutoff = _utcnow() - timedelta(seconds=max(1, int(timeout_seconds or 1)))
+        running_jobs = [j for j in self._paper_check_jobs.values() if j.status == "running"]
+        stale = []
+        for job in running_jobs:
+            claimed_at = job.claimed_at
+            if claimed_at is None:
+                stale.append(job)
+                continue
+            if claimed_at.tzinfo is None:
+                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+            if claimed_at < cutoff:
+                stale.append(job)
+        stale.sort(key=lambda j: j.claimed_at or j.updated_at or j.created_at or _utcnow())
+        return stale
+
+    def reset_job(self, job_id: str) -> Optional[PaperCheckJob]:
+        return self.update_job_status(
+            job_id,
+            {
+                "status": "pending",
+                "claimed_by": None,
+                "claimed_at": None,
+                "processing_started_at": None,
+                "processing_completed_at": None,
+                "latency_ms": None,
+                "retryable": False,
+                "result": None,
+            },
+        )
+
+    def requeue_paper_check_job(self, job_id: str) -> Optional[PaperCheckJob]:
+        current = self.get_paper_check_job(job_id)
+        if current is None:
+            return None
+        now = _utcnow()
+        return self.update_job_status(
+            job_id,
+            {
+                "status": "pending",
+                "claimed_by": None,
+                "claimed_at": None,
+                "processing_started_at": None,
+                "processing_completed_at": None,
+                "latency_ms": None,
+                "retryable": False,
+                "error": None,
+                "result": None,
+                "updated_at": now,
+            },
+        )
+
+    def claim_paper_check_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        stale_before: Optional[datetime] = None,
+    ) -> Optional[PaperCheckJob]:
+        worker_token = str(worker_id or "").strip()
+        if not worker_token:
+            raise ValueError("worker_id is required")
+
+        current = self.get_paper_check_job(job_id)
+        if current is None:
+            return None
+        if current.status in {"completed", "failed"}:
+            return current
+        updated_at = current.updated_at or current.claimed_at or current.created_at or _utcnow()
+        can_claim = current.status == "pending" or (
+            current.status == "running"
+            and stale_before is not None
+            and updated_at <= stale_before
+        )
+        if not can_claim:
+            return current
+        now = _utcnow()
+        return self.update_paper_check_job(
+            job_id,
+            {
+                "status": "running",
+                "claimed_by": worker_token,
+                "claimed_at": now,
+                "error": None,
+                "retryable": False,
+                "result": None,
+                "processing_started_at": now,
+                "processing_completed_at": None,
+                "latency_ms": None,
+                "attempt_history": self._start_attempt_history(
+                    current.attempt_history,
+                    started_at=now,
+                    worker_id=worker_token,
+                ),
+            },
+        )
+
+    def complete_paper_check_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: Optional[str],
+        claimed_at: Optional[datetime],
+        result: Dict[str, Any],
+    ) -> Optional[PaperCheckJob]:
+        current = self.get_paper_check_job(job_id)
+        if current is None:
+            return None
+        if current.status == "completed":
+            return current
+
+        worker_token = str(worker_id or "").strip() or None
+        if current.status != "running":
+            return current
+        if worker_token and current.claimed_by != worker_token:
+            return current
+        if claimed_at is not None and not self._same_claim_time(current.claimed_at, claimed_at):
+            return current
+        now = _utcnow()
+        return self.update_job_status(
+            job_id,
+            {
+                "status": "completed",
+                "result": result,
+                "error": None,
+                "retryable": False,
+                "processing_completed_at": now,
+                "latency_ms": self._compute_latency_ms(
+                    current.processing_started_at or current.claimed_at,
+                    now,
+                ),
+                "attempt_history": self._finish_attempt_history(
+                    current.attempt_history,
+                    ended_at=now,
+                    status="completed",
+                ),
+            },
+        )
+
+    def fail_or_requeue_paper_check_job(
+        self,
+        job_id: str,
+        *,
+        worker_id: Optional[str],
+        claimed_at: Optional[datetime],
+        error_message: str,
+        retryable: bool,
+    ) -> Optional[PaperCheckJob]:
+        current = self.get_paper_check_job(job_id)
+        if current is None:
+            return None
+
+        worker_token = str(worker_id or "").strip() or None
+        if current.status != "running":
+            return current
+        if worker_token and current.claimed_by != worker_token:
+            return current
+        if claimed_at is not None and not self._same_claim_time(current.claimed_at, claimed_at):
+            return current
+        
+        next_retry_count = current.retry_count + 1 if retryable else current.retry_count
+        should_retry = bool(retryable) and next_retry_count <= current.max_retries
+        now = _utcnow()
+        if should_retry:
+            return self.update_job_status(
+                job_id,
+                {
+                    "status": "pending",
+                    "error": str(error_message or "Paper check failed."),
+                    "retryable": True,
+                    "retry_count": next_retry_count,
+                    "claimed_by": None,
+                    "claimed_at": None,
+                    "processing_started_at": None,
+                    "processing_completed_at": None,
+                    "latency_ms": None,
+                    "attempt_history": self._finish_attempt_history(
+                        current.attempt_history,
+                        ended_at=now,
+                        status="retry_pending",
+                    ),
+                    "result": None,
+                },
+            )
+        return self.update_job_status(
+            job_id,
+            {
+                "status": "failed",
+                "error": str(error_message or "Paper check failed."),
+                "retryable": bool(retryable),
+                "retry_count": next_retry_count,
+                "claimed_by": None,
+                "claimed_at": None,
+                "processing_completed_at": now,
+                "latency_ms": self._compute_latency_ms(
+                    current.processing_started_at or current.claimed_at,
+                    now,
+                ),
+                "attempt_history": self._finish_attempt_history(
+                    current.attempt_history,
+                    ended_at=now,
+                    status="failed",
+                ),
+                "result": None,
+            },
+        )
+
+    def find_reusable_paper_check_job(
+        self,
+        *,
+        user_id: int,
+        fingerprint: str,
+    ) -> Optional[PaperCheckJob]:
+        target_fingerprint = str(fingerprint or "").strip()
+        if not target_fingerprint:
+            return None
+        rows = [
+            j for j in self._paper_check_jobs.values()
+            if int(j.user_id) == int(user_id)
+            and str(j.fingerprint or "") == target_fingerprint
+        ]
+        reusable = [row for row in rows if row.status in {"pending", "running", "completed"}]
+        if not reusable:
+            return None
+        completed = [row for row in reusable if row.status == "completed" and row.result]
+        if completed:
+            completed.sort(key=lambda row: row.processing_completed_at or row.updated_at or row.created_at, reverse=True)
+            return completed[0]
+        reusable.sort(key=lambda row: row.created_at or _utcnow(), reverse=True)
+        return reusable[0]
+
+    def count_active_jobs_for_user(self, user_id: int) -> int:
+        return sum(
+            1 for j in self._paper_check_jobs.values()
+            if int(j.user_id) == int(user_id) and j.status in {"pending", "running"}
+        )
+
+    def get_paper_check_job_metrics(self, timeout_seconds: int) -> Dict[str, Any]:
+        docs = list(self._paper_check_jobs.values())
+        total_jobs_created = len(docs)
+        jobs_completed = 0
+        jobs_failed = 0
+        jobs_pending = 0
+        jobs_running = 0
+        total_latency = 0
+        latency_samples = 0
+        retries_used = 0
+        deduped_completed = 0
+        pending_by_priority: Dict[str, int] = {"high": 0, "normal": 0, "low": 0}
+        pending_by_type: Dict[str, int] = {"fast": 0, "heavy": 0}
+        for job in docs:
+            status = job.status
+            if status == "completed":
+                jobs_completed += 1
+                if job.fingerprint:
+                    deduped_completed += 1
+            elif status == "failed":
+                jobs_failed += 1
+            elif status == "pending":
+                jobs_pending += 1
+                priority = _normalize_job_priority(job.priority)
+                pending_by_priority[priority] = int(pending_by_priority.get(priority, 0) + 1)
+                job_type = _normalize_job_type(job.job_type)
+                pending_by_type[job_type] = int(pending_by_type.get(job_type, 0) + 1)
+            elif status == "running":
+                jobs_running += 1
+            if job.latency_ms is not None:
+                total_latency += max(0, int(job.latency_ms or 0))
+                latency_samples += 1
+            retries_used += max(0, int(job.retry_count or 0))
+        retry_jobs = sum(1 for job in docs if max(0, int(job.retry_count or 0)) > 0)
+        avg_latency = round(total_latency / latency_samples, 2) if latency_samples > 0 else 0.0
+        retry_rate = round((retry_jobs / total_jobs_created), 4) if total_jobs_created > 0 else 0.0
+        return {
+            "total_jobs_created": total_jobs_created,
+            "jobs_completed": jobs_completed,
+            "jobs_failed": jobs_failed,
+            "jobs_pending": jobs_pending,
+            "jobs_running": jobs_running,
+            "avg_latency_ms": avg_latency,
+            "retry_rate": retry_rate,
+            "total_retries": retries_used,
+            "stuck_job_count": len(self.get_stuck_jobs(timeout_seconds)),
+            "completed_with_fingerprint": deduped_completed,
+            "pending_by_priority": pending_by_priority,
+            "pending_by_type": pending_by_type,
+        }
+
+    def list_pending_jobs_for_dispatch(
+        self,
+        *,
+        older_than_seconds: int,
+        queue_partition: Optional[int] = None,
+        job_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[PaperCheckJob]:
+        cutoff = _utcnow() - timedelta(seconds=max(0, int(older_than_seconds or 0)))
+        target_partition = max(0, int(queue_partition)) if queue_partition is not None else None
+        target_job_type = _normalize_job_type(job_type) if job_type is not None else None
+
+        filtered = []
+        for job in self._paper_check_jobs.values():
+            if job.status != "pending":
+                continue
+            if target_partition is not None and int(job.queue_partition or -1) != target_partition:
+                continue
+            if target_job_type is not None and _normalize_job_type(job.job_type) != target_job_type:
+                continue
+            updated_at = job.updated_at or job.created_at or _utcnow()
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if updated_at <= cutoff:
+                filtered.append(job)
+
+        filtered.sort(
+            key=lambda j: (
+                -_JOB_PRIORITY_ORDER[_normalize_job_priority(j.priority)],
+                j.updated_at or j.created_at or _utcnow(),
+            )
+        )
+        if limit is not None:
+            filtered = filtered[: max(0, int(limit))]
+        return filtered
+
+    def count_jobs_by_status(
+        self,
+        *,
+        statuses: Sequence[str],
+        queue_partition: Optional[int] = None,
+        job_type: Optional[str] = None,
+    ) -> int:
+        target_statuses = {_normalize_job_status(value) for value in statuses if value}
+        if not target_statuses:
+            return 0
+        target_partition = max(0, int(queue_partition)) if queue_partition is not None else None
+        target_job_type = _normalize_job_type(job_type) if job_type is not None else None
+        count = 0
+        for job in self._paper_check_jobs.values():
+            status = _normalize_job_status(job.status or "pending")
+            if status not in target_statuses:
+                continue
+            if target_partition is not None and int(job.queue_partition or -1) != target_partition:
+                continue
+            if target_job_type is not None and _normalize_job_type(job.job_type) != target_job_type:
+                continue
+            count += 1
+        return count
+
+    def list_user_jobs(
+        self, user_id: int, *, limit: Optional[int] = None
+    ) -> list[PaperCheckJob]:
+        items = [j for j in self._paper_check_jobs.values() if int(j.user_id) == int(user_id)]
+        items.sort(key=lambda j: j.created_at or _utcnow(), reverse=True)
+        if limit is not None:
+            items = items[: max(0, int(limit))]
+        return items
+
+    # --- System Counts & Deletion --------------------------------------------
+    def count_users(self) -> int:
+        return len(self._users)
+
+    def count_workspaces(self) -> int:
+        return len(self._workspaces)
+
+    def count_papers(self) -> int:
+        return len(self._papers)
+
+    def count_chats(self) -> int:
+        return len(self._chats)
+
+    def count_documents_for_user(self, user_id: int) -> int:
+        return len(self.list_workspace_documents_for_user(user_id))
+
+    def delete_user_account(self, user_id: int) -> None:
+        user_id = int(user_id)
+        for workspace in self.list_workspaces_for_user(user_id):
+            self.delete_workspace_graph(workspace.id)
+        
+        docs_to_del = [did for did, doc in self._workspace_documents.items() if int(doc.user_id) == user_id]
+        for did in docs_to_del:
+            self._workspace_documents.pop(did, None)
+
+        files_to_del = [fid for fid, f in self._workspace_files.items() if int(f.user_id) == user_id]
+        for fid in files_to_del:
+            self._workspace_files.pop(fid, None)
+
+        jobs_to_del = [jid for jid, j in self._paper_check_jobs.items() if int(j.user_id) == user_id]
+        for jid in jobs_to_del:
+            self._paper_check_jobs.pop(jid, None)
+
+        search_to_del = [sid for sid, s in self._search_history.items() if int(s.user_id) == user_id]
+        for sid in search_to_del:
+            self._search_history.pop(sid, None)
+
+        rights_to_del = [rid for rid, r in self._data_rights_requests.items() if r.user_id is not None and int(r.user_id) == user_id]
+        for rid in rights_to_del:
+            self._data_rights_requests.pop(rid, None)
+
+        state = self.get_session_state_for_user(user_id)
+        if state and state.id is not None:
+            self._user_session_state.pop(int(state.id), None)
+            
+        self._users.pop(user_id, None)
+
+    def delete_workspace_graph(self, workspace_id: int) -> None:
+        workspace_id = int(workspace_id)
+        papers_to_del = [pid for pid, p in self._papers.items() if int(p.workspace_id) == workspace_id]
+        for pid in papers_to_del:
+            self._papers.pop(pid, None)
+
+        chats_to_del = [cid for cid, c in self._chats.items() if int(c.workspace_id) == workspace_id]
+        for cid in chats_to_del:
+            self._chats.pop(cid, None)
+
+        docs_to_del = [did for did, d in self._workspace_documents.items() if int(d.workspace_id) == workspace_id]
+        for did in docs_to_del:
+            self._workspace_documents.pop(did, None)
+
+        files_to_del = [fid for fid, f in self._workspace_files.items() if int(f.workspace_id) == workspace_id]
+        for fid in files_to_del:
+            self._workspace_files.pop(fid, None)
+
+        self._workspaces.pop(workspace_id, None)
+
+    # --- Save ----------------------------------------------------------------
     def save(self, instance: object) -> object:
-        # Keep save conservative; only support document/user/session updates used by UI.
         if isinstance(instance, User):
             resolved_user_id = _coerce_int(getattr(instance, "id", None), 0)
             if resolved_user_id <= 0:
@@ -2916,7 +3809,36 @@ class InMemoryResearchRepository:
             self._user_session_state[int(instance.id)] = instance
             return instance
         if isinstance(instance, WorkspaceDocument) and instance.id is not None:
+            instance.updated_at = _utcnow()
             self._workspace_documents[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, Paper) and instance.id is not None:
+            self._papers[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, Workspace) and instance.id is not None:
+            self._workspaces[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, Chat) and instance.id is not None:
+            self._chats[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, SearchHistory) and instance.id is not None:
+            self._search_history[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, WorkspaceFile) and instance.id is not None:
+            self._workspace_files[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, DataRightsRequest) and instance.id is not None:
+            self._data_rights_requests[int(instance.id)] = instance
+            return instance
+        if isinstance(instance, PaperCheckJob) and instance.job_id is not None:
+            instance.updated_at = _utcnow()
+            self._paper_check_jobs[instance.job_id] = instance
+            return instance
+        if isinstance(instance, PaperComparison) and instance.id is not None:
+            self._paper_comparisons[instance.id] = instance
+            return instance
+        if isinstance(instance, ResearchReport) and instance.id is not None:
+            self._research_reports[instance.id] = instance
             return instance
         return instance
 

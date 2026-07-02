@@ -627,13 +627,25 @@ def _cookie_secure(request: Request) -> bool:
 def _set_auth_cookies(
     response: Response, request: Request, access_token: str, refresh_token: str
 ) -> None:
+    forwarded = (
+        str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    )
+    is_secure_request = request.url.scheme == "https" or forwarded == "https"
+
+    if is_secure_request:
+        samesite = COOKIE_SAMESITE
+        secure = _cookie_secure(request)
+    else:
+        samesite = "lax"
+        secure = False
+
     response.set_cookie(
         ACCESS_TOKEN_COOKIE_NAME,
         access_token,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         httponly=True,
-        secure=_cookie_secure(request),
-        samesite=COOKIE_SAMESITE,
+        secure=secure,
+        samesite=samesite,
         domain=COOKIE_DOMAIN,
         path="/",
     )
@@ -642,27 +654,39 @@ def _set_auth_cookies(
         refresh_token,
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         httponly=True,
-        secure=_cookie_secure(request),
-        samesite=COOKIE_SAMESITE,
+        secure=secure,
+        samesite=samesite,
         domain=COOKIE_DOMAIN,
         path="/",
     )
 
 
 def _clear_auth_cookies(response: Response, request: Request) -> None:
+    forwarded = (
+        str(request.headers.get("x-forwarded-proto", "")).split(",")[0].strip().lower()
+    )
+    is_secure_request = request.url.scheme == "https" or forwarded == "https"
+
+    if is_secure_request:
+        samesite = COOKIE_SAMESITE
+        secure = _cookie_secure(request)
+    else:
+        samesite = "lax"
+        secure = False
+
     response.delete_cookie(
         ACCESS_TOKEN_COOKIE_NAME,
         path="/",
         domain=COOKIE_DOMAIN,
-        secure=_cookie_secure(request),
-        samesite=COOKIE_SAMESITE,
+        secure=secure,
+        samesite=samesite,
     )
     response.delete_cookie(
         REFRESH_TOKEN_COOKIE_NAME,
         path="/",
         domain=COOKIE_DOMAIN,
-        secure=_cookie_secure(request),
-        samesite=COOKIE_SAMESITE,
+        secure=secure,
+        samesite=samesite,
     )
 
 
