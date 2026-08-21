@@ -23,22 +23,30 @@ logger = logging.getLogger(__name__)
 
 def firebase_admin_is_configured() -> bool:
     if os.getenv("FIRESTORE_EMULATOR_HOST"):
+        logger.info("Firebase Admin configured: FIRESTORE_EMULATOR_HOST is set")
         return True
 
     project_id = (os.getenv("FIREBASE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    logger.info(f"Firebase Admin check: project_id={project_id}")
     if not project_id:
+        logger.warning("Firebase Admin not configured: no project_id")
         return False
 
-    if load_service_account_info_from_env():
+    service_account = load_service_account_info_from_env()
+    logger.info(f"Firebase Admin check: service_account loaded={service_account is not None}")
+    if service_account:
         return True
 
     cert_path = _normalize_windows_env_path(
         os.getenv("FIREBASE_CREDENTIALS_PATH")
     ) or _normalize_windows_env_path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    logger.info(f"Firebase Admin check: cert_path={cert_path}, exists={cert_path and os.path.isfile(cert_path) if cert_path else False}")
     if cert_path and os.path.isfile(cert_path):
         return True
 
-    return str(os.getenv("FIREBASE_ALLOW_ADC") or "").strip().lower() in {"1", "true", "yes"}
+    allow_adc = str(os.getenv("FIREBASE_ALLOW_ADC") or "").strip().lower() in {"1", "true", "yes"}
+    logger.info(f"Firebase Admin check: allow_adc={allow_adc}")
+    return allow_adc
 
 
 def _make_emulator_credential():

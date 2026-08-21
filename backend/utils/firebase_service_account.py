@@ -158,8 +158,10 @@ def load_service_account_info_from_env() -> Optional[Dict[str, Any]]:
         os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64") or "",
         "FIREBASE_SERVICE_ACCOUNT_JSON_BASE64",
     )
+    logger.info(f"Service account: FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 length={len(encoded)}")
     if encoded:
         resolved = _load_service_account_json_base64(encoded)
+        logger.info(f"Service account: base64 resolved={resolved is not None}")
         if resolved is not None:
             return resolved
 
@@ -167,11 +169,15 @@ def load_service_account_info_from_env() -> Optional[Dict[str, Any]]:
         os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "",
         "FIREBASE_SERVICE_ACCOUNT_JSON",
     )
+    logger.info(f"Service account: FIREBASE_SERVICE_ACCOUNT_JSON length={len(raw_json)}")
     if raw_json:
         resolved = _load_service_account_json(
             raw_json, source_name="FIREBASE_SERVICE_ACCOUNT_JSON"
         )
+        logger.info(f"Service account: json resolved={resolved is not None}")
         if resolved is not None:
             return resolved
 
-    return _load_split_service_account_env()
+    resolved = _load_split_service_account_env()
+    logger.info(f"Service account: split fields resolved={resolved is not None}")
+    return resolved
