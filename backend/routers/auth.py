@@ -1397,13 +1397,17 @@ async def firebase_session_exchange(
     response: Response,
     repo: ResearchRepository = Depends(get_research_repository),
 ):
+    logging.info("Firebase session exchange attempt")
     if not firebase_admin_is_configured():
+        logging.error("Firebase Admin not configured")
         raise HTTPException(
             status_code=503, detail="Firebase Authentication is not configured"
         )
 
     try:
+        logging.info("Attempting to verify Firebase ID token")
         decoded = verify_firebase_id_token(payload.id_token)
+        logging.info("Firebase ID token verified successfully")
     except RuntimeError as exc:
         logging.exception("Firebase Admin credential/configuration error")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
