@@ -29,3 +29,8 @@ dist/
 frontend/playwright-report/
 frontend/test-results/
 frontend/.playwright/
+
+# Logs
+*.log
+firebase-debug.log
+ui-debug.log
