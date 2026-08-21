@@ -102,8 +102,8 @@ def _as_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-DECOMMISSIONED_GROQ_MODELS = {"deepseek-r1-distill-llama-70b"}
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
+DECOMMISSIONED_GROQ_MODELS = {"deepseek-r1-distill-llama-70b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"}
 
 
 def _normalize_model_name(raw_value: Optional[str], fallback: str) -> str:
@@ -154,10 +154,12 @@ TASK_MODEL_ENV_MAP: Dict[str, str] = {
 LONGFORM_TASKS = {"mindmap", "pipeline"}
 
 _DEFAULT_ALLOWED_MODELS: List[str] = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-safeguard-20b",
+    "groq/compound",
+    "groq/compound-mini",
+    "qwen/qwen3.6-27b",
 ]
 
 

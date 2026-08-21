@@ -83,6 +83,15 @@ _JOB_ALLOWED_TRANSITIONS: Dict[str, set[str]] = {
 _JOB_PRIORITY_ORDER: Dict[str, int] = {"high": 3, "normal": 2, "low": 1}
 _JOB_TYPE_VALUES = {"fast", "heavy"}
 
+# Research Intelligence Artifact status
+_ARTIFACT_STATUS_VALUES = {"running", "completed", "partial", "failed"}
+_ARTIFACT_STATUS_TRANSITIONS: Dict[str, set[str]] = {
+    "running": {"completed", "partial", "failed"},
+    "completed": set(),
+    "partial": set(),
+    "failed": set(),
+}
+
 
 def _normalize_job_status(raw_status: Any) -> str:
     status = str(raw_status or "").strip().lower()
@@ -112,6 +121,22 @@ def _normalize_job_type(raw_job_type: Any) -> str:
     if job_type not in _JOB_TYPE_VALUES:
         return "fast"
     return job_type
+
+
+def _normalize_artifact_status(raw_status: Any) -> str:
+    status = str(raw_status or "running").strip().lower()
+    if status not in _ARTIFACT_STATUS_VALUES:
+        raise ValueError(f"Invalid artifact status: {raw_status!r}")
+    return status
+
+
+def _validate_artifact_status_transition(current_status: str, next_status: str) -> None:
+    current = _normalize_artifact_status(current_status)
+    target = _normalize_artifact_status(next_status)
+    if current == target:
+        return
+    if target not in _ARTIFACT_STATUS_TRANSITIONS[current]:
+        raise ValueError(f"Invalid artifact status transition: {current} -> {target}")
 
 
 @dataclass
@@ -280,7 +305,146 @@ class ResearchReport:
     topic: Optional[str] = None
     fingerprint: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
+    intelligence_artifact_id: Optional[str] = None
+    workspace_id: Optional[int] = None
     created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class EvidenceRecord:
+    id: str
+    workspace_id: int
+    claim: str
+    supporting_paper_ids: List[int]
+    contradicting_paper_ids: List[int]
+    neutral_paper_ids: List[int]
+    evidence_strength: int  # 0-100
+    source_quality: int  # 0-100
+    recency_score: int  # 0-100
+    replication_signal: int  # 0-100
+    confidence: str  # "high" | "medium" | "low"
+    evidence_type: str  # "observed" | "inferred" | "ai_generated"
+    created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class StructuredGap:
+    category: str  # methodological, dataset, evaluation, etc.
+    description: str
+    confidence: int  # 0-100
+    evidence_count: int
+    novelty_potential: int  # 0-100
+    research_impact: int  # 0-100
+    feasibility: int  # 0-100
+    recency: int  # 0-100
+    supporting_papers: List[int]
+    counter_evidence: List[int]
+    affected_papers: List[int]
+    explanation: str
+
+
+@dataclass
+class ResearchOpportunity:
+    gap_id: str
+    gap_description: str
+    category: str
+    evidence_strength: int  # 0-100
+    novelty: int  # 0-100
+    impact: int  # 0-100
+    feasibility: int  # 0-100
+    recency: int  # 0-100
+    overall_score: int  # 0-100
+    rank: int
+    explanation: str
+    supporting_papers: List[int]
+    affected_papers: List[int]
+
+
+@dataclass
+class ResearchIntelligenceArtifact:
+    id: str
+    workspace_id: int
+    user_id: int
+    topic: str
+    paper_ids: List[int]
+    paper_count: int
+    status: str  # "running" | "completed" | "partial" | "failed"
+    pipeline_version: str
+    created_at: datetime
+    updated_at: datetime
+    evidence_analysis: Optional[Dict[str, Any]] = None
+    gap_analysis: Optional[Dict[str, Any]] = None
+    opportunity_ranking: Optional[Dict[str, Any]] = None
+    research_questions: Optional[Dict[str, Any]] = None
+    hypothesis_challenges: Optional[Dict[str, Any]] = None
+    citation_verification: Optional[Dict[str, Any]] = None
+    knowledge_graph: Optional[Dict[str, Any]] = None
+    overall_score: Optional[int] = None
+    summary: Optional[str] = None
+    stage_errors: Optional[Dict[str, str]] = None
+
+
+@dataclass
+class SavedResearchQuestion:
+    id: str
+    workspace_id: int
+    user_id: int
+    question: str
+    category: str  # exploratory, confirmatory, comparative, causal
+    complexity: str  # simple, moderate, complex
+    confidence: int  # 0-100
+    novelty: int  # 0-100
+    feasibility: int  # 0-100
+    impact: int  # 0-100
+    source_gap_id: Optional[str] = None
+    source_gap_description: Optional[str] = None
+    supporting_papers: List[int] = field(default_factory=list)
+    rationale: Optional[str] = None
+    source_artifact_id: Optional[str] = None
+    created_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class ResearcherDecision:
+    """Tracks researcher decisions on AI-generated plan fields."""
+    field_name: str
+    ai_suggestion: str
+    researcher_decision: str  # "ACCEPT" | "MODIFY" | "REJECT"
+    final_value: str
+    decision_timestamp: datetime = field(default_factory=_utcnow)
+    evidence_references: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchPlan:
+    """Persistent research plan generated from a research opportunity."""
+    id: str
+    workspace_id: int
+    user_id: int
+    artifact_id: str
+    opportunity_id: str
+    opportunity_description: str
+    title: str
+    research_problem: str
+    research_question: str
+    hypothesis: str
+    objectives: str
+    proposed_methodology: str
+    alternative_methodology: str
+    datasets: str
+    variables: str
+    baselines: str
+    evaluation_metrics: str
+    expected_contribution: str
+    risks: str
+    limitations: str
+    reproducibility_requirements: str
+    supporting_papers: List[int] = field(default_factory=list)
+    evidence_references: List[str] = field(default_factory=list)
+    researcher_decisions: List[ResearcherDecision] = field(default_factory=list)
+    status: str = "draft"  # "draft" | "review" | "final" | "archived"
+    created_at: datetime = field(default_factory=_utcnow)
+    updated_at: datetime = field(default_factory=_utcnow)
 
 
 class ResearchRepository(Protocol):
@@ -512,6 +676,83 @@ class ResearchRepository(Protocol):
     ) -> ResearchReport: ...
     def get_research_report(self, report_id: str) -> Optional[ResearchReport]: ...
     def find_research_report_by_fingerprint(self, fingerprint: str) -> Optional[ResearchReport]: ...
+    def create_research_intelligence_artifact(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        topic: str,
+        paper_ids: List[int],
+        status: str = "running",
+        pipeline_version: str = "1.0",
+    ) -> ResearchIntelligenceArtifact: ...
+    def get_research_intelligence_artifact(self, artifact_id: str) -> Optional[ResearchIntelligenceArtifact]: ...
+    def list_research_intelligence_artifacts_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchIntelligenceArtifact]: ...
+    def update_research_intelligence_artifact(
+        self, artifact_id: str, updates: Dict[str, Any]
+    ) -> Optional[ResearchIntelligenceArtifact]: ...
+    def delete_research_intelligence_artifact(self, artifact_id: str) -> bool: ...
+    def create_saved_research_question(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        question: str,
+        category: str,
+        complexity: str,
+        confidence: int,
+        novelty: int,
+        feasibility: int,
+        impact: int,
+        source_gap_id: Optional[str] = None,
+        source_gap_description: Optional[str] = None,
+        supporting_papers: List[int] = [],
+        rationale: Optional[str] = None,
+        source_artifact_id: Optional[str] = None,
+    ) -> SavedResearchQuestion: ...
+    def get_saved_research_question(self, question_id: str) -> Optional[SavedResearchQuestion]: ...
+    def list_saved_research_questions_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[SavedResearchQuestion]: ...
+    def delete_saved_research_question(self, question_id: str) -> bool: ...
+    def create_research_plan(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        artifact_id: str,
+        opportunity_id: str,
+        opportunity_description: str,
+        title: str,
+        research_problem: str,
+        research_question: str,
+        hypothesis: str,
+        objectives: str,
+        proposed_methodology: str,
+        alternative_methodology: str,
+        datasets: str,
+        variables: str,
+        baselines: str,
+        evaluation_metrics: str,
+        expected_contribution: str,
+        risks: str,
+        limitations: str,
+        reproducibility_requirements: str,
+        supporting_papers: List[int] = [],
+        evidence_references: List[str] = [],
+        status: str = "draft",
+    ) -> ResearchPlan: ...
+    def get_research_plan(self, plan_id: str) -> Optional[ResearchPlan]: ...
+    def list_research_plans_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchPlan]: ...
+    def update_research_plan(self, plan_id: str, updates: Dict[str, Any]) -> Optional[ResearchPlan]: ...
+    def delete_research_plan(self, plan_id: str) -> bool: ...
 
     def list_pending_jobs_for_dispatch(
         self,
@@ -571,6 +812,9 @@ class FirebaseResearchRepository:
         self.paper_check_jobs = self.db.collection("paper_check_jobs")
         self.paper_comparisons = self.db.collection("paper_comparisons")
         self.research_reports = self.db.collection("research_reports")
+        self.research_intelligence_artifacts = self.db.collection("research_intelligence_artifacts")
+        self.saved_research_questions = self.db.collection("saved_research_questions")
+        self.research_plans = self.db.collection("research_plans")
         self.data_rights_requests = self.db.collection("data_rights_requests")
         self.counters = self.db.collection("_counters")
 
@@ -767,6 +1011,94 @@ class FirebaseResearchRepository:
             status=str(doc.get("status") or "submitted"),
             submitted_at=doc.get("submitted_at") or _utcnow(),
             resolved_at=doc.get("resolved_at"),
+        )
+
+    @staticmethod
+    def _research_intelligence_artifact_from_doc(doc: Dict[str, Any]) -> ResearchIntelligenceArtifact:
+        return ResearchIntelligenceArtifact(
+            id=str(doc.get("id") or ""),
+            workspace_id=int(doc.get("workspace_id") or 0),
+            user_id=int(doc.get("user_id") or 0),
+            topic=str(doc.get("topic") or ""),
+            paper_ids=[int(pid) for pid in (doc.get("paper_ids") or [])],
+            paper_count=int(doc.get("paper_count") or 0),
+            status=_normalize_artifact_status(doc.get("status")),
+            pipeline_version=str(doc.get("pipeline_version") or "1.0"),
+            created_at=doc.get("created_at") or _utcnow(),
+            updated_at=doc.get("updated_at") or _utcnow(),
+            evidence_analysis=doc.get("evidence_analysis"),
+            gap_analysis=doc.get("gap_analysis"),
+            opportunity_ranking=doc.get("opportunity_ranking"),
+            research_questions=doc.get("research_questions"),
+            hypothesis_challenges=doc.get("hypothesis_challenges"),
+            citation_verification=doc.get("citation_verification"),
+            knowledge_graph=doc.get("knowledge_graph"),
+            overall_score=int(doc.get("overall_score")) if doc.get("overall_score") is not None else None,
+            summary=doc.get("summary"),
+            stage_errors=doc.get("stage_errors"),
+        )
+
+    @staticmethod
+    def _saved_research_question_from_doc(doc: Dict[str, Any]) -> SavedResearchQuestion:
+        return SavedResearchQuestion(
+            id=str(doc.get("id") or ""),
+            workspace_id=int(doc.get("workspace_id") or 0),
+            user_id=int(doc.get("user_id") or 0),
+            question=str(doc.get("question") or ""),
+            category=str(doc.get("category") or ""),
+            complexity=str(doc.get("complexity") or ""),
+            confidence=max(0, min(100, int(doc.get("confidence") or 0))),
+            novelty=max(0, min(100, int(doc.get("novelty") or 0))),
+            feasibility=max(0, min(100, int(doc.get("feasibility") or 0))),
+            impact=max(0, min(100, int(doc.get("impact") or 0))),
+            source_gap_id=doc.get("source_gap_id"),
+            source_gap_description=doc.get("source_gap_description"),
+            supporting_papers=[int(pid) for pid in (doc.get("supporting_papers") or [])],
+            rationale=doc.get("rationale"),
+            source_artifact_id=doc.get("source_artifact_id"),
+            created_at=doc.get("created_at") or _utcnow(),
+        )
+
+    @staticmethod
+    def _research_plan_from_doc(doc: Dict[str, Any]) -> ResearchPlan:
+        return ResearchPlan(
+            id=str(doc.get("id") or ""),
+            workspace_id=int(doc.get("workspace_id") or 0),
+            user_id=int(doc.get("user_id") or 0),
+            artifact_id=str(doc.get("artifact_id") or ""),
+            opportunity_id=str(doc.get("opportunity_id") or ""),
+            opportunity_description=str(doc.get("opportunity_description") or ""),
+            title=str(doc.get("title") or ""),
+            research_problem=str(doc.get("research_problem") or ""),
+            research_question=str(doc.get("research_question") or ""),
+            hypothesis=str(doc.get("hypothesis") or ""),
+            objectives=str(doc.get("objectives") or ""),
+            proposed_methodology=str(doc.get("proposed_methodology") or ""),
+            alternative_methodology=str(doc.get("alternative_methodology") or ""),
+            datasets=str(doc.get("datasets") or ""),
+            variables=str(doc.get("variables") or ""),
+            baselines=str(doc.get("baselines") or ""),
+            evaluation_metrics=str(doc.get("evaluation_metrics") or ""),
+            expected_contribution=str(doc.get("expected_contribution") or ""),
+            risks=str(doc.get("risks") or ""),
+            limitations=str(doc.get("limitations") or ""),
+            reproducibility_requirements=str(doc.get("reproducibility_requirements") or ""),
+            supporting_papers=[int(pid) for pid in (doc.get("supporting_papers") or [])],
+            evidence_references=[str(ref) for ref in (doc.get("evidence_references") or [])],
+            researcher_decisions=[
+                ResearcherDecision(
+                    field_name=dec.get("field_name", ""),
+                    ai_suggestion=dec.get("ai_suggestion", ""),
+                    researcher_decision=dec.get("researcher_decision", ""),
+                    final_value=dec.get("final_value", ""),
+                    decision_timestamp=dec.get("decision_timestamp") or _utcnow(),
+                    evidence_references=dec.get("evidence_references") or [],
+                )
+                for dec in (doc.get("researcher_decisions") or [])
+            ],
+            status=str(doc.get("status") or "draft"),
+            created_at=doc.get("created_at") or _utcnow(),
+            updated_at=doc.get("updated_at") or _utcnow(),
         )
 
     def get_user_by_id(self, user_id: int) -> Optional[User]:
@@ -1686,17 +2018,433 @@ class FirebaseResearchRepository:
         return self._paper_comparison_from_doc(snapshot.to_dict() or {})
 
     def find_paper_comparison_by_fingerprint(self, fingerprint: str) -> Optional[PaperComparison]:
-        if not filter:
-            for snapshot in self.paper_comparisons.where(
-                filter=FieldFilter("fingerprint", "==", str(fingerprint))
-            ).limit(1).stream():
-                return self._paper_comparison_from_doc(snapshot.to_dict() or {})
+        if firestore is None:
             return None
-        filter_obj = FieldFilter("fingerprint", "==", str(fingerprint))
-        query = self.paper_comparisons.where(filter=filter_obj).limit(1)
-        for snapshot in query.stream():
+        for snapshot in self.paper_comparisons.where(
+            filter=FieldFilter("fingerprint", "==", str(fingerprint))
+        ).limit(1).stream():
             return self._paper_comparison_from_doc(snapshot.to_dict() or {})
         return None
+
+    def create_research_report(
+        self,
+        *,
+        id: str,
+        user_id: int,
+        paper_ids: List[int],
+        topic: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> ResearchReport:
+        now = _utcnow()
+        record = ResearchReport(
+            id=str(id),
+            user_id=int(user_id),
+            paper_ids=[int(pid) for pid in paper_ids],
+            topic=topic,
+            fingerprint=fingerprint,
+            result=result,
+            created_at=now,
+        )
+        self.research_reports.document(record.id).set(
+            {
+                "id": record.id,
+                "user_id": record.user_id,
+                "paper_ids": record.paper_ids,
+                "topic": record.topic,
+                "fingerprint": record.fingerprint,
+                "result": record.result,
+                "created_at": record.created_at,
+            }
+        )
+        return record
+
+    def get_research_report(self, report_id: str) -> Optional[ResearchReport]:
+        snapshot = self.research_reports.document(str(report_id)).get()
+        if not snapshot.exists:
+            return None
+        doc = snapshot.to_dict() or {}
+        return ResearchReport(
+            id=str(doc.get("id") or ""),
+            user_id=int(doc.get("user_id") or 0),
+            paper_ids=[int(pid) for pid in (doc.get("paper_ids") or [])],
+            topic=doc.get("topic"),
+            fingerprint=doc.get("fingerprint"),
+            result=doc.get("result"),
+            created_at=doc.get("created_at") or _utcnow(),
+        )
+
+    def find_research_report_by_fingerprint(self, fingerprint: str) -> Optional[ResearchReport]:
+        if firestore is None:
+            return None
+        for snapshot in self.research_reports.where(
+            filter=FieldFilter("fingerprint", "==", str(fingerprint))
+        ).limit(1).stream():
+            doc = snapshot.to_dict() or {}
+            return ResearchReport(
+                id=str(doc.get("id") or ""),
+                user_id=int(doc.get("user_id") or 0),
+                paper_ids=[int(pid) for pid in (doc.get("paper_ids") or [])],
+                topic=doc.get("topic"),
+                fingerprint=doc.get("fingerprint"),
+                result=doc.get("result"),
+                created_at=doc.get("created_at") or _utcnow(),
+            )
+        return None
+
+    def create_research_intelligence_artifact(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        topic: str,
+        paper_ids: List[int],
+        status: str = "running",
+        pipeline_version: str = "1.0",
+    ) -> ResearchIntelligenceArtifact:
+        now = _utcnow()
+        record = ResearchIntelligenceArtifact(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            topic=str(topic),
+            paper_ids=[int(pid) for pid in paper_ids],
+            paper_count=len(paper_ids),
+            status=_normalize_artifact_status(status),
+            pipeline_version=str(pipeline_version),
+            created_at=now,
+            updated_at=now,
+        )
+        self.research_intelligence_artifacts.document(record.id).set(
+            {
+                "id": record.id,
+                "workspace_id": record.workspace_id,
+                "user_id": record.user_id,
+                "topic": record.topic,
+                "paper_ids": record.paper_ids,
+                "paper_count": record.paper_count,
+                "status": record.status,
+                "pipeline_version": record.pipeline_version,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+            }
+        )
+        return record
+
+    def get_research_intelligence_artifact(self, artifact_id: str) -> Optional[ResearchIntelligenceArtifact]:
+        snapshot = self.research_intelligence_artifacts.document(str(artifact_id)).get()
+        if not snapshot.exists:
+            return None
+        return self._research_intelligence_artifact_from_doc(snapshot.to_dict() or {})
+
+    def list_research_intelligence_artifacts_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchIntelligenceArtifact]:
+        # Verify workspace ownership
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        
+        docs = [
+            snapshot.to_dict() or {}
+            for snapshot in self.research_intelligence_artifacts.where(
+                filter=FieldFilter("workspace_id", "==", workspace_id)
+            ).stream()
+        ]
+        docs.sort(key=lambda doc: doc.get("updated_at") or _utcnow(), reverse=True)
+        return [self._research_intelligence_artifact_from_doc(doc) for doc in docs]
+
+    def update_research_intelligence_artifact(
+        self, artifact_id: str, updates: Dict[str, Any]
+    ) -> Optional[ResearchIntelligenceArtifact]:
+        current = self.get_research_intelligence_artifact(artifact_id)
+        if not current:
+            return None
+        
+        # Validate status transition if present
+        if "status" in updates:
+            _validate_artifact_status_transition(current.status, str(updates["status"]))
+        
+        # Build payload with allowed fields
+        payload = {}
+        for key, value in updates.items():
+            if key in {
+                "status", "evidence_analysis", "gap_analysis", "opportunity_ranking",
+                "research_questions", "hypothesis_challenges", "citation_verification",
+                "knowledge_graph", "overall_score", "summary", "stage_errors"
+            }:
+                payload[key] = value
+            elif key == "paper_ids":
+                payload[key] = [int(pid) for pid in value]
+            elif key == "paper_count":
+                payload[key] = int(value)
+        
+        payload["updated_at"] = _utcnow()
+        self.research_intelligence_artifacts.document(str(artifact_id)).set(payload, merge=True)
+        return self.get_research_intelligence_artifact(artifact_id)
+
+    def delete_research_intelligence_artifact(self, artifact_id: str) -> bool:
+        snapshot = self.research_intelligence_artifacts.document(str(artifact_id)).get()
+        if not snapshot.exists:
+            return False
+        snapshot.reference.delete()
+        return True
+
+    # --- Saved Research Questions ---------------------------------------------
+    def create_saved_research_question(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        question: str,
+        category: str,
+        complexity: str,
+        confidence: int,
+        novelty: int,
+        feasibility: int,
+        impact: int,
+        source_gap_id: Optional[str] = None,
+        source_gap_description: Optional[str] = None,
+        supporting_papers: List[int] = [],
+        rationale: Optional[str] = None,
+        source_artifact_id: Optional[str] = None,
+    ) -> SavedResearchQuestion:
+        now = _utcnow()
+        record = SavedResearchQuestion(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            question=str(question),
+            category=str(category),
+            complexity=str(complexity),
+            confidence=max(0, min(100, int(confidence))),
+            novelty=max(0, min(100, int(novelty))),
+            feasibility=max(0, min(100, int(feasibility))),
+            impact=max(0, min(100, int(impact))),
+            source_gap_id=source_gap_id,
+            source_gap_description=source_gap_description,
+            supporting_papers=[int(pid) for pid in supporting_papers],
+            rationale=rationale,
+            source_artifact_id=source_artifact_id,
+            created_at=now,
+        )
+        self.saved_research_questions.document(record.id).set(
+            {
+                "id": record.id,
+                "workspace_id": record.workspace_id,
+                "user_id": record.user_id,
+                "question": record.question,
+                "category": record.category,
+                "complexity": record.complexity,
+                "confidence": record.confidence,
+                "novelty": record.novelty,
+                "feasibility": record.feasibility,
+                "impact": record.impact,
+                "source_gap_id": record.source_gap_id,
+                "source_gap_description": record.source_gap_description,
+                "supporting_papers": record.supporting_papers,
+                "rationale": record.rationale,
+                "source_artifact_id": record.source_artifact_id,
+                "created_at": record.created_at,
+            }
+        )
+        return record
+
+    def get_saved_research_question(self, question_id: str) -> Optional[SavedResearchQuestion]:
+        snapshot = self.saved_research_questions.document(str(question_id)).get()
+        if not snapshot.exists:
+            return None
+        return self._saved_research_question_from_doc(snapshot.to_dict() or {})
+
+    def list_saved_research_questions_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[SavedResearchQuestion]:
+        # Verify workspace ownership
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        
+        docs = [
+            snapshot.to_dict() or {}
+            for snapshot in self.saved_research_questions.where(
+                filter=FieldFilter("workspace_id", "==", workspace_id)
+            ).stream()
+        ]
+        docs.sort(key=lambda doc: doc.get("created_at") or _utcnow(), reverse=True)
+        return [self._saved_research_question_from_doc(doc) for doc in docs]
+
+    def delete_saved_research_question(self, question_id: str) -> bool:
+        snapshot = self.saved_research_questions.document(str(question_id)).get()
+        if not snapshot.exists:
+            return False
+        snapshot.reference.delete()
+        return True
+
+    # --- Research Plans -------------------------------------------------------
+    def create_research_plan(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        artifact_id: str,
+        opportunity_id: str,
+        opportunity_description: str,
+        title: str,
+        research_problem: str,
+        research_question: str,
+        hypothesis: str,
+        objectives: str,
+        proposed_methodology: str,
+        alternative_methodology: str,
+        datasets: str,
+        variables: str,
+        baselines: str,
+        evaluation_metrics: str,
+        expected_contribution: str,
+        risks: str,
+        limitations: str,
+        reproducibility_requirements: str,
+        supporting_papers: List[int] = [],
+        evidence_references: List[str] = [],
+        status: str = "draft",
+    ) -> ResearchPlan:
+        now = _utcnow()
+        record = ResearchPlan(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            artifact_id=str(artifact_id),
+            opportunity_id=str(opportunity_id),
+            opportunity_description=str(opportunity_description),
+            title=str(title),
+            research_problem=str(research_problem),
+            research_question=str(research_question),
+            hypothesis=str(hypothesis),
+            objectives=str(objectives),
+            proposed_methodology=str(proposed_methodology),
+            alternative_methodology=str(alternative_methodology),
+            datasets=str(datasets),
+            variables=str(variables),
+            baselines=str(baselines),
+            evaluation_metrics=str(evaluation_metrics),
+            expected_contribution=str(expected_contribution),
+            risks=str(risks),
+            limitations=str(limitations),
+            reproducibility_requirements=str(reproducibility_requirements),
+            supporting_papers=[int(pid) for pid in supporting_papers],
+            evidence_references=[str(ref) for ref in evidence_references],
+            status=str(status),
+            created_at=now,
+            updated_at=now,
+        )
+        self.research_plans.document(record.id).set(
+            {
+                "id": record.id,
+                "workspace_id": record.workspace_id,
+                "user_id": record.user_id,
+                "artifact_id": record.artifact_id,
+                "opportunity_id": record.opportunity_id,
+                "opportunity_description": record.opportunity_description,
+                "title": record.title,
+                "research_problem": record.research_problem,
+                "research_question": record.research_question,
+                "hypothesis": record.hypothesis,
+                "objectives": record.objectives,
+                "proposed_methodology": record.proposed_methodology,
+                "alternative_methodology": record.alternative_methodology,
+                "datasets": record.datasets,
+                "variables": record.variables,
+                "baselines": record.baselines,
+                "evaluation_metrics": record.evaluation_metrics,
+                "expected_contribution": record.expected_contribution,
+                "risks": record.risks,
+                "limitations": record.limitations,
+                "reproducibility_requirements": record.reproducibility_requirements,
+                "supporting_papers": record.supporting_papers,
+                "evidence_references": record.evidence_references,
+                "researcher_decisions": [
+                    {
+                        "field_name": dec.field_name,
+                        "ai_suggestion": dec.ai_suggestion,
+                        "researcher_decision": dec.researcher_decision,
+                        "final_value": dec.final_value,
+                        "decision_timestamp": dec.decision_timestamp,
+                        "evidence_references": dec.evidence_references,
+                    }
+                    for dec in record.researcher_decisions
+                ],
+                "status": record.status,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+            }
+        )
+        return record
+
+    def get_research_plan(self, plan_id: str) -> Optional[ResearchPlan]:
+        snapshot = self.research_plans.document(str(plan_id)).get()
+        if not snapshot.exists:
+            return None
+        return self._research_plan_from_doc(snapshot.to_dict() or {})
+
+    def list_research_plans_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchPlan]:
+        # Verify workspace ownership
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        
+        docs = [
+            snapshot.to_dict() or {}
+            for snapshot in self.research_plans.where(
+                filter=FieldFilter("workspace_id", "==", workspace_id)
+            ).stream()
+        ]
+        docs.sort(key=lambda doc: doc.get("updated_at") or _utcnow(), reverse=True)
+        return [self._research_plan_from_doc(doc) for doc in docs]
+
+    def update_research_plan(self, plan_id: str, updates: Dict[str, Any]) -> Optional[ResearchPlan]:
+        current = self.get_research_plan(plan_id)
+        if not current:
+            return None
+        
+        payload: Dict[str, Any] = {}
+        for key, value in updates.items():
+            if key in {
+                "title", "research_problem", "research_question", "hypothesis",
+                "objectives", "proposed_methodology", "alternative_methodology",
+                "datasets", "variables", "baselines", "evaluation_metrics",
+                "expected_contribution", "risks", "limitations",
+                "reproducibility_requirements", "status"
+            }:
+                payload[key] = str(value)
+            elif key == "supporting_papers":
+                payload[key] = [int(pid) for pid in value]
+            elif key == "evidence_references":
+                payload[key] = [str(ref) for ref in value]
+            elif key == "researcher_decisions":
+                payload[key] = [
+                    {
+                        "field_name": dec.field_name,
+                        "ai_suggestion": dec.ai_suggestion,
+                        "researcher_decision": dec.researcher_decision,
+                        "final_value": dec.final_value,
+                        "decision_timestamp": dec.decision_timestamp,
+                        "evidence_references": dec.evidence_references,
+                    }
+                    for dec in value
+                ]
+        
+        payload["updated_at"] = _utcnow()
+        self.research_plans.document(str(plan_id)).set(payload, merge=True)
+        return self.get_research_plan(plan_id)
+
+    def delete_research_plan(self, plan_id: str) -> bool:
+        snapshot = self.research_plans.document(str(plan_id)).get()
+        if not snapshot.exists:
+            return False
+        snapshot.reference.delete()
+        return True
 
     @staticmethod
     def _same_claim_time(left: Optional[datetime], right: Optional[datetime]) -> bool:
@@ -2548,21 +3296,33 @@ def get_research_repository() -> ResearchRepository:
 
     Production:
     - Set USE_FIRESTORE=true (default) and configure Firebase Admin / ADC.
+    - Production MUST use Firestore; in-memory fallback is not allowed.
     """
+    app_env = str(os.getenv("APP_ENV", "production") or "production").strip().lower()
     use_firestore = str(os.getenv("USE_FIRESTORE", "true") or "true").strip().lower() in (
         "1",
         "true",
         "yes",
         "y",
     )
-    if use_firestore:
-        try:
-            return FirebaseResearchRepository()  # type: ignore[return-value]
-        except Exception as exc:  # pragma: no cover
-            logging.getLogger(__name__).warning(
-                "Falling back to InMemoryResearchRepository: %s", exc
-            )
-    return get_in_memory_repository()
+    
+    if not use_firestore:
+        if app_env == "production":
+            raise RuntimeError("USE_FIRESTORE must be true in production")
+        logging.getLogger(__name__).warning(
+            "USE_FIRESTORE is false; using InMemoryResearchRepository (not recommended for production)"
+        )
+        return get_in_memory_repository()
+    
+    try:
+        return FirebaseResearchRepository()  # type: ignore[return-value]
+    except Exception as exc:  # pragma: no cover
+        if app_env == "production":
+            raise RuntimeError(f"Firebase initialization failed in production: {exc}") from exc
+        logging.getLogger(__name__).warning(
+            "Falling back to InMemoryResearchRepository: %s", exc
+        )
+        return get_in_memory_repository()
 
 
 class InMemoryResearchRepository:
@@ -2582,6 +3342,9 @@ class InMemoryResearchRepository:
         self._papers: Dict[int, Paper] = {}
         self._paper_comparisons: Dict[str, PaperComparison] = {}
         self._research_reports: Dict[str, ResearchReport] = {}
+        self._research_intelligence_artifacts: Dict[str, ResearchIntelligenceArtifact] = {}
+        self._saved_research_questions: Dict[str, SavedResearchQuestion] = {}
+        self._research_plans: Dict[str, ResearchPlan] = {}
         self._user_session_state: Dict[int, UserSessionState] = {}
         self._workspace_documents: Dict[int, WorkspaceDocument] = {}
         self._chats: Dict[int, Chat] = {}
@@ -3120,6 +3883,250 @@ class InMemoryResearchRepository:
         if limit is not None:
             items = items[: max(0, int(limit))]
         return items
+
+    # --- Research Intelligence Artifacts ---------------------------------------
+    def create_research_intelligence_artifact(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        topic: str,
+        paper_ids: List[int],
+        status: str = "running",
+        pipeline_version: str = "1.0",
+    ) -> ResearchIntelligenceArtifact:
+        now = _utcnow()
+        record = ResearchIntelligenceArtifact(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            topic=str(topic),
+            paper_ids=[int(pid) for pid in paper_ids],
+            paper_count=len(paper_ids),
+            status=_normalize_artifact_status(status),
+            pipeline_version=str(pipeline_version),
+            created_at=now,
+            updated_at=now,
+        )
+        self._research_intelligence_artifacts[str(record.id)] = record
+        return record
+
+    def get_research_intelligence_artifact(self, artifact_id: str) -> Optional[ResearchIntelligenceArtifact]:
+        return self._research_intelligence_artifacts.get(str(artifact_id))
+
+    def list_research_intelligence_artifacts_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchIntelligenceArtifact]:
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        items = [
+            a for a in self._research_intelligence_artifacts.values()
+            if int(a.workspace_id) == int(workspace_id)
+        ]
+        items.sort(key=lambda a: a.updated_at or _utcnow(), reverse=True)
+        return items
+
+    def update_research_intelligence_artifact(
+        self, artifact_id: str, updates: Dict[str, Any]
+    ) -> Optional[ResearchIntelligenceArtifact]:
+        current = self.get_research_intelligence_artifact(artifact_id)
+        if not current:
+            return None
+        
+        if "status" in updates:
+            _validate_artifact_status_transition(current.status, str(updates["status"]))
+        
+        for key, value in updates.items():
+            if key in {
+                "status", "evidence_analysis", "gap_analysis", "opportunity_ranking",
+                "research_questions", "hypothesis_challenges", "citation_verification",
+                "knowledge_graph", "overall_score", "summary", "stage_errors"
+            }:
+                setattr(current, key, value)
+            elif key == "paper_ids":
+                current.paper_ids = [int(pid) for pid in value]
+            elif key == "paper_count":
+                current.paper_count = int(value)
+        
+        current.updated_at = _utcnow()
+        return current
+
+    def delete_research_intelligence_artifact(self, artifact_id: str) -> bool:
+        return self._research_intelligence_artifacts.pop(str(artifact_id), None) is not None
+
+    # --- Saved Research Questions ---------------------------------------------
+    def create_saved_research_question(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        question: str,
+        category: str,
+        complexity: str,
+        confidence: int,
+        novelty: int,
+        feasibility: int,
+        impact: int,
+        source_gap_id: Optional[str] = None,
+        source_gap_description: Optional[str] = None,
+        supporting_papers: List[int] = [],
+        rationale: Optional[str] = None,
+        source_artifact_id: Optional[str] = None,
+    ) -> SavedResearchQuestion:
+        now = _utcnow()
+        record = SavedResearchQuestion(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            question=str(question),
+            category=str(category),
+            complexity=str(complexity),
+            confidence=max(0, min(100, int(confidence))),
+            novelty=max(0, min(100, int(novelty))),
+            feasibility=max(0, min(100, int(feasibility))),
+            impact=max(0, min(100, int(impact))),
+            source_gap_id=source_gap_id,
+            source_gap_description=source_gap_description,
+            supporting_papers=[int(pid) for pid in supporting_papers],
+            rationale=rationale,
+            source_artifact_id=source_artifact_id,
+            created_at=now,
+        )
+        self._saved_research_questions[str(record.id)] = record
+        return record
+
+    def get_saved_research_question(self, question_id: str) -> Optional[SavedResearchQuestion]:
+        return self._saved_research_questions.get(str(question_id))
+
+    def list_saved_research_questions_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[SavedResearchQuestion]:
+        # Verify workspace ownership
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        items = [
+            q for q in self._saved_research_questions.values()
+            if int(q.workspace_id) == int(workspace_id) and int(q.user_id) == int(user_id)
+        ]
+        items.sort(key=lambda q: q.created_at or _utcnow(), reverse=True)
+        return items
+
+    def delete_saved_research_question(self, question_id: str) -> bool:
+        question = self.get_saved_research_question(question_id)
+        if not question:
+            return False
+        self._saved_research_questions.pop(str(question_id), None)
+        return True
+
+    # --- Research Plans -------------------------------------------------------
+    def create_research_plan(
+        self,
+        *,
+        id: str,
+        workspace_id: int,
+        user_id: int,
+        artifact_id: str,
+        opportunity_id: str,
+        opportunity_description: str,
+        title: str,
+        research_problem: str,
+        research_question: str,
+        hypothesis: str,
+        objectives: str,
+        proposed_methodology: str,
+        alternative_methodology: str,
+        datasets: str,
+        variables: str,
+        baselines: str,
+        evaluation_metrics: str,
+        expected_contribution: str,
+        risks: str,
+        limitations: str,
+        reproducibility_requirements: str,
+        supporting_papers: List[int] = [],
+        evidence_references: List[str] = [],
+        status: str = "draft",
+    ) -> ResearchPlan:
+        now = _utcnow()
+        record = ResearchPlan(
+            id=str(id),
+            workspace_id=int(workspace_id),
+            user_id=int(user_id),
+            artifact_id=str(artifact_id),
+            opportunity_id=str(opportunity_id),
+            opportunity_description=str(opportunity_description),
+            title=str(title),
+            research_problem=str(research_problem),
+            research_question=str(research_question),
+            hypothesis=str(hypothesis),
+            objectives=str(objectives),
+            proposed_methodology=str(proposed_methodology),
+            alternative_methodology=str(alternative_methodology),
+            datasets=str(datasets),
+            variables=str(variables),
+            baselines=str(baselines),
+            evaluation_metrics=str(evaluation_metrics),
+            expected_contribution=str(expected_contribution),
+            risks=str(risks),
+            limitations=str(limitations),
+            reproducibility_requirements=str(reproducibility_requirements),
+            supporting_papers=[int(pid) for pid in supporting_papers],
+            evidence_references=[str(ref) for ref in evidence_references],
+            status=str(status),
+            created_at=now,
+            updated_at=now,
+        )
+        self._research_plans[str(record.id)] = record
+        return record
+
+    def get_research_plan(self, plan_id: str) -> Optional[ResearchPlan]:
+        return self._research_plans.get(str(plan_id))
+
+    def list_research_plans_for_workspace(
+        self, workspace_id: int, user_id: int
+    ) -> list[ResearchPlan]:
+        # Verify workspace ownership
+        if not self.workspace_exists_for_user(workspace_id, user_id):
+            return []
+        items = [
+            p for p in self._research_plans.values()
+            if int(p.workspace_id) == int(workspace_id) and int(p.user_id) == int(user_id)
+        ]
+        items.sort(key=lambda p: p.updated_at or _utcnow(), reverse=True)
+        return items
+
+    def update_research_plan(self, plan_id: str, updates: Dict[str, Any]) -> Optional[ResearchPlan]:
+        current = self.get_research_plan(plan_id)
+        if not current:
+            return None
+        
+        for key, value in updates.items():
+            if key in {
+                "title", "research_problem", "research_question", "hypothesis",
+                "objectives", "proposed_methodology", "alternative_methodology",
+                "datasets", "variables", "baselines", "evaluation_metrics",
+                "expected_contribution", "risks", "limitations",
+                "reproducibility_requirements", "status"
+            }:
+                setattr(current, key, str(value))
+            elif key == "supporting_papers":
+                current.supporting_papers = [int(pid) for pid in value]
+            elif key == "evidence_references":
+                current.evidence_references = [str(ref) for ref in value]
+            elif key == "researcher_decisions":
+                current.researcher_decisions = value
+        
+        current.updated_at = _utcnow()
+        return current
+
+    def delete_research_plan(self, plan_id: str) -> bool:
+        plan = self.get_research_plan(plan_id)
+        if not plan:
+            return False
+        self._research_plans.pop(str(plan_id), None)
+        return True
 
     # --- Job Operations ------------------------------------------------------
     @staticmethod

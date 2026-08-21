@@ -14,7 +14,9 @@
     "a11y:ci": "node scripts/run-a11y-ci.mjs"
   },
   "dependencies": {
+    "@types/dompurify": "^3.0.5",
     "axios": "^1.18.1",
+    "dompurify": "^3.4.14",
     "firebase": "^12.15.0",
     "framer-motion": "^12.42.2",
     "lucide-react": "^0.575.0",

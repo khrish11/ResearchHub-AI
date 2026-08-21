@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "demo-test"
-  }
+    "default": "demo-test",
+    "production": "studio-5606596663-2ca06"
+  },
+  "targets": {},
+  "etags": {}
 }

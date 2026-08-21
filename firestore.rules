@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isWorkspaceOwner(workspaceId) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.user_id == request.auth.uid;
+    }
+    
+    // Users collection - only own user document
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Backend only (via Firebase Admin SDK)
+    }
+    
+    // Workspaces - only own workspaces
+    match /workspaces/{workspaceId} {
+      allow read: if isWorkspaceOwner(workspaceId);
+      allow create: if isAuthenticated() && request.resource.data.user_id == request.auth.uid;
+      allow update: if isWorkspaceOwner(workspaceId);
+      allow delete: if isWorkspaceOwner(workspaceId);
+    }
+    
+    // Papers - only papers in own workspaces
+    match /papers/{paperId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Chats - only chats in own workspaces
+    match /chats/{chatId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Search history - only own history
+    match /search_history/{historyId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // User session state - only own state
+    match /user_session_state/{stateId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace documents - only own workspace
+    match /workspace_documents/{docId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace files - only own workspace
+    match /workspace_files/{fileId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Paper check jobs - only own jobs
+    match /paper_check_jobs/{jobId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Paper comparisons - only own comparisons
+    match /paper_comparisons/{comparisonId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Research reports - only own reports
+    match /research_reports/{reportId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace vectors - only own workspace
+    match /workspace_vectors/{vectorId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace insights - only own workspace
+    match /workspace_insights/{insightId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace insight jobs - only own workspace
+    match /workspace_insight_jobs/{jobId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace feed - only own workspace
+    match /workspace_feed/{feedId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace feed jobs - only own workspace
+    match /workspace_feed_jobs/{jobId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Workspace onboarding - only own workspace
+    match /workspace_onboarding/{onboardingId} {
+      allow read: if isWorkspaceOwner(resource.data.workspace_id);
+      allow write: if false; // Backend only
+    }
+    
+    // Data rights requests - only own requests
+    match /data_rights_requests/{requestId} {
+      allow read: if isOwner(resource.data.user_id);
+      allow write: if false; // Backend only
+    }
+    
+    // AI cache - backend only
+    match /ai_cache/{cacheId} {
+      allow read, write: if false; // Backend only
+    }
+    
+    // Counters - backend only
+    match /_counters/{counterId} {
+      allow read, write: if false; // Backend only
+    }
+  }
+}

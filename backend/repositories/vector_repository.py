@@ -431,8 +431,31 @@ _STORE_LOCK = Lock()
 
 
 def build_vector_store(*, db: Any = None) -> VectorStore:
+    """
+    Build a vector store instance.
+    
+    Production:
+    - Requires a Firestore db instance (passed via db parameter)
+    - Falls back to FirestoreVectorStore for persistent vector storage
+    
+    Development:
+    - Falls back to InMemoryVectorStore if db is None
+    - Useful for local development and testing
+    """
+    app_env = str(os.getenv("APP_ENV", "production") or "production").strip().lower()
+    
     if db is not None:
         return FirestoreVectorStore(db)
+    
+    if app_env == "production":
+        raise RuntimeError(
+            "Production environment requires Firestore db for vector store. "
+            "Pass a Firestore client instance to build_vector_store()."
+        )
+    
+    logging.getLogger(__name__).warning(
+        "No Firestore db provided; using InMemoryVectorStore (vectors will not persist across restarts)"
+    )
     global _IN_MEMORY_STORE_SINGLETON
     with _STORE_LOCK:
         if _IN_MEMORY_STORE_SINGLETON is None:

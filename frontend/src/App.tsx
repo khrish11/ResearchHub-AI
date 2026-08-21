@@ -62,6 +62,7 @@ const ComparePapers = lazyWithRetry(() => import('./pages/ComparePapers'), 'comp
 const ResearchReport = lazyWithRetry(() => import('./pages/ResearchReport'), 'research-report') as unknown as ComponentType<Record<string, unknown>>;
 const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools') as unknown as ComponentType<Record<string, unknown>>;
 const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent') as unknown as ComponentType<Record<string, unknown>>;
+const ResearchIntelligence = lazyWithRetry(() => import('./features/research-intelligence/ResearchIntelligencePage'), 'research-intelligence') as unknown as ComponentType<Record<string, unknown>>;
 const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf') as unknown as ComponentType<Record<string, unknown>>;
 const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space') as unknown as ComponentType<Record<string, unknown>>;
 const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat') as unknown as ComponentType<Record<string, unknown>>;
@@ -238,6 +239,7 @@ function App() {
 
       void refreshAuthState().finally(() => window.clearTimeout(safetyTimeout));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -334,6 +336,10 @@ function App() {
                     <Route
                       path="/research-agent"
                       element={protectedRoute(<ResearchAgent />)}
+                    />
+                    <Route
+                      path="/research-intelligence/:id"
+                      element={protectedRoute(<ResearchIntelligence />)}
                     />
                     <Route
                       path="/upload"

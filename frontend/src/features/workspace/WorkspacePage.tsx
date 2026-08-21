@@ -765,6 +765,17 @@ const Workspace: React.FC = () => {
                 <Sparkles className="h-4 w-4" />
                 Generate Report
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  navigate(`/research-intelligence/${workspace.id}`);
+                }}
+                disabled={workspace.papers.length === 0}
+                className="hero-btn-primary disabled:opacity-55 disabled:cursor-not-allowed"
+              >
+                <BrainCircuit className="h-4 w-4" />
+                Research Intelligence
+              </button>
             </div>
 
             <section className="studio-stat-grid mb-4">

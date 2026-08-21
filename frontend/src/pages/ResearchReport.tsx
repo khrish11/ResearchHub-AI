@@ -17,6 +17,14 @@ interface ReportResponse {
     research_gaps: string[];
     future_directions: string[];
     conclusion: string;
+    _provenance?: {
+      intelligence_artifact_id?: string;
+      workspace_id?: number;
+      paper_ids?: number[];
+      artifact_status?: string;
+      overall_score?: number;
+      generated_at?: string;
+    };
   };
 }
 
@@ -28,47 +36,64 @@ const ResearchReport: React.FC = () => {
   const idsParam = searchParams.get('ids');
   const topicParam = searchParams.get('topic');
   const workspaceIdParam = searchParams.get('workspace_id');
+  const artifactIdParam = searchParams.get('artifact_id');
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<ReportResponse | null>(null);
   const [saving, setSaving] = useState(false);
+  const [isIntelligenceBacked, setIsIntelligenceBacked] = useState(false);
 
   const markdown = useMemo(() => {
     if (!data) return '';
     const { result } = data;
-    return `
-# ${result.title}
-
-## Abstract
-${result.abstract}
-
-## Key Themes
-${(result.key_themes || []).map(t => `- ${t}`).join('\n')}
-
-## Literature Overview
-${result.literature_overview}
-
-## Methodology Trends
-${result.methodology_trends}
-
-## Consensus Findings
-${result.consensus_findings}
-
-## Conflicting Views
-${result.conflicting_views}
-
-## Research Gaps
-${(result.research_gaps || []).map(g => `- ${g}`).join('\n')}
-
-## Future Directions
-${(result.future_directions || []).map(d => `- ${d}`).join('\n')}
-
-## Conclusion
-${result.conclusion}
-    `.trim();
+    
+    let md = `# ${result.title}\n\n`;
+    
+    // Add provenance header if intelligence-backed
+    if (result._provenance?.intelligence_artifact_id) {
+      md += `> **Generated from Research Intelligence Artifact**\n`;
+      md += `> Artifact ID: ${result._provenance.intelligence_artifact_id}\n`;
+      if (result._provenance.overall_score !== undefined) {
+        md += `> Intelligence Score: ${result._provenance.overall_score}/100\n`;
+      }
+      md += `> Generated: ${result._provenance.generated_at || 'N/A'}\n\n`;
+    }
+    
+    md += `## Abstract\n${result.abstract}\n\n`;
+    md += `## Key Themes\n${(result.key_themes || []).map(t => `- ${t}`).join('\n')}\n\n`;
+    md += `## Literature Overview\n${result.literature_overview}\n\n`;
+    md += `## Methodology Trends\n${result.methodology_trends}\n\n`;
+    md += `## Consensus Findings\n${result.consensus_findings}\n\n`;
+    md += `## Conflicting Views\n${result.conflicting_views}\n\n`;
+    md += `## Research Gaps\n${(result.research_gaps || []).map(g => `- ${g}`).join('\n')}\n\n`;
+    md += `## Future Directions\n${(result.future_directions || []).map(d => `- ${d}`).join('\n')}\n\n`;
+    md += `## Conclusion\n${result.conclusion}`;
+    
+    return md.trim();
   }, [data]);
 
   useEffect(() => {
+    // Check for sessionStorage data first (intelligence-backed report)
+    const sessionReport = sessionStorage.getItem('generatedReport');
+    const sessionArtifactId = sessionStorage.getItem('reportArtifactId');
+    
+    if (sessionReport && sessionArtifactId) {
+      try {
+        const reportData = JSON.parse(sessionReport);
+        setData({ result: reportData });
+        setIsIntelligenceBacked(true);
+        setLoading(false);
+        // Clear sessionStorage after loading
+        sessionStorage.removeItem('generatedReport');
+        sessionStorage.removeItem('reportArtifactId');
+        sessionStorage.removeItem('reportWorkspaceId');
+        return;
+      } catch (err) {
+        console.error('Failed to parse session report:', err);
+      }
+    }
+
+    // Fall back to URL parameter-based report generation
     if (!idsParam && !topicParam) {
       navigate('/dashboard');
       return;
@@ -76,12 +101,23 @@ ${result.conclusion}
 
     const fetchReport = async () => {
       try {
-        const payload = {
+        const payload: {
+          paper_ids: number[];
+          topic?: string;
+          intelligence_artifact_id?: string;
+        } = {
           paper_ids: idsParam ? idsParam.split(',').map(Number) : [],
           topic: topicParam || undefined,
         };
+        
+        // Include intelligence_artifact_id if present in URL
+        if (artifactIdParam) {
+          payload.intelligence_artifact_id = artifactIdParam;
+        }
+        
         const res = await api.post<ReportResponse>('/research/generate-report', payload);
         setData(res.data);
+        setIsIntelligenceBacked(!!res.data.result._provenance?.intelligence_artifact_id);
       } catch (err) {
         toastError('Failed to generate or fetch research report.');
         console.error(err);
@@ -91,7 +127,7 @@ ${result.conclusion}
     };
 
     void fetchReport();
-  }, [idsParam, topicParam, navigate, toastError]);
+  }, [idsParam, topicParam, artifactIdParam, navigate, toastError]);
 
   const handleCopy = () => {
     if (!data) return;
@@ -232,6 +268,32 @@ ${result.conclusion}
           </div>
         ) : (
           <div className="space-y-8 animate-in fade-in duration-500">
+            {/* Intelligence Provenance Banner */}
+            {isIntelligenceBacked && data.result._provenance && (
+              <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 shadow-sm">
+                <div className="flex items-center gap-2 mb-2">
+                  <Lightbulb className="h-5 w-5 text-indigo-600" />
+                  <h3 className="text-sm font-semibold text-indigo-900">Generated from Research Intelligence</h3>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-indigo-700">
+                  <div>
+                    <span className="font-medium">Artifact ID:</span> {data.result._provenance.intelligence_artifact_id?.slice(0, 8)}...
+                  </div>
+                  <div>
+                    <span className="font-medium">Status:</span> {data.result._provenance.artifact_status}
+                  </div>
+                  {data.result._provenance.overall_score !== undefined && (
+                    <div>
+                      <span className="font-medium">Score:</span> {data.result._provenance.overall_score}/100
+                    </div>
+                  )}
+                  <div>
+                    <span className="font-medium">Papers:</span> {data.result._provenance.paper_ids?.length || 0}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="text-center">
               <h1 className="text-3xl font-bold tracking-tight text-slate-900">{data.result.title}</h1>
               <p className="mt-4 text-left max-w-3xl mx-auto text-lg text-slate-600 italic">

@@ -14,13 +14,22 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from repositories.research import Paper, SearchHistory, User, UserSessionState, Workspace
+from repositories.research import Paper, SearchHistory, User, UserSessionState, Workspace, StructuredGap, ResearchIntelligenceArtifact, SavedResearchQuestion, ResearchPlan, ResearcherDecision
 from repositories import ResearchRepository, get_research_repository
 from routers.auth import get_current_user, has_analytics_admin_access
 from routers.papers import search_global
 from services.paper_check_service import get_job_status, queue_paper_check_job, requeue_failed_job
-from services.paper_check_service import aggregate_and_generate_report
+from services.ai_service import run_structured_json_task
 from services.rag_hooks import index_paper_best_effort
+from services.evidence_intelligence_service import get_evidence_service
+from services.gap_intelligence_service import get_gap_service
+from services.opportunity_scoring_service import get_opportunity_service
+from services.research_question_service import get_question_service
+from services.research_challenger_service import get_challenger_service
+from services.citation_verification_service import get_citation_service
+from services.knowledge_graph_enhancement_service import get_graph_enhancement_service
+from services.research_plan_service import get_plan_service
+from services.research_intelligence_artifact_service import get_artifact_service_instance
 from utils.groq_client import client as groq_client
 from utils.groq_client import model_config
 from utils.groq_client import groq_client_status
@@ -102,7 +111,7 @@ _SOURCE_QUALITY = {
 
 
 class AutonomousResearchRequest(BaseModel):
-    goal: str = Field(min_length=4, max_length=500)
+    goal: str = Field(min_length=2, max_length=500)
     workspace_id: Optional[int] = None
     year_from: Optional[int] = Field(default=None, ge=1950, le=2100)
     max_results: int = Field(default=80, ge=20, le=160)
@@ -111,7 +120,7 @@ class AutonomousResearchRequest(BaseModel):
 
 class FullPipelineRequest(BaseModel):
     workspace_id: int
-    goal: str = Field(min_length=4, max_length=500)
+    goal: str = Field(min_length=2, max_length=500)
     year_from: Optional[int] = Field(default=None, ge=1950, le=2100)
     paper_ids: Optional[List[int]] = None
     max_results: int = Field(default=100, ge=20, le=180)
@@ -122,6 +131,7 @@ class FullPipelineRequest(BaseModel):
 
 class WorkspaceScopedRequest(BaseModel):
     workspace_id: int
+    paper_ids: Optional[List[int]] = None
 
 
 class PaperCheckRequest(BaseModel):
@@ -148,12 +158,12 @@ class TrendPredictionRequest(BaseModel):
 
 
 class ExperimentDesignRequest(WorkspaceScopedRequest):
-    topic: str = Field(min_length=4, max_length=500)
+    topic: str = Field(min_length=2, max_length=500)
     hypothesis: Optional[str] = None
 
 
 class PaperDraftRequest(WorkspaceScopedRequest):
-    topic: str = Field(min_length=4, max_length=500)
+    topic: str = Field(min_length=2, max_length=500)
     target_format: str = Field(default="IEEE")
     citation_style: str = Field(default="IEEE")
 
@@ -178,6 +188,40 @@ class ResearchChatRequest(WorkspaceScopedRequest):
     max_actions: int = Field(default=6, ge=2, le=12)
     response_style: str = Field(default="balanced")
     grounded_only: bool = True
+
+
+class EvidenceAnalysisRequest(WorkspaceScopedRequest):
+    claim: str = Field(min_length=5, max_length=500)
+    topic: Optional[str] = None
+
+
+class OpportunityRankingRequest(WorkspaceScopedRequest):
+    topic: Optional[str] = None
+
+
+class QuestionGenerationRequest(WorkspaceScopedRequest):
+    topic: Optional[str] = None
+    max_questions: int = Field(default=10, ge=1, le=20)
+
+
+class HypothesisChallengeRequest(WorkspaceScopedRequest):
+    hypothesis: str = Field(min_length=5, max_length=500)
+
+
+class CitationVerificationRequest(WorkspaceScopedRequest):
+    pass
+
+
+class KnowledgeGraphEnhancementRequest(WorkspaceScopedRequest):
+    topic: Optional[str] = None
+    layers: Optional[List[str]] = Field(default=["gap", "evidence", "opportunity", "citation"])
+
+
+class ResearchIntelligenceArtifactRequest(BaseModel):
+    workspace_id: int
+    topic: str = Field(min_length=2, max_length=500)
+    paper_ids: List[int] = Field(min_length=1, max_length=50)
+    pipeline_version: Optional[str] = Field(default="1.0", max_length=20)
 
 
 # Backward compatibility for existing client code/tests.
@@ -223,6 +267,7 @@ class FaultDetectionRequest(BaseModel):
 class GenerateResearchReportRequest(BaseModel):
     paper_ids: List[int] = Field(default_factory=list, max_length=15)
     topic: Optional[str] = Field(default=None, max_length=1000)
+    intelligence_artifact_id: Optional[str] = Field(default=None, max_length=100)
 
 
 @router.post("/generate-report")
@@ -237,18 +282,510 @@ async def generate_research_report(
     Accepts either:
     - paper_ids (0..15)
     - topic (optional)
+    - intelligence_artifact_id (optional) - if provided, uses persisted intelligence results
     """
     try:
-        result = await asyncio.to_thread(
-            aggregate_and_generate_report,
+        result = await aggregate_and_generate_report(
             repo=repo,
             user_id=str(current_user.id),
             paper_ids=request.paper_ids,
             topic=request.topic,
+            intelligence_artifact_id=request.intelligence_artifact_id,
         )
         return {"result": result}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+async def aggregate_and_generate_report(
+    repo: ResearchRepository,
+    user_id: str,
+    paper_ids: List[int],
+    topic: Optional[str] = None,
+    intelligence_artifact_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Generate a structured research report from selected papers.
+    
+    This function synthesizes multiple papers into a comprehensive report
+    with sections: title, abstract, key themes, literature overview,
+    methodology trends, consensus findings, conflicting views, research gaps,
+    future directions, and conclusion.
+    
+    If intelligence_artifact_id is provided, uses persisted intelligence results
+    to generate an enhanced report with evidence-backed insights.
+    """
+    # If intelligence artifact is provided, use intelligence-backed generation
+    if intelligence_artifact_id:
+        return await _generate_intelligence_backed_report(
+            repo=repo,
+            user_id=user_id,
+            artifact_id=intelligence_artifact_id,
+            paper_ids=paper_ids,
+            topic=topic,
+        )
+    
+    # Otherwise, use standard report generation
+    return await _generate_standard_report(
+        repo=repo,
+        user_id=user_id,
+        paper_ids=paper_ids,
+        topic=topic,
+    )
+
+
+async def _generate_standard_report(
+    repo: ResearchRepository,
+    user_id: str,
+    paper_ids: List[int],
+    topic: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate a standard research report without intelligence artifacts."""
+    # Fetch papers from repository
+    papers = []
+    for paper_id in paper_ids:
+        paper = repo.get_paper_for_user(paper_id, int(user_id))
+        if paper:
+            papers.append(paper)
+    
+    if not papers:
+        raise ValueError("No valid papers found for the provided IDs")
+    
+    # Build paper context for LLM
+    paper_context = _paper_context_from_db(papers, limit=15)
+    
+    # Generate report using LLM
+    system_prompt = (
+        "You are an expert research analyst specializing in literature synthesis. "
+        "Generate a comprehensive, well-structured research report based on the provided papers. "
+        "Be precise, evidence-grounded, and avoid generic filler. "
+        "Use specific details from the papers and cite them as Paper 1, Paper 2, etc."
+    )
+    
+    user_prompt = (
+        f"Topic: {topic or 'Multi-paper analysis'}\n"
+        f"Number of papers: {len(papers)}\n\n"
+        "Generate a research report with the following EXACT structure:\n"
+        "1. Title: A concise, descriptive title for the report\n"
+        "2. Abstract: A 150-200 word summary of the entire report\n"
+        "3. Key Themes: 5-7 bullet points of major themes across the papers\n"
+        "4. Literature Overview: 200-300 words on the research landscape\n"
+        "5. Methodology Trends: 150-250 words on methodological approaches\n"
+        "6. Consensus Findings: 150-250 words on agreed-upon conclusions\n"
+        "7. Conflicting Views: 150-250 words on disagreements or contradictions\n"
+        "8. Research Gaps: 5-7 bullet points on missing areas or limitations\n"
+        "9. Future Directions: 5-7 bullet points on promising research directions\n"
+        "10. Conclusion: 100-150 words wrapping up the report\n\n"
+        f"Paper context:\n{paper_context}\n\n"
+        "Return the response as a JSON object with these exact keys:\n"
+        "title, abstract, key_themes (array), literature_overview, methodology_trends, "
+        "consensus_findings, conflicting_views, research_gaps (array), future_directions (array), conclusion"
+    )
+    
+    llm_output = _llm_generate(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=3800,
+        longform=True,
+        min_chars=1200,
+        expansion_instruction=(
+            "Expand the response to ensure all sections are present and substantial. "
+            "Include specific details from the papers and cite them appropriately."
+        ),
+    )
+    
+    if not llm_output:
+        # Fallback to basic report if LLM fails
+        return _generate_fallback_report(papers, topic)
+    
+    # Parse LLM output as JSON
+    try:
+        result = json.loads(llm_output)
+        
+        # Validate required fields
+        required_fields = [
+            "title", "abstract", "key_themes", "literature_overview",
+            "methodology_trends", "consensus_findings", "conflicting_views",
+            "research_gaps", "future_directions", "conclusion"
+        ]
+        
+        for field in required_fields:
+            if field not in result:
+                result[field] = "" if field not in ["key_themes", "research_gaps", "future_directions"] else []
+        
+        return result
+    except json.JSONDecodeError:
+        # If JSON parsing fails, try to extract sections from markdown
+        return _parse_markdown_report(llm_output, papers, topic)
+
+
+async def _generate_intelligence_backed_report(
+    repo: ResearchRepository,
+    user_id: str,
+    artifact_id: str,
+    paper_ids: List[int],
+    topic: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Generate an intelligence-backed research report using persisted artifact data.
+    
+    This leverages the 7-stage intelligence pipeline results to create a comprehensive
+    report with evidence-backed insights, provenance tracking, and structured sections.
+    """
+    # Load and validate artifact
+    artifact = repo.get_research_intelligence_artifact(artifact_id)
+    if not artifact:
+        raise ValueError(f"Research Intelligence Artifact not found: {artifact_id}")
+    
+    # Validate workspace ownership
+    if not repo.workspace_exists_for_user(artifact.workspace_id, int(user_id)):
+        raise ValueError("Artifact does not belong to your workspace")
+    
+    # Validate artifact status
+    if artifact.status not in ["completed", "partial"]:
+        raise ValueError(f"Artifact status is {artifact.status}; only completed or partial artifacts can generate reports")
+    
+    # Fetch papers
+    papers = []
+    source_paper_ids = paper_ids if paper_ids else artifact.paper_ids
+    for paper_id in source_paper_ids:
+        paper = repo.get_paper_for_user(paper_id, int(user_id))
+        if paper:
+            papers.append(paper)
+    
+    if not papers:
+        raise ValueError("No valid papers found for the provided IDs")
+    
+    # Build intelligence context
+    intelligence_context = _build_intelligence_context(artifact, papers)
+    
+    # Generate enhanced report using LLM with intelligence context
+    system_prompt = (
+        "You are an expert research analyst specializing in literature synthesis with "
+        "access to comprehensive intelligence analysis. Generate a detailed, evidence-backed "
+        "research report that incorporates the provided intelligence insights. "
+        "Be precise, evidence-grounded, and cite specific papers and intelligence sources. "
+        "Preserve all provenance information (paper IDs, confidence scores, evidence types)."
+    )
+    
+    user_prompt = (
+        f"Topic: {topic or artifact.topic}\n"
+        f"Number of papers: {len(papers)}\n"
+        f"Artifact ID: {artifact_id}\n"
+        f"Overall Intelligence Score: {artifact.overall_score or 'N/A'}\n\n"
+        "Generate an intelligence-backed research report with the following structure:\n"
+        "1. Title: A descriptive title reflecting the intelligence analysis\n"
+        "2. Abstract: 200-250 word summary incorporating intelligence findings\n"
+        "3. Key Themes: 5-7 bullet points from intelligence analysis\n"
+        "4. Research Landscape: Important papers, themes, methods, datasets, metrics\n"
+        "5. Evidence Landscape: Major claims, supporting/contradictory evidence, strength, confidence\n"
+        "6. Research Gaps: Categories, descriptions, supporting papers, confidence, novelty scores\n"
+        "7. Research Opportunities: Ranked opportunities with scores, evidence strength, impact\n"
+        "8. Research Questions: Generated questions with category, complexity, rationale\n"
+        "9. Hypothesis Challenge: Supporting evidence, counter-evidence, methodological weaknesses\n"
+        "10. Citation Integrity: Quality, accessibility, consistency, issues\n"
+        "11. Knowledge Graph Insights: Key relationships and patterns\n"
+        "12. Recommended Research Direction: Highest-value opportunity, key risks, next steps\n"
+        "13. Conclusion: Evidence-grounded summary with provenance\n\n"
+        f"Intelligence Context:\n{intelligence_context}\n\n"
+        "Return as JSON with all sections. Include provenance (paper IDs, confidence, scores) "
+        "wherever available. Do not invent information when intelligence is insufficient."
+    )
+    
+    llm_output = _llm_generate(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=5200,
+        longform=True,
+        min_chars=1800,
+        expansion_instruction=(
+            "Expand the response to ensure all intelligence-backed sections are present. "
+            "Include specific evidence, paper IDs, confidence scores, and provenance information. "
+            "Do not fabricate citations - only use information from the intelligence context."
+        ),
+    )
+    
+    if not llm_output:
+        # Fallback to intelligence-structured report if LLM fails
+        return _generate_intelligence_fallback_report(artifact, papers, topic)
+    
+    # Parse LLM output as JSON
+    try:
+        result = json.loads(llm_output)
+        
+        # Add provenance metadata
+        result["_provenance"] = {
+            "intelligence_artifact_id": artifact_id,
+            "workspace_id": artifact.workspace_id,
+            "paper_ids": source_paper_ids,
+            "artifact_status": artifact.status,
+            "overall_score": artifact.overall_score,
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        
+        # Ensure standard fields exist for backward compatibility
+        standard_fields = [
+            "title", "abstract", "key_themes", "literature_overview",
+            "methodology_trends", "consensus_findings", "conflicting_views",
+            "research_gaps", "future_directions", "conclusion"
+        ]
+        
+        for field in standard_fields:
+            if field not in result:
+                result[field] = "" if field not in ["key_themes", "research_gaps", "future_directions"] else []
+        
+        return result
+    except json.JSONDecodeError:
+        # If JSON parsing fails, try to extract sections from markdown
+        result = _parse_markdown_report(llm_output, papers, topic)
+        result["_provenance"] = {
+            "intelligence_artifact_id": artifact_id,
+            "workspace_id": artifact.workspace_id,
+            "paper_ids": source_paper_ids,
+            "artifact_status": artifact.status,
+            "overall_score": artifact.overall_score,
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        return result
+
+
+def _build_intelligence_context(artifact, papers: List[Paper]) -> str:
+    """Build a structured context string from intelligence artifact data."""
+    context_parts = []
+    
+    # Evidence Analysis
+    if artifact.evidence_analysis:
+        context_parts.append("=== EVIDENCE ANALYSIS ===")
+        evidence = artifact.evidence_analysis
+        if evidence.get("classification"):
+            context_parts.append(f"Supporting papers: {len(evidence['classification'].get('supporting_papers', []))}")
+            context_parts.append(f"Contradicting papers: {len(evidence['classification'].get('contradicting_papers', []))}")
+        if evidence.get("strength"):
+            strength = evidence["strength"]
+            context_parts.append(f"Overall strength: {strength.get('overall_strength', 'N/A')}")
+            context_parts.append(f"Confidence: {strength.get('confidence', 'N/A')}")
+    
+    # Gap Analysis
+    if artifact.gap_analysis:
+        context_parts.append("\n=== RESEARCH GAPS ===")
+        gaps = artifact.gap_analysis
+        if gaps.get("total_gaps"):
+            context_parts.append(f"Total gaps identified: {gaps['total_gaps']}")
+        if gaps.get("top_opportunities"):
+            context_parts.append("Top opportunities:")
+            for opp in gaps["top_opportunities"][:3]:
+                context_parts.append(f"- {opp.get('description', 'N/A')} (confidence: {opp.get('confidence', 'N/A')})")
+    
+    # Opportunity Ranking
+    if artifact.opportunity_ranking:
+        context_parts.append("\n=== OPPORTUNITY RANKING ===")
+        opps = artifact.opportunity_ranking
+        if opps.get("total_opportunities"):
+            context_parts.append(f"Total opportunities: {opps['total_opportunities']}")
+        if opps.get("top_opportunity"):
+            top = opps["top_opportunity"]
+            context_parts.append(f"Highest-value: {top.get('gap_description', 'N/A')} (score: {top.get('overall_score', 'N/A')})")
+    
+    # Research Questions
+    if artifact.research_questions:
+        context_parts.append("\n=== RESEARCH QUESTIONS ===")
+        questions = artifact.research_questions
+        if questions.get("total_questions"):
+            context_parts.append(f"Total questions: {questions['total_questions']}")
+        if questions.get("top_questions"):
+            context_parts.append("Top questions:")
+            for q in questions["top_questions"][:3]:
+                context_parts.append(f"- {q.get('question', 'N/A')} (complexity: {q.get('complexity', 'N/A')})")
+    
+    # Hypothesis Challenges
+    if artifact.hypothesis_challenges:
+        context_parts.append("\n=== HYPOTHESIS CHALLENGES ===")
+        challenges = artifact.hypothesis_challenges
+        if challenges.get("total_challenges"):
+            context_parts.append(f"Total challenges: {challenges['total_challenges']}")
+        if challenges.get("strongest_challenge"):
+            strong = challenges["strongest_challenge"]
+            context_parts.append(f"Strongest challenge: {strong.get('challenge_text', 'N/A')}")
+    
+    # Citation Verification
+    if artifact.citation_verification:
+        context_parts.append("\n=== CITATION INTEGRITY ===")
+        citation = artifact.citation_verification
+        if citation.get("overall_confidence"):
+            context_parts.append(f"Overall confidence: {citation['overall_confidence']}")
+        if citation.get("critical_issues"):
+            context_parts.append(f"Critical issues: {len(citation['critical_issues'])}")
+    
+    # Knowledge Graph
+    if artifact.knowledge_graph:
+        context_parts.append("\n=== KNOWLEDGE GRAPH ===")
+        kg = artifact.knowledge_graph
+        if kg.get("nodes"):
+            context_parts.append(f"Total nodes: {len(kg['nodes'])}")
+        if kg.get("edges"):
+            context_parts.append(f"Total edges: {len(kg['edges'])}")
+    
+    # Paper context
+    context_parts.append("\n=== PAPER DETAILS ===")
+    for i, paper in enumerate(papers[:10], 1):
+        context_parts.append(f"Paper {i}: {paper.title}")
+        if paper.authors:
+            context_parts.append(f"  Authors: {paper.authors[:100]}...")
+        if paper.abstract:
+            context_parts.append(f"  Abstract: {paper.abstract[:200]}...")
+    
+    return "\n".join(context_parts)
+
+
+def _generate_intelligence_fallback_report(artifact, papers: List[Paper], topic: Optional[str]) -> Dict[str, Any]:
+    """Generate a basic intelligence-backed report when LLM is unavailable."""
+    result = {
+        "title": topic or artifact.topic or "Intelligence-Backed Research Report",
+        "abstract": f"This report is based on Research Intelligence Artifact {artifact.id}. Due to AI service unavailability, this is a structured summary of the intelligence analysis.",
+        "key_themes": [
+            "Evidence-based analysis",
+            "Research gap identification",
+            "Opportunity ranking",
+            "Citation integrity assessment",
+        ],
+        "literature_overview": f"Analysis covers {len(papers)} papers with comprehensive intelligence processing including evidence analysis, gap detection, opportunity ranking, and citation verification.",
+        "methodology_trends": "Methodological trends analysis available in intelligence artifact (AI service unavailable for detailed synthesis).",
+        "consensus_findings": "Consensus findings available in intelligence artifact (AI service unavailable for detailed synthesis).",
+        "conflicting_views": "Conflicting views analysis available in intelligence artifact (AI service unavailable for detailed synthesis).",
+        "research_gaps": [],
+        "future_directions": [],
+        "conclusion": f"This intelligence-backed report summarizes artifact {artifact.id} with overall score {artifact.overall_score or 'N/A'}. Enable AI service for comprehensive automated synthesis.",
+    }
+    
+    # Add gap information if available
+    if artifact.gap_analysis and artifact.gap_analysis.get("top_opportunities"):
+        result["research_gaps"] = [
+            opp.get("description", "N/A") 
+            for opp in artifact.gap_analysis["top_opportunities"][:5]
+        ]
+    
+    # Add opportunity information if available
+    if artifact.opportunity_ranking and artifact.opportunity_ranking.get("opportunities"):
+        result["future_directions"] = [
+            opp.get("gap_description", "N/A")
+            for opp in artifact.opportunity_ranking["opportunities"][:5]
+        ]
+    
+    # Add provenance
+    result["_provenance"] = {
+        "intelligence_artifact_id": artifact.id,
+        "workspace_id": artifact.workspace_id,
+        "paper_ids": artifact.paper_ids,
+        "artifact_status": artifact.status,
+        "overall_score": artifact.overall_score,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    
+    return result
+
+
+def _generate_fallback_report(papers: List[Paper], topic: Optional[str]) -> Dict[str, Any]:
+    """Generate a basic report when LLM is unavailable."""
+    titles = [p.title for p in papers]
+    return {
+        "title": topic or f"Analysis of {len(papers)} Research Papers",
+        "abstract": f"This report analyzes {len(papers)} research papers. Due to AI service unavailability, this is a basic summary.",
+        "key_themes": [
+            "Multi-paper analysis",
+            "Research methodology",
+            "Findings synthesis",
+            "Literature review",
+        ],
+        "literature_overview": f"The analysis covers {len(papers)} papers with titles: {', '.join(titles[:3])}{'...' if len(titles) > 3 else ''}.",
+        "methodology_trends": "Methodological analysis unavailable due to AI service limitations.",
+        "consensus_findings": "Consensus analysis unavailable due to AI service limitations.",
+        "conflicting_views": "Conflict analysis unavailable due to AI service limitations.",
+        "research_gaps": [
+            "AI service unavailable for gap analysis",
+            "Consider manual review for detailed gap identification",
+        ],
+        "future_directions": [
+            "Enable AI service for automated future direction analysis",
+            "Manual literature review for detailed recommendations",
+        ],
+        "conclusion": f"This basic summary covers {len(papers)} papers. Enable AI service for comprehensive automated analysis.",
+    }
+
+
+def _parse_markdown_report(markdown: str, papers: List[Paper], topic: Optional[str]) -> Dict[str, Any]:
+    """Parse a markdown-formatted report into the expected structure."""
+    lines = markdown.split('\n')
+    sections = {
+        "title": topic or "Research Report",
+        "abstract": "",
+        "key_themes": [],
+        "literature_overview": "",
+        "methodology_trends": "",
+        "consensus_findings": "",
+        "conflicting_views": "",
+        "research_gaps": [],
+        "future_directions": [],
+        "conclusion": "",
+    }
+    
+    current_section = None
+    current_content = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Detect section headers
+        if line.lower().startswith("title:"):
+            sections["title"] = line.split(":", 1)[1].strip()
+            current_section = None
+        elif line.lower().startswith("abstract:"):
+            current_section = "abstract"
+            current_content = []
+        elif line.lower().startswith("key themes:"):
+            current_section = "key_themes"
+            current_content = []
+        elif line.lower().startswith("literature overview:"):
+            current_section = "literature_overview"
+            current_content = []
+        elif line.lower().startswith("methodology trends:"):
+            current_section = "methodology_trends"
+            current_content = []
+        elif line.lower().startswith("consensus findings:"):
+            current_section = "consensus_findings"
+            current_content = []
+        elif line.lower().startswith("conflicting views:"):
+            current_section = "conflicting_views"
+            current_content = []
+        elif line.lower().startswith("research gaps:"):
+            current_section = "research_gaps"
+            current_content = []
+        elif line.lower().startswith("future directions:"):
+            current_section = "future_directions"
+            current_content = []
+        elif line.lower().startswith("conclusion:"):
+            current_section = "conclusion"
+            current_content = []
+        elif line.startswith("- ") or line.startswith("* "):
+            # Bullet point
+            bullet = line[2:].strip()
+            if current_section in ["key_themes", "research_gaps", "future_directions"]:
+                current_content.append(bullet)
+        else:
+            # Regular content
+            if current_section:
+                current_content.append(line)
+    
+    # Assign content to sections
+    sections["abstract"] = "\n".join(current_content) if current_section == "abstract" else ""
+    sections["literature_overview"] = "\n".join(current_content) if current_section == "literature_overview" else ""
+    sections["methodology_trends"] = "\n".join(current_content) if current_section == "methodology_trends" else ""
+    sections["consensus_findings"] = "\n".join(current_content) if current_section == "consensus_findings" else ""
+    sections["conflicting_views"] = "\n".join(current_content) if current_section == "conflicting_views" else ""
+    sections["conclusion"] = "\n".join(current_content) if current_section == "conclusion" else ""
+    
+    return sections
 
 
 def _tokenize(text: str) -> List[str]:
@@ -2534,7 +3071,7 @@ current_user: User = Depends(get_current_user),
 @router.post("/gap-detection")
 def gap_detection(
     request: GapDetectionRequest,
-current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     workspace = _workspace_or_default(
         current_user, request.workspace_id, "Autonomous Research Lab"
@@ -2546,47 +3083,515 @@ current_user: User = Depends(get_current_user),
         )
 
     topic = (request.topic or workspace.name or "Research topic").strip()
-    candidates = [
-        {
-            "index": i + 1,
-            "title": paper.title,
-            "abstract": paper.abstract or "",
-            "authors": _split_authors(paper.authors),
-            "source": "workspace",
-            "year": _year_from_text(f"{paper.title} {paper.abstract or ''}"),
-            "doi": paper.doi or "",
-            "url": paper.url or "",
-            "citation_count": 0,
+    
+    # Try to use Gap Intelligence service if enabled
+    try:
+        gap_service = get_gap_service()
+        gap_result = gap_service.analyze_gaps(topic, papers, use_cache=True)
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "topic": topic,
+            "paper_count": len(papers),
+            "gaps_by_category": {
+                category: [
+                    {
+                        "category": g.category,
+                        "description": g.description,
+                        "confidence": g.confidence,
+                        "evidence_count": g.evidence_count,
+                        "novelty_potential": g.novelty_potential,
+                        "research_impact": g.research_impact,
+                        "feasibility": g.feasibility,
+                        "recency": g.recency,
+                        "supporting_papers": g.supporting_papers,
+                        "counter_evidence": g.counter_evidence,
+                        "affected_papers": g.affected_papers,
+                        "explanation": g.explanation,
+                    }
+                    for g in gaps
+                ]
+                for category, gaps in gap_result.gaps_by_category.items()
+            },
+            "total_gaps": gap_result.total_gaps,
+            "top_opportunities": [
+                {
+                    "category": g.category,
+                    "description": g.description,
+                    "confidence": g.confidence,
+                    "novelty_potential": g.novelty_potential,
+                    "research_impact": g.research_impact,
+                    "feasibility": g.feasibility,
+                    "recency": g.recency,
+                    "explanation": g.explanation,
+                }
+                for g in gap_result.top_opportunities
+            ],
+            "summary": gap_result.summary,
+            "analysis": gap_result.summary,
+            "generated_at": gap_result.generated_at.isoformat().replace("+00:00", "Z"),
         }
-        for i, paper in enumerate(papers)
-    ]
+    except RuntimeError:
+        # Fallback to original heuristic gap detection if service disabled
+        candidates = [
+            {
+                "index": i + 1,
+                "title": paper.title,
+                "abstract": paper.abstract or "",
+                "authors": _split_authors(paper.authors),
+                "source": "workspace",
+                "year": _year_from_text(f"{paper.title} {paper.abstract or ''}"),
+                "doi": paper.doi or "",
+                "url": paper.url or "",
+                "citation_count": 0,
+            }
+            for i, paper in enumerate(papers)
+        ]
 
-    heuristic = _heuristic_gap_detection(topic, candidates)
-    llm_text = _llm_generate(
-        system_prompt=(
-            "You are a PhD-level research gap analyst. Return concise, evidence-grounded findings and explicitly address "
-            "contradictions, under-tested datasets, unexplored variables, missing metrics, and assumptions."
-        ),
-        user_prompt=(
-            f"Topic: {topic}\n"
-            f"Heuristic gap signals: {heuristic}\n\n"
-            "Return markdown sections: Contradictions, Under-tested Datasets, Missing Metrics, "
-            "Weak Assumptions, and Priority Next Experiments.\n\n"
-            f"Papers:\n{_paper_context_from_db(papers, limit=20)}"
-        ),
-        max_tokens=2400,
-        longform=True,
-        min_chars=700,
-        expansion_instruction="Expand with more concrete evidence and practical next experiments.",
+        heuristic = _heuristic_gap_detection(topic, candidates)
+        llm_text = _llm_generate(
+            system_prompt=(
+                "You are a PhD-level research gap analyst. Return concise, evidence-grounded findings and explicitly address "
+                "contradictions, under-tested datasets, unexplored variables, missing metrics, and assumptions."
+            ),
+            user_prompt=(
+                f"Topic: {topic}\n"
+                f"Heuristic gap signals: {heuristic}\n\n"
+                "Return markdown sections: Contradictions, Under-tested Datasets, Missing Metrics, "
+                "Weak Assumptions, and Priority Next Experiments.\n\n"
+                f"Papers:\n{_paper_context_from_db(papers, limit=20)}"
+            ),
+            max_tokens=2400,
+            longform=True,
+            min_chars=700,
+            expansion_instruction="Expand with more concrete evidence and practical next experiments.",
+        )
+
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "topic": topic,
+            "paper_count": len(papers),
+            "gaps": heuristic,
+            "analysis": llm_text or heuristic["summary"],
+        }
+
+
+@router.post("/evidence-analysis")
+def evidence_analysis(
+    request: EvidenceAnalysisRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Analyze a research claim against workspace papers to determine evidence strength."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
     )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+        )
 
-    return {
-        "workspace": {"id": workspace.id, "name": workspace.name},
-        "topic": topic,
-        "paper_count": len(papers),
-        "gaps": heuristic,
-        "analysis": llm_text or heuristic["summary"],
-    }
+    try:
+        evidence_service = get_evidence_service()
+        analysis = evidence_service.analyze_claim(
+            claim=request.claim,
+            papers=papers,
+            use_cache=True
+        )
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "claim": analysis.claim,
+            "classification": {
+                "supporting_count": len(analysis.classification.supporting_papers),
+                "contradicting_count": len(analysis.classification.contradicting_papers),
+                "neutral_count": len(analysis.classification.neutral_papers),
+                "insufficient_evidence": analysis.classification.insufficient_evidence,
+                "supporting_papers": [
+                    {"id": p.id, "title": p.title, "authors": p.authors}
+                    for p in analysis.classification.supporting_papers
+                ],
+                "contradicting_papers": [
+                    {"id": p.id, "title": p.title, "authors": p.authors}
+                    for p in analysis.classification.contradicting_papers
+                ],
+            },
+            "strength": {
+                "support_count": analysis.strength.support_count,
+                "contradiction_count": analysis.strength.contradiction_count,
+                "neutral_count": analysis.strength.neutral_count,
+                "source_quality_score": analysis.strength.source_quality_score,
+                "recency_score": analysis.strength.recency_score,
+                "replication_signal": analysis.strength.replication_signal,
+                "overall_strength": analysis.strength.overall_strength,
+                "confidence": analysis.strength.confidence,
+                "explanation": analysis.strength.explanation,
+            },
+            "passages": [
+                {
+                    "paper_id": p.paper_id,
+                    "paper_title": p.paper_title,
+                    "passage_text": p.passage_text,
+                    "relevance_score": p.relevance_score,
+                    "evidence_type": p.evidence_type,
+                }
+                for p in analysis.passages
+            ],
+            "evidence_type": analysis.evidence_type,
+            "generated_at": analysis.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Evidence analysis failed: {str(exc)}")
+
+
+@router.post("/opportunity-ranking")
+def opportunity_ranking(
+    request: OpportunityRankingRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Rank research opportunities from gap intelligence analysis."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
+    )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+        )
+
+    topic = (request.topic or workspace.name or "Research topic").strip()
+    
+    try:
+        # First run gap intelligence to get gaps
+        gap_service = get_gap_service()
+        gap_result = gap_service.analyze_gaps(topic, papers, use_cache=True)
+        
+        # Flatten all gaps
+        all_gaps: List[StructuredGap] = []
+        for category_gaps in gap_result.gaps_by_category.values():
+            all_gaps.extend(category_gaps)
+        
+        # Then rank opportunities
+        opportunity_service = get_opportunity_service()
+        ranking_result = opportunity_service.rank_opportunities(topic, all_gaps, use_cache=True)
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "topic": topic,
+            "paper_count": len(papers),
+            "opportunities": [
+                {
+                    "gap_id": o.gap_id,
+                    "gap_description": o.gap_description,
+                    "category": o.category,
+                    "evidence_strength": o.evidence_strength,
+                    "novelty": o.novelty,
+                    "impact": o.impact,
+                    "feasibility": o.feasibility,
+                    "recency": o.recency,
+                    "overall_score": o.overall_score,
+                    "rank": o.rank,
+                    "explanation": o.explanation,
+                    "supporting_papers": o.supporting_papers,
+                    "affected_papers": o.affected_papers,
+                }
+                for o in ranking_result.opportunities
+            ],
+            "total_opportunities": ranking_result.total_opportunities,
+            "top_opportunity": {
+                "gap_id": ranking_result.top_opportunity.gap_id,
+                "gap_description": ranking_result.top_opportunity.gap_description,
+                "category": ranking_result.top_opportunity.category,
+                "overall_score": ranking_result.top_opportunity.overall_score,
+                "rank": ranking_result.top_opportunity.rank,
+                "explanation": ranking_result.top_opportunity.explanation,
+            } if ranking_result.top_opportunity else None,
+            "comparison_matrix": [
+                {
+                    "opportunity_1": c.opportunity_1.gap_description,
+                    "opportunity_2": c.opportunity_2.gap_description,
+                    "comparison": c.comparison,
+                    "recommendation": c.recommendation,
+                }
+                for c in ranking_result.comparison_matrix
+            ],
+            "summary": ranking_result.summary,
+            "generated_at": ranking_result.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Opportunity ranking failed: {str(exc)}")
+
+
+@router.post("/question-generation")
+def question_generation(
+    request: QuestionGenerationRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Generate research questions from gap intelligence analysis."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
+    )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+        )
+
+    topic = (request.topic or workspace.name or "Research topic").strip()
+    
+    try:
+        # First run gap intelligence to get gaps
+        gap_service = get_gap_service()
+        gap_result = gap_service.analyze_gaps(topic, papers, use_cache=True)
+        
+        # Flatten all gaps
+        all_gaps: List[StructuredGap] = []
+        for category_gaps in gap_result.gaps_by_category.values():
+            all_gaps.extend(category_gaps)
+        
+        # Then generate questions
+        question_service = get_question_service()
+        question_result = question_service.generate_questions(
+            topic, all_gaps, request.max_questions, use_cache=True
+        )
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "topic": topic,
+            "paper_count": len(papers),
+            "questions": [
+                {
+                    "id": q.id,
+                    "question": q.question,
+                    "category": q.category,
+                    "complexity": q.complexity,
+                    "confidence": q.confidence,
+                    "novelty": q.novelty,
+                    "feasibility": q.feasibility,
+                    "impact": q.impact,
+                    "source_gap_id": q.source_gap_id,
+                    "source_gap_description": q.source_gap_description,
+                    "supporting_papers": q.supporting_papers,
+                    "rationale": q.rationale,
+                }
+                for q in question_result.questions
+            ],
+            "total_questions": question_result.total_questions,
+            "top_questions": [
+                {
+                    "id": q.id,
+                    "question": q.question,
+                    "category": q.category,
+                    "complexity": q.complexity,
+                    "novelty": q.novelty,
+                    "impact": q.impact,
+                    "rationale": q.rationale,
+                }
+                for q in question_result.top_questions
+            ],
+            "summary": question_result.summary,
+            "generated_at": question_result.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Question generation failed: {str(exc)}")
+
+
+@router.post("/hypothesis-challenge")
+def hypothesis_challenge(
+    request: HypothesisChallengeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Challenge a research hypothesis with counter-evidence and alternative explanations."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
+    )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+    )
+    
+    try:
+        challenger_service = get_challenger_service()
+        challenge_result = challenger_service.challenge_hypothesis(
+            hypothesis=request.hypothesis,
+            papers=papers,
+            use_cache=True
+        )
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "hypothesis": challenge_result.hypothesis,
+            "challenges": [
+                {
+                    "id": c.id,
+                    "hypothesis": c.hypothesis,
+                    "challenge_type": c.challenge_type,
+                    "challenge_text": c.challenge_text,
+                    "counter_evidence": c.counter_evidence,
+                    "strength": c.strength,
+                    "confidence": c.confidence,
+                    "supporting_papers": c.supporting_papers,
+                    "rationale": c.rationale,
+                }
+                for c in challenge_result.challenges
+            ],
+            "total_challenges": challenge_result.total_challenges,
+            "strongest_challenge": {
+                "id": challenge_result.strongest_challenge.id,
+                "challenge_type": challenge_result.strongest_challenge.challenge_type,
+                "challenge_text": challenge_result.strongest_challenge.challenge_text,
+                "strength": challenge_result.strongest_challenge.strength,
+                "confidence": challenge_result.strongest_challenge.confidence,
+                "rationale": challenge_result.strongest_challenge.rationale,
+            } if challenge_result.strongest_challenge else None,
+            "overall_vulnerability": challenge_result.overall_vulnerability,
+            "summary": challenge_result.summary,
+            "generated_at": challenge_result.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Hypothesis challenge failed: {str(exc)}")
+
+
+@router.post("/citation-verification")
+def citation_verification(
+    request: CitationVerificationRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Verify citations for workspace papers."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
+    )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+    )
+    
+    try:
+        citation_service = get_citation_service()
+        verification_result = citation_service.verify_citations(papers, use_cache=True)
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "total_papers": verification_result.total_papers,
+            "verifications": [
+                {
+                    "paper_id": v.paper_id,
+                    "paper_title": v.paper_title,
+                    "source": v.source,
+                    "doi": v.doi,
+                    "url": v.url,
+                    "quality_score": v.quality_score,
+                    "accessibility_score": v.accessibility_score,
+                    "consistency_score": v.consistency_score,
+                    "overall_confidence": v.overall_confidence,
+                    "issues": v.issues,
+                    "recommendations": v.recommendations,
+                }
+                for v in verification_result.verifications
+            ],
+            "average_quality": verification_result.average_quality,
+            "average_accessibility": verification_result.average_accessibility,
+            "average_consistency": verification_result.average_consistency,
+            "overall_confidence": verification_result.overall_confidence,
+            "critical_issues": verification_result.critical_issues,
+            "summary": verification_result.summary,
+            "generated_at": verification_result.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Citation verification failed: {str(exc)}")
+
+
+@router.post("/knowledge-graph-enhancement")
+def knowledge_graph_enhancement(
+    request: KnowledgeGraphEnhancementRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Enhance knowledge graph with intelligence layers."""
+    workspace = _workspace_or_default(
+        current_user, request.workspace_id, "Autonomous Research Lab"
+    )
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    if not papers:
+        raise HTTPException(
+            status_code=400, detail="No papers found in workspace selection."
+        )
+
+    topic = (request.topic or workspace.name or "Research topic").strip()
+    layers = request.layers or ["gap", "evidence", "opportunity", "citation"]
+    
+    try:
+        # First build base knowledge graph
+        candidates = [
+            {
+                "index": i + 1,
+                "title": paper.title,
+                "abstract": paper.abstract or "",
+                "authors": _split_authors(paper.authors),
+                "source": "workspace",
+                "year": _year_from_text(f"{paper.title} {paper.abstract or ''}"),
+                "doi": paper.doi or "",
+                "url": paper.url or "",
+                "citation_count": 0,
+            }
+            for i, paper in enumerate(papers)
+        ]
+        
+        base_graph = _build_knowledge_graph(candidates)
+        base_graph["workspace"] = {"id": workspace.id, "name": workspace.name}
+        
+        # Then enhance with intelligence layers
+        graph_service = get_graph_enhancement_service()
+        enhanced_result = graph_service.enhance_knowledge_graph(
+            base_graph=base_graph,
+            papers=papers,
+            topic=topic,
+            layers=layers,
+            use_cache=True
+        )
+        
+        # Convert to serializable format
+        return {
+            "workspace": {"id": workspace.id, "name": workspace.name},
+            "topic": topic,
+            "paper_count": len(papers),
+            "base_graph": enhanced_result.base_graph,
+            "intelligence_layers": [
+                {
+                    "layer_type": layer.layer_type,
+                    "enabled": layer.enabled,
+                    "data": layer.data,
+                    "summary": layer.summary,
+                }
+                for layer in enhanced_result.intelligence_layers
+            ],
+            "total_layers": enhanced_result.total_layers,
+            "enhanced_nodes": enhanced_result.enhanced_nodes,
+            "enhanced_edges": enhanced_result.enhanced_edges,
+            "summary": enhanced_result.summary,
+            "generated_at": enhanced_result.generated_at.isoformat().replace("+00:00", "Z"),
+        }
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Knowledge graph enhancement failed: {str(exc)}")
 
 
 @router.get("/knowledge-graph")
@@ -4198,3 +5203,676 @@ async def paper_check_job_requeue(
             },
         )
     return updated
+
+
+# ============================================================================
+# RESEARCH INTELLIGENCE ARTIFACTS
+# ============================================================================
+
+def _workspace_or_default(current_user: User, workspace_id: Optional[int], default_name: str) -> Workspace:
+    """Get workspace or create default workspace."""
+    from repositories.research import get_research_repository
+    repo = get_research_repository()
+    
+    if workspace_id:
+        workspace = repo.find_workspace_for_user(workspace_id, current_user.id)
+        if workspace:
+            return workspace
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    return repo.get_or_create_default_workspace(current_user.id)
+
+
+def _load_workspace_papers(workspace: Workspace, paper_ids: Optional[List[int]] = None) -> List[Paper]:
+    """Load papers from workspace."""
+    from repositories.research import get_research_repository
+    repo = get_research_repository()
+    
+    papers = repo.list_papers_for_workspace(workspace.id, paper_ids)
+    if not papers:
+        raise HTTPException(status_code=400, detail="No papers found in workspace selection.")
+    return papers
+
+
+@router.post("/intelligence")
+async def create_research_intelligence_artifact(
+    request: ResearchIntelligenceArtifactRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """
+    Create a new research intelligence artifact and execute the intelligence pipeline.
+    
+    This endpoint:
+    1. Validates workspace and user authorization
+    2. Creates an artifact with status=running
+    3. Executes the 7-stage intelligence pipeline
+    4. Persists results and calculates overall score
+    5. Returns the completed artifact
+    """
+    workspace = _workspace_or_default(current_user, request.workspace_id, "Autonomous Research Lab")
+    papers = _load_workspace_papers(workspace, request.paper_ids)
+    
+    topic = request.topic.strip()
+    
+    try:
+        artifact_service = get_artifact_service_instance(repo)
+        
+        # Create artifact with running status
+        artifact = artifact_service.create_artifact(
+            workspace_id=workspace.id,
+            user_id=current_user.id,
+            topic=topic,
+            paper_ids=request.paper_ids,
+            pipeline_version=request.pipeline_version or "1.0",
+        )
+        
+        # Execute pipeline
+        artifact = artifact_service.execute_pipeline(
+            artifact_id=artifact.id,
+            papers=papers,
+            topic=topic,
+        )
+        
+        return _serialize_artifact(artifact)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Research intelligence artifact creation failed: {str(exc)}")
+
+
+@router.get("/intelligence/{artifact_id}")
+async def get_research_intelligence_artifact(
+    artifact_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Retrieve a research intelligence artifact by ID."""
+    artifact = repo.get_research_intelligence_artifact(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Research intelligence artifact not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(artifact.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this artifact")
+    
+    return _serialize_artifact(artifact)
+
+
+@router.get("/workspaces/{workspace_id}/research-intelligence")
+async def list_workspace_research_intelligence_artifacts(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """List all research intelligence artifacts for a workspace."""
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    artifacts = repo.list_research_intelligence_artifacts_for_workspace(workspace_id, current_user.id)
+    return {"artifacts": [_serialize_artifact(a) for a in artifacts]}
+
+
+@router.delete("/intelligence/{artifact_id}")
+async def delete_research_intelligence_artifact(
+    artifact_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Delete a research intelligence artifact."""
+    artifact = repo.get_research_intelligence_artifact(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Research intelligence artifact not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(artifact.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this artifact")
+    
+    success = repo.delete_research_intelligence_artifact(artifact_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete artifact")
+    
+    return {"success": True}
+
+
+def _serialize_artifact(artifact: ResearchIntelligenceArtifact) -> Dict[str, Any]:
+    """Serialize artifact for API response."""
+    return {
+        "id": artifact.id,
+        "workspace_id": artifact.workspace_id,
+        "user_id": artifact.user_id,
+        "topic": artifact.topic,
+        "paper_ids": artifact.paper_ids,
+        "paper_count": artifact.paper_count,
+        "status": artifact.status,
+        "pipeline_version": artifact.pipeline_version,
+        "created_at": artifact.created_at.isoformat().replace("+00:00", "Z"),
+        "updated_at": artifact.updated_at.isoformat().replace("+00:00", "Z"),
+        "evidence_analysis": artifact.evidence_analysis,
+        "gap_analysis": artifact.gap_analysis,
+        "opportunity_ranking": artifact.opportunity_ranking,
+        "research_questions": artifact.research_questions,
+        "hypothesis_challenges": artifact.hypothesis_challenges,
+        "citation_verification": artifact.citation_verification,
+        "knowledge_graph": artifact.knowledge_graph,
+        "overall_score": artifact.overall_score,
+        "summary": artifact.summary,
+        "stage_errors": artifact.stage_errors,
+    }
+
+
+# --- Saved Research Questions ---
+
+class SaveResearchQuestionRequest(BaseModel):
+    workspace_id: int
+    question: str
+    category: str
+    complexity: str
+    confidence: int
+    novelty: int
+    feasibility: int
+    impact: int
+    source_gap_id: Optional[str] = None
+    source_gap_description: Optional[str] = None
+    supporting_papers: List[int] = Field(default_factory=list)
+    rationale: Optional[str] = None
+    source_artifact_id: Optional[str] = None
+
+
+def _serialize_saved_question(question: SavedResearchQuestion) -> Dict[str, Any]:
+    """Serialize saved research question for API response."""
+    return {
+        "id": question.id,
+        "workspace_id": question.workspace_id,
+        "user_id": question.user_id,
+        "question": question.question,
+        "category": question.category,
+        "complexity": question.complexity,
+        "confidence": question.confidence,
+        "novelty": question.novelty,
+        "feasibility": question.feasibility,
+        "impact": question.impact,
+        "source_gap_id": question.source_gap_id,
+        "source_gap_description": question.source_gap_description,
+        "supporting_papers": question.supporting_papers,
+        "rationale": question.rationale,
+        "source_artifact_id": question.source_artifact_id,
+        "created_at": question.created_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+@router.post("/questions")
+async def save_research_question(
+    payload: SaveResearchQuestionRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Save a research question to a workspace."""
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(payload.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    # Generate unique ID
+    import uuid
+    question_id = f"rq_{uuid.uuid4().hex[:16]}"
+    
+    question = repo.create_saved_research_question(
+        id=question_id,
+        workspace_id=payload.workspace_id,
+        user_id=current_user.id,
+        question=payload.question,
+        category=payload.category,
+        complexity=payload.complexity,
+        confidence=payload.confidence,
+        novelty=payload.novelty,
+        feasibility=payload.feasibility,
+        impact=payload.impact,
+        source_gap_id=payload.source_gap_id,
+        source_gap_description=payload.source_gap_description,
+        supporting_papers=payload.supporting_papers,
+        rationale=payload.rationale,
+        source_artifact_id=payload.source_artifact_id,
+    )
+    
+    return _serialize_saved_question(question)
+
+
+@router.get("/workspaces/{workspace_id}/questions")
+async def list_saved_research_questions(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """List all saved research questions for a workspace."""
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    questions = repo.list_saved_research_questions_for_workspace(workspace_id, current_user.id)
+    return {"questions": [_serialize_saved_question(q) for q in questions]}
+
+
+@router.get("/questions/{question_id}")
+async def get_saved_research_question(
+    question_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Get a specific saved research question."""
+    question = repo.get_saved_research_question(question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="Research question not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(question.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this question")
+    
+    return _serialize_saved_question(question)
+
+
+@router.delete("/questions/{question_id}")
+async def delete_saved_research_question(
+    question_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Delete a saved research question."""
+    question = repo.get_saved_research_question(question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="Research question not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(question.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this question")
+    
+    success = repo.delete_saved_research_question(question_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete question")
+    
+    return {"success": True}
+
+
+# ============================================================================
+# RESEARCH PLAN ENDPOINTS
+# ============================================================================
+
+class CreateResearchPlanRequest(BaseModel):
+    workspace_id: int
+    artifact_id: str
+    opportunity_id: str
+    opportunity_description: str
+    title: str
+    research_problem: str
+    research_question: str
+    hypothesis: str
+    objectives: str
+    proposed_methodology: str
+    alternative_methodology: str
+    datasets: str
+    variables: str
+    baselines: str
+    evaluation_metrics: str
+    expected_contribution: str
+    risks: str
+    limitations: str
+    reproducibility_requirements: str
+    supporting_papers: List[int] = Field(default_factory=list)
+    evidence_references: List[str] = Field(default_factory=list)
+    status: str = "draft"
+
+
+class UpdateResearchPlanRequest(BaseModel):
+    title: Optional[str] = None
+    research_problem: Optional[str] = None
+    research_question: Optional[str] = None
+    hypothesis: Optional[str] = None
+    objectives: Optional[str] = None
+    proposed_methodology: Optional[str] = None
+    alternative_methodology: Optional[str] = None
+    datasets: Optional[str] = None
+    variables: Optional[str] = None
+    baselines: Optional[str] = None
+    evaluation_metrics: Optional[str] = None
+    expected_contribution: Optional[str] = None
+    risks: Optional[str] = None
+    limitations: Optional[str] = None
+    reproducibility_requirements: Optional[str] = None
+    supporting_papers: Optional[List[int]] = None
+    evidence_references: Optional[List[str]] = None
+    researcher_decisions: Optional[List[Dict[str, Any]]] = None
+    status: Optional[str] = None
+
+
+class GeneratePlanSuggestionsRequest(BaseModel):
+    artifact_id: str
+    opportunity_id: str
+    gap_description: str
+    category: str
+    evidence_strength: int
+    novelty: int
+    impact: int
+    feasibility: int
+    recency: int
+    overall_score: int
+    explanation: str
+    supporting_papers: List[int]
+    affected_papers: List[int]
+
+
+def _serialize_research_plan(plan: ResearchPlan) -> Dict[str, Any]:
+    """Serialize research plan for API response."""
+    return {
+        "id": plan.id,
+        "workspace_id": plan.workspace_id,
+        "user_id": plan.user_id,
+        "artifact_id": plan.artifact_id,
+        "opportunity_id": plan.opportunity_id,
+        "opportunity_description": plan.opportunity_description,
+        "title": plan.title,
+        "research_problem": plan.research_problem,
+        "research_question": plan.research_question,
+        "hypothesis": plan.hypothesis,
+        "objectives": plan.objectives,
+        "proposed_methodology": plan.proposed_methodology,
+        "alternative_methodology": plan.alternative_methodology,
+        "datasets": plan.datasets,
+        "variables": plan.variables,
+        "baselines": plan.baselines,
+        "evaluation_metrics": plan.evaluation_metrics,
+        "expected_contribution": plan.expected_contribution,
+        "risks": plan.risks,
+        "limitations": plan.limitations,
+        "reproducibility_requirements": plan.reproducibility_requirements,
+        "supporting_papers": plan.supporting_papers,
+        "evidence_references": plan.evidence_references,
+        "researcher_decisions": [
+            {
+                "field_name": dec.field_name,
+                "ai_suggestion": dec.ai_suggestion,
+                "researcher_decision": dec.researcher_decision,
+                "final_value": dec.final_value,
+                "decision_timestamp": dec.decision_timestamp.isoformat().replace("+00:00", "Z"),
+                "evidence_references": dec.evidence_references,
+            }
+            for dec in plan.researcher_decisions
+        ],
+        "status": plan.status,
+        "created_at": plan.created_at.isoformat().replace("+00:00", "Z"),
+        "updated_at": plan.updated_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+@router.post("/plans/generate")
+async def generate_plan_suggestions(
+    payload: GeneratePlanSuggestionsRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Generate AI suggestions for a research plan based on an opportunity."""
+    # Verify artifact ownership
+    artifact = repo.get_research_intelligence_artifact(payload.artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    
+    workspace = repo.find_workspace_for_user(artifact.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this artifact")
+    
+    # Get supporting papers
+    papers = []
+    for paper_id in payload.supporting_papers:
+        paper = repo.find_paper_for_user(paper_id, current_user.id)
+        if paper:
+            papers.append(paper)
+    
+    # Create opportunity object
+    from repositories.research import ResearchOpportunity
+    opportunity = ResearchOpportunity(
+        gap_id=payload.opportunity_id,
+        gap_description=payload.gap_description,
+        category=payload.category,
+        evidence_strength=payload.evidence_strength,
+        novelty=payload.novelty,
+        impact=payload.impact,
+        feasibility=payload.feasibility,
+        recency=payload.recency,
+        overall_score=payload.overall_score,
+        rank=0,  # Not needed for generation
+        explanation=payload.explanation,
+        supporting_papers=payload.supporting_papers,
+        affected_papers=payload.affected_papers,
+    )
+    
+    # Generate suggestions
+    plan_service = get_plan_service()
+    suggestions = await plan_service.generate_plan_suggestions(
+        opportunity=opportunity,
+        artifact=artifact,
+        papers=papers,
+    )
+    
+    return suggestions
+
+
+@router.post("/plans")
+async def create_research_plan(
+    payload: CreateResearchPlanRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Create a new research plan from a research opportunity."""
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(payload.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    # Verify artifact ownership
+    artifact = repo.get_research_intelligence_artifact(payload.artifact_id)
+    if not artifact or artifact.workspace_id != payload.workspace_id:
+        raise HTTPException(status_code=404, detail="Artifact not found or access denied")
+    
+    # Generate plan ID
+    import uuid
+    plan_id = f"plan_{uuid.uuid4().hex}"
+    
+    plan = repo.create_research_plan(
+        id=plan_id,
+        workspace_id=payload.workspace_id,
+        user_id=current_user.id,
+        artifact_id=payload.artifact_id,
+        opportunity_id=payload.opportunity_id,
+        opportunity_description=payload.opportunity_description,
+        title=payload.title,
+        research_problem=payload.research_problem,
+        research_question=payload.research_question,
+        hypothesis=payload.hypothesis,
+        objectives=payload.objectives,
+        proposed_methodology=payload.proposed_methodology,
+        alternative_methodology=payload.alternative_methodology,
+        datasets=payload.datasets,
+        variables=payload.variables,
+        baselines=payload.baselines,
+        evaluation_metrics=payload.evaluation_metrics,
+        expected_contribution=payload.expected_contribution,
+        risks=payload.risks,
+        limitations=payload.limitations,
+        reproducibility_requirements=payload.reproducibility_requirements,
+        supporting_papers=payload.supporting_papers,
+        evidence_references=payload.evidence_references,
+        status=payload.status,
+    )
+    
+    return _serialize_research_plan(plan)
+
+
+@router.get("/plans/{plan_id}")
+async def get_research_plan(
+    plan_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Get a specific research plan."""
+    plan = repo.get_research_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(plan.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this plan")
+    
+    return _serialize_research_plan(plan)
+
+
+@router.get("/workspaces/{workspace_id}/plans")
+async def list_research_plans(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """List all research plans for a workspace."""
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    
+    plans = repo.list_research_plans_for_workspace(workspace_id, current_user.id)
+    return {"plans": [_serialize_research_plan(plan) for plan in plans]}
+
+
+@router.put("/plans/{plan_id}")
+async def update_research_plan(
+    plan_id: str,
+    payload: UpdateResearchPlanRequest,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Update a research plan."""
+    plan = repo.get_research_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(plan.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this plan")
+    
+    # Build updates dict
+    updates: Dict[str, Any] = {}
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.research_problem is not None:
+        updates["research_problem"] = payload.research_problem
+    if payload.research_question is not None:
+        updates["research_question"] = payload.research_question
+    if payload.hypothesis is not None:
+        updates["hypothesis"] = payload.hypothesis
+    if payload.objectives is not None:
+        updates["objectives"] = payload.objectives
+    if payload.proposed_methodology is not None:
+        updates["proposed_methodology"] = payload.proposed_methodology
+    if payload.alternative_methodology is not None:
+        updates["alternative_methodology"] = payload.alternative_methodology
+    if payload.datasets is not None:
+        updates["datasets"] = payload.datasets
+    if payload.variables is not None:
+        updates["variables"] = payload.variables
+    if payload.baselines is not None:
+        updates["baselines"] = payload.baselines
+    if payload.evaluation_metrics is not None:
+        updates["evaluation_metrics"] = payload.evaluation_metrics
+    if payload.expected_contribution is not None:
+        updates["expected_contribution"] = payload.expected_contribution
+    if payload.risks is not None:
+        updates["risks"] = payload.risks
+    if payload.limitations is not None:
+        updates["limitations"] = payload.limitations
+    if payload.reproducibility_requirements is not None:
+        updates["reproducibility_requirements"] = payload.reproducibility_requirements
+    if payload.supporting_papers is not None:
+        updates["supporting_papers"] = payload.supporting_papers
+    if payload.evidence_references is not None:
+        updates["evidence_references"] = payload.evidence_references
+    if payload.researcher_decisions is not None:
+        # Convert dict to ResearcherDecision objects
+        updates["researcher_decisions"] = [
+            ResearcherDecision(
+                field_name=dec["field_name"],
+                ai_suggestion=dec["ai_suggestion"],
+                researcher_decision=dec["researcher_decision"],
+                final_value=dec["final_value"],
+                decision_timestamp=datetime.fromisoformat(dec["decision_timestamp"].replace("Z", "+00:00")),
+                evidence_references=dec.get("evidence_references", []),
+            )
+            for dec in payload.researcher_decisions
+        ]
+    if payload.status is not None:
+        updates["status"] = payload.status
+    
+    updated_plan = repo.update_research_plan(plan_id, updates)
+    if not updated_plan:
+        raise HTTPException(status_code=500, detail="Failed to update plan")
+    
+    return _serialize_research_plan(updated_plan)
+
+
+@router.delete("/plans/{plan_id}")
+async def delete_research_plan(
+    plan_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Delete a research plan."""
+    plan = repo.get_research_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(plan.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this plan")
+    
+    success = repo.delete_research_plan(plan_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete plan")
+    
+    return {"success": True}
+
+
+@router.post("/plans/{plan_id}/export")
+async def export_research_plan_to_docspace(
+    plan_id: str,
+    current_user: User = Depends(get_current_user),
+    repo: ResearchRepository = Depends(get_research_repository),
+):
+    """Export a research plan to a WorkspaceDocument in DocSpace."""
+    plan = repo.get_research_plan(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Research plan not found")
+    
+    # Verify workspace ownership
+    workspace = repo.find_workspace_for_user(plan.workspace_id, current_user.id)
+    if not workspace:
+        raise HTTPException(status_code=403, detail="Access denied to this plan")
+    
+    # Convert plan to document
+    plan_service = get_plan_service()
+    document = plan_service.convert_to_document(plan)
+    
+    # Create document in repository
+    created_doc = repo.create_workspace_document(
+        workspace_id=document.workspace_id,
+        user_id=document.user_id,
+        title=document.title,
+        content=document.content,
+    )
+    
+    return _serialize_research_plan(plan)

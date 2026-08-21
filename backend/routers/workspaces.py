@@ -203,36 +203,46 @@ def _persist_workspace_file_if_configured(
 ) -> Optional[object]:
     if not storage_is_configured():
         return None
-    safe_name = _safe_storage_filename(filename, fallback="artifact.bin")
-    storage_path = (
-        f"workspace-files/{user_id}/{workspace_id}/exports/{kind}/{safe_name}"
-    )
-    uploaded = upload_bytes(
-        storage_path=storage_path,
-        data=content,
-        content_type=content_type,
-        metadata={
-            "workspace_id": str(workspace_id),
-            "user_id": str(user_id),
-            "kind": kind,
-            "filename": safe_name,
-        },
-    )
-    record = repo.create_workspace_file(
-        workspace_id=workspace_id,
-        user_id=user_id,
-        kind=kind,
-        filename=safe_name,
-        storage_bucket=uploaded.bucket,
-        storage_path=uploaded.path,
-        content_type=uploaded.content_type,
-        size_bytes=uploaded.size_bytes,
-    )
-    record.download_url = (
-        f"{_backend_base_url()}/workspaces/{workspace_id}/files/{record.id}/download"
-    )
-    repo.save(record)
-    return record
+    try:
+        safe_name = _safe_storage_filename(filename, fallback="artifact.bin")
+        storage_path = (
+            f"workspace-files/{user_id}/{workspace_id}/exports/{kind}/{safe_name}"
+        )
+        uploaded = upload_bytes(
+            storage_path=storage_path,
+            data=content,
+            content_type=content_type,
+            metadata={
+                "workspace_id": str(workspace_id),
+                "user_id": str(user_id),
+                "kind": kind,
+                "filename": safe_name,
+            },
+        )
+        record = repo.create_workspace_file(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            kind=kind,
+            filename=safe_name,
+            storage_bucket=uploaded.bucket,
+            storage_path=uploaded.path,
+            content_type=uploaded.content_type,
+            size_bytes=uploaded.size_bytes,
+        )
+        record.download_url = (
+            f"{_backend_base_url()}/workspaces/{workspace_id}/files/{record.id}/download"
+        )
+        repo.save(record)
+        return record
+    except Exception as exc:
+        # Log the error but don't fail the export - storage is optional
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Failed to persist workspace file to storage (export will still be returned): %s",
+            exc,
+        )
+        return None
 
 
 from utils.text_utils import (

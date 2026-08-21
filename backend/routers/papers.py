@@ -58,10 +58,10 @@ _GLOBAL_SEARCH_METRICS: Dict[str, Any] = {
 }
 # Keep multi-source search responsive: each source has a bounded budget and
 # the whole request returns partial merged results quickly.
-GLOBAL_SOURCE_TIMEOUT_SECONDS = 6.0
-GLOBAL_SEARCH_WAIT_SECONDS = 8.0
+GLOBAL_SOURCE_TIMEOUT_SECONDS = 15.0
+GLOBAL_SEARCH_WAIT_SECONDS = 20.0
 GLOBAL_SOURCE_CONCURRENCY = 7
-GLOBAL_UNPAYWALL_TIMEOUT_SECONDS = 2.0
+GLOBAL_UNPAYWALL_TIMEOUT_SECONDS = 4.0
 GLOBAL_UNPAYWALL_MAX_LOOKUPS = 2
 GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE: Dict[str, int] = {
     "fast": 0,
@@ -69,34 +69,34 @@ GLOBAL_UNPAYWALL_MAX_LOOKUPS_BY_MODE: Dict[str, int] = {
     "deep": 4,
 }
 GLOBAL_SOURCE_TIMEOUT_OVERRIDES: Dict[str, float] = {
-    "openalex": 5.0,
-    "arxiv": 5.0,
-    "semantic": 5.0,
-    "pmc": 5.0,
-    "econbiz": 4.5,
-    "jstage": 4.5,
-    "orkg": 4.5,
-    "eric": 4.5,
-    "osti": 4.5,
-    "crossref": 5.5,
-    "dblp": 4.5,
-    "zenodo": 4.5,
-    "openaire": 5.0,
-    "figshare": 4.5,
-    "osf": 4.5,
-    "dryad": 4.5,
-    "inspire": 4.5,
-    "springer": 5.0,
-    "europepmc": 5.0,
-    "doaj": 5.0,
-    "hal": 5.0,
-    "plos": 4.5,
-    "pubmed": 5.5,
-    "nasa": 5.0,
-    "elife": 5.0,
-    "datacite": 4.5,
-    "biorxiv": 4.5,
-    "medrxiv": 4.5,
+    "openalex": 15.0,
+    "arxiv": 15.0,
+    "semantic": 15.0,
+    "pmc": 15.0,
+    "econbiz": 12.0,
+    "jstage": 12.0,
+    "orkg": 12.0,
+    "eric": 12.0,
+    "osti": 12.0,
+    "crossref": 16.0,
+    "dblp": 12.0,
+    "zenodo": 12.0,
+    "openaire": 15.0,
+    "figshare": 12.0,
+    "osf": 12.0,
+    "dryad": 12.0,
+    "inspire": 12.0,
+    "springer": 15.0,
+    "europepmc": 15.0,
+    "doaj": 15.0,
+    "hal": 15.0,
+    "plos": 12.0,
+    "pubmed": 16.0,
+    "nasa": 15.0,
+    "elife": 15.0,
+    "datacite": 12.0,
+    "biorxiv": 12.0,
+    "medrxiv": 12.0,
 }
 
 GLOBAL_SEARCH_SOURCE_PRESETS: Dict[str, List[str]] = {
