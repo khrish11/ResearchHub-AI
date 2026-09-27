@@ -44,23 +44,21 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
-    // Force Firebase Auth to be disabled since we're using direct JWT authentication
-    setFirebaseEnabled(false);
-    setGoogleConfigured(false);
+    // Check Firebase Auth availability
+    setFirebaseEnabled(localFirebaseAvailability);
     
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
       api.get<FirebaseStatusResponse>('/auth/firebase/status'),
-    ]).then(() => {
-      // Force Firebase Auth to be disabled
-      setFirebaseEnabled(false);
+    ]).then((results) => {
+      const remoteEnabled = results[0].status === 'fulfilled' ? results[0].value : localFirebaseAvailability;
+      setFirebaseEnabled(remoteEnabled);
     });
     setGoogleLoginUrl(buildGoogleAuthUrl());
     api
       .get('/auth/google/status')
       .then(() => {
-        // Force Google to be disabled
-        setGoogleConfigured(false);
+        setGoogleConfigured(true);
       })
       .catch(() => setGoogleConfigured(false));
 
