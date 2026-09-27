@@ -42,17 +42,16 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
-    setFirebaseEnabled(localFirebaseAvailability);
+    // Disable Firebase Auth in production - use direct JWT authentication
+    setFirebaseEnabled(false);
     setGoogleConfigured(false);
     
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
       api.get<FirebaseStatusResponse>('/auth/firebase/status'),
-    ]).then(([featureFlag, apiStatus]) => {
-      const enabled = 
-        (featureFlag.status === 'fulfilled' ? featureFlag.value : localFirebaseAvailability) || 
-        (apiStatus.status === 'fulfilled' && apiStatus.value.data.configured);
-      setFirebaseEnabled(enabled);
+    ]).then(() => {
+      // Keep Firebase disabled in production
+      setFirebaseEnabled(false);
     });
     setGoogleLoginUrl(getGoogleLoginUrl());
     api

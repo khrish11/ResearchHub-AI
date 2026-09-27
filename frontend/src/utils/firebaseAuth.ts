@@ -5,7 +5,7 @@ import {
   signInWithPopup,
   updateProfile,
 } from 'firebase/auth';
-import api from '../api';
+import api, { API_URL } from '../api';
 import { getFirebaseAuthClient, getFirebaseGoogleProvider, isFirebaseAuthEnabled, logAnalyticsEvent } from './firebaseClient';
 
 interface FirebaseSessionResponse {
@@ -21,7 +21,7 @@ interface FirebaseSessionResponse {
 
 const exchangeFirebaseSession = async (idToken: string) => {
   console.log('Exchanging Firebase session with token:', idToken.substring(0, 20) + '...');
-  const response = await api.post<FirebaseSessionResponse>('/auth/firebase/session', {
+  const response = await api.post<FirebaseSessionResponse>(`${API_URL}/auth/firebase/session`, {
     id_token: idToken,
   });
   console.log('Firebase session exchange response:', response);
