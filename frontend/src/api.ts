@@ -67,7 +67,7 @@ export const getGoogleLoginUrl = () => {
 };
 
 const api = axios.create({
-    baseURL: '', // Use relative URLs to go through Vite proxy
+    baseURL: API_URL, // Use full API URL for production (no Vite proxy)
     withCredentials: true,
     timeout: 30000, // Reduced timeout for debugging
 });
