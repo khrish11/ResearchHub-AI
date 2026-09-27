@@ -88,7 +88,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
             setFirebaseEnabled(false);
             // Use full API URL for production (no Vite proxy in production)
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', `${API_URL}/token`, true);
+            xhr.open('POST', `${API_URL}/auth/token`, true);
             xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
             
             const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
@@ -120,7 +120,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
       } else {
         // Use full API URL for production (no Vite proxy in production)
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API_URL}/token`, true);
+        xhr.open('POST', `${API_URL}/auth/token`, true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         
         const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
