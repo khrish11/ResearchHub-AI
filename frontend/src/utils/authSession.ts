@@ -10,19 +10,30 @@ const getApiBaseUrl = (): string =>
     .trim()
     .replace(/\/+$/, '');
 
-export const getBackendToken = (): string | null => legacyBackendToken;
+export const getBackendToken = (): string | null => {
+  // First check in-memory token (for current session)
+  if (legacyBackendToken) {
+    return legacyBackendToken;
+  }
+  // Fall back to localStorage for session persistence
+  return localStorage.getItem(BACKEND_TOKEN_KEY);
+};
 
 export const setBackendToken = (token: string | null) => {
   legacyBackendToken = token || null;
-  // Always clear old persistent token storage.
-  localStorage.removeItem(BACKEND_TOKEN_KEY);
+  // Persist token to localStorage for session persistence
+  if (token) {
+    localStorage.setItem(BACKEND_TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(BACKEND_TOKEN_KEY);
+  }
 };
 
 const notifyAuthSessionChanged = () => {
   window.dispatchEvent(new Event('auth-session-changed'));
 };
 
-export const clearAuthSession = async () => {
+export const clearAuthSession = async (notify = true) => {
   setBackendToken(null);
   try {
     await fetch(`${getApiBaseUrl()}/auth/logout`, {
@@ -41,7 +52,13 @@ export const clearAuthSession = async () => {
   } catch {
     // Best-effort sign out.
   }
-  notifyAuthSessionChanged();
+  // Clear local storage and redirect
+  localStorage.removeItem(BACKEND_TOKEN_KEY);
+  if (notify) {
+    notifyAuthSessionChanged();
+  }
+  // Navigate to login page using React Router instead of window.location
+  window.location.href = window.location.origin + '/login';
 };
 
 export const notifyAuthLogin = () => {

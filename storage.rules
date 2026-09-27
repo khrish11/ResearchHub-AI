@@ -1,0 +1,44 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isWorkspaceOwner(workspaceId) {
+      return isAuthenticated() && 
+             firestore.get(/databases/(default)/documents/workspaces/$(workspaceId)).data.user_id == request.auth.uid;
+    }
+    
+    // File size validation (max 20MB - matches backend validation in upload.py)
+    function isValidFileSize() {
+      return request.resource.size < 20 * 1024 * 1024;
+    }
+    
+    // Allowed file types for PDF uploads (matches backend validation)
+    function isPDF() {
+      return request.resource.contentType == 'application/pdf' 
+          || request.resource.contentType == 'application/x-pdf'
+          || request.resource.contentType == 'binary/octet-stream';
+    }
+    
+    // Workspace file paths used by the application
+    // Pattern: workspace-files/{userId}/{workspaceId}/uploads/...
+    // Pattern: workspace-files/{userId}/{workspaceId}/exports/...
+    match /workspace-files/{userId}/{workspaceId}/{allPaths=**} {
+      allow read: if isOwner(userId) && isWorkspaceOwner(workspaceId);
+      allow write: if isOwner(userId) && isWorkspaceOwner(workspaceId) && isValidFileSize();
+    }
+    
+    // Deny all other paths by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

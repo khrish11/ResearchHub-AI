@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
-import api, { API_URL, getGoogleLoginUrl } from '../api';
+import api, { getGoogleLoginUrl } from '../api';
 import {
   firebaseAuthAvailable,
   isFirebaseUnauthorizedDomainError,
@@ -35,30 +35,30 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
     const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
     const message = err instanceof Error ? err.message : '';
     const merged = `${detail || ''} ${message}`.toLowerCase();
-    return merged.includes('firebase authentication is not configured');
+    return merged.includes('firebase authentication is not configured') || 
+           merged.includes('auth/invalid-credential') ||
+           merged.includes('auth/user-not-found');
   };
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
+    // Force Firebase Auth to be disabled since we're using direct JWT authentication
     setFirebaseEnabled(false);
+    setGoogleConfigured(false);
+    
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
       api.get<FirebaseStatusResponse>('/auth/firebase/status'),
-    ]).then(([flagResult, firebaseStatusResult]) => {
-      const remoteFlagEnabled =
-        flagResult.status === 'fulfilled' ? !!flagResult.value : localFirebaseAvailability;
-      const backendFirebaseConfigured =
-        firebaseStatusResult.status === 'fulfilled'
-          ? !!firebaseStatusResult.value?.data?.configured
-          : false;
-      setFirebaseEnabled(localFirebaseAvailability && remoteFlagEnabled && backendFirebaseConfigured);
+    ]).then(() => {
+      // Force Firebase Auth to be disabled
+      setFirebaseEnabled(false);
     });
     setGoogleLoginUrl(getGoogleLoginUrl());
     api
       .get<GoogleStatusResponse>('/auth/google/status')
-      .then((res) => {
-        const status = res.data || { configured: false };
-        setGoogleConfigured(!!status.configured);
+      .then(() => {
+        // Force Google to be disabled
+        setGoogleConfigured(false);
       })
       .catch(() => {
         setGoogleConfigured(false);
@@ -78,7 +78,6 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    console.log('Login attempt:', { email, firebaseEnabled });
     try {
       let response: { access_token: string };
       if (firebaseEnabled) {
@@ -87,26 +86,70 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
         } catch (firebaseErr) {
           if (isFirebaseNotConfiguredError(firebaseErr)) {
             setFirebaseEnabled(false);
-            response = await api
-              .post('/auth/token', new URLSearchParams({ username: email, password }), {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-              })
-              .then((res) => res.data);
+            // Use relative URL to go through Vite proxy
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/auth/token', true);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            
+            const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
+              xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  try {
+                    const data = JSON.parse(xhr.responseText);
+                    resolve(data);
+                  } catch {
+                    reject(new Error('Failed to parse response'));
+                  }
+                } else {
+                  reject(new Error(`Login failed: ${xhr.status}`));
+                }
+              };
+              xhr.onerror = () => reject(new Error('Network error'));
+              xhr.ontimeout = () => reject(new Error('Request timeout'));
+            });
+            
+            xhr.timeout = 30000;
+            const params = new URLSearchParams({ username: email, password });
+            xhr.send(params.toString());
+            
+            response = await responsePromise;
           } else {
             throw firebaseErr;
           }
         }
       } else {
-        response = await api
-          .post('/auth/token', new URLSearchParams({ username: email, password }), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          })
-          .then((res) => res.data);
+        // Use relative URL to go through Vite proxy
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/auth/token', true);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        
+        const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                resolve(data);
+              } catch {
+                reject(new Error('Failed to parse response'));
+              }
+            } else {
+              reject(new Error(`Login failed: ${xhr.status}`));
+            }
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          xhr.ontimeout = () => reject(new Error('Request timeout'));
+        });
+        
+        xhr.timeout = 30000;
+        const params = new URLSearchParams({ username: email, password });
+        xhr.send(params.toString());
+        
+        response = await responsePromise;
       }
 
-      console.log('Login response:', response);
       setToken(response.access_token);
-      navigate('/home');
+      // Wait for auth state to update before navigating
+      setTimeout(() => navigate('/home'), 100);
     } catch (err: unknown) {
       const axErr = err as { response?: { status: number; data?: { detail?: string } }; message?: string };
       if (firebaseEnabled && err instanceof Error && !axErr.response) {
@@ -116,7 +159,7 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
       if (axErr.response?.status === 401) {
         setError('Incorrect email or password. Try again or register a new account.');
       } else if (axErr.message?.includes('Network') || !axErr.response) {
-        setError(`Cannot reach server. Ensure the backend is running on ${API_URL}`);
+        setError('Cannot reach server. Please check your connection and try again.');
       } else {
         setError(axErr.response?.data?.detail || 'Login failed. Please try again.');
       }

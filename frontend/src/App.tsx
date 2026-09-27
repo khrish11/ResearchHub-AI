@@ -6,10 +6,10 @@ import ErrorBoundary from './components/ErrorBoundary';
 import ToastContainer from './components/ToastContainer';
 import CookieConsentBanner from './components/CookieConsentBanner';
 import CommandPalette from './components/CommandPalette';
-import api from './api';
+import api, { API_URL } from './api';
 import { getAppBasePath, toAppPath } from './utils/routing';
 import { trackRouteView } from './utils/firebaseClient';
-import { notifyAuthLogin, setBackendToken } from './utils/authSession';
+import { notifyAuthLogin, setBackendToken, getBackendToken } from './utils/authSession';
 import { handleFirebaseRedirectResult, firebaseAuthAvailable } from './utils/firebaseAuth';
 
 const lazyWithRetry = (
@@ -52,23 +52,19 @@ const Login = lazyWithRetry(() => import('./pages/Login'), 'login') as unknown a
 const Register = lazyWithRetry(() => import('./pages/Register'), 'register') as unknown as ComponentType<{ setToken?: (token: string) => void }>;
 const EmailVerification = lazyWithRetry(() => import('./pages/EmailVerification'), 'email-verification') as unknown as ComponentType<Record<string, unknown>>;
 const Settings = lazyWithRetry(() => import('./pages/Settings'), 'settings') as unknown as ComponentType<Record<string, unknown>>;
-const AccountSettings = lazyWithRetry(() => import('./pages/AccountSettings'), 'account-settings') as unknown as ComponentType<Record<string, unknown>>;
 const Home = lazyWithRetry(() => import('./pages/Home'), 'home') as unknown as ComponentType<Record<string, unknown>>;
-const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'), 'dashboard') as unknown as ComponentType<Record<string, unknown>>;
+const Research = lazyWithRetry(() => import('./pages/Research'), 'research') as unknown as ComponentType<Record<string, unknown>>;
+const Workspaces = lazyWithRetry(() => import('./pages/Workspaces'), 'workspaces') as unknown as ComponentType<Record<string, unknown>>;
+const Reports = lazyWithRetry(() => import('./pages/Reports'), 'reports') as unknown as ComponentType<Record<string, unknown>>;
+const Library = lazyWithRetry(() => import('./pages/Library'), 'library') as unknown as ComponentType<Record<string, unknown>>;
 const SearchPapers = lazyWithRetry(() => import('./pages/SearchPapers'), 'search-papers') as unknown as ComponentType<Record<string, unknown>>;
 const Workspace = lazyWithRetry(() => import('./pages/Workspace'), 'workspace') as unknown as ComponentType<Record<string, unknown>>;
-const Mindmap = lazyWithRetry(() => import('./pages/Mindmap'), 'mindmap') as unknown as ComponentType<Record<string, unknown>>;
-const ComparePapers = lazyWithRetry(() => import('./pages/ComparePapers'), 'compare-papers') as unknown as ComponentType<Record<string, unknown>>;
 const ResearchReport = lazyWithRetry(() => import('./pages/ResearchReport'), 'research-report') as unknown as ComponentType<Record<string, unknown>>;
-const AITools = lazyWithRetry(() => import('./pages/AITools'), 'ai-tools') as unknown as ComponentType<Record<string, unknown>>;
 const ResearchAgent = lazyWithRetry(() => import('./pages/ResearchAgent'), 'research-agent') as unknown as ComponentType<Record<string, unknown>>;
 const ResearchIntelligence = lazyWithRetry(() => import('./features/research-intelligence/ResearchIntelligencePage'), 'research-intelligence') as unknown as ComponentType<Record<string, unknown>>;
 const UploadPDF = lazyWithRetry(() => import('./pages/UploadPDF'), 'upload-pdf') as unknown as ComponentType<Record<string, unknown>>;
 const DocSpace = lazyWithRetry(() => import('./pages/DocSpace'), 'doc-space') as unknown as ComponentType<Record<string, unknown>>;
-const WritingChat = lazyWithRetry(() => import('./pages/WritingChat'), 'writing-chat') as unknown as ComponentType<Record<string, unknown>>;
-const AskWorkspace = lazyWithRetry(() => import('./pages/AskWorkspace'), 'ask-workspace') as unknown as ComponentType<Record<string, unknown>>;
 const DeveloperConsole = lazyWithRetry(() => import('./pages/DeveloperConsole'), 'developer-console') as unknown as ComponentType<Record<string, unknown>>;
-const AnalyticsDashboard = lazyWithRetry(() => import('./pages/AnalyticsDashboard'), 'analytics-dashboard') as unknown as ComponentType<Record<string, unknown>>;
 const PrivacyPolicy = lazyWithRetry(() => import('./pages/PrivacyPolicy'), 'privacy-policy') as unknown as ComponentType<Record<string, unknown>>;
 const TermsOfService = lazyWithRetry(() => import('./pages/TermsOfService'), 'terms-of-service') as unknown as ComponentType<Record<string, unknown>>;
 const CookiePolicy = lazyWithRetry(() => import('./pages/CookiePolicy'), 'cookie-policy') as unknown as ComponentType<Record<string, unknown>>;
@@ -118,23 +114,42 @@ function RouteTelemetry() {
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
-  const [canAccessAnalytics, setCanAccessAnalytics] = useState(false);
   const [isDeveloper, setIsDeveloper] = useState(false);
   const routerBasename = getAppBasePath();
   const authBootstrapStarted = useRef(false);
 
   const refreshAuthState = async () => {
+    // Skip auth check on auth pages to prevent interference with registration/login
+    const currentPath = window.location.pathname;
+    const isAuthPage = currentPath === '/login' || currentPath === '/register';
+    if (isAuthPage) {
+      setAuthChecked(true);
+      return;
+    }
+
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 2500);
 
     try {
-      const response = await api.get('/auth/me', { signal: controller.signal });
-      setIsAuthenticated(true);
-      setCanAccessAnalytics(Boolean(response?.data?.can_access_analytics));
-      setIsDeveloper(Boolean(response?.data?.is_developer));
+      // Use direct API URL to bypass Vite proxy issues
+      const response = await fetch(`${API_URL}/auth/me`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getBackendToken()}`
+        },
+        signal: controller.signal
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setIsAuthenticated(true);
+        setIsDeveloper(Boolean(data?.is_developer));
+      } else {
+        setIsAuthenticated(false);
+        setIsDeveloper(false);
+      }
     } catch {
       setIsAuthenticated(false);
-      setCanAccessAnalytics(false);
       setIsDeveloper(false);
     } finally {
       window.clearTimeout(timeoutId);
@@ -147,8 +162,9 @@ function App() {
       return;
     }
     setBackendToken(token);
-    notifyAuthLogin();
-    void refreshAuthState();
+    // Update auth state immediately to prevent redirect to login
+    setIsAuthenticated(true);
+    setAuthChecked(true);
   };
 
   // useEffect(() => {
@@ -223,7 +239,6 @@ function App() {
           })
           .catch(() => {
             setIsAuthenticated(false);
-            setCanAccessAnalytics(false);
             setIsDeveloper(false);
             setAuthChecked(true);
             window.clearTimeout(safetyTimeout);
@@ -255,16 +270,6 @@ function App() {
       return <RouteLoader />;
     }
     return isAuthenticated ? element : <Navigate to="/login" replace />;
-  };
-
-  const adminAnalyticsRoute = (element: ReactElement) => {
-    if (!authChecked) {
-      return <RouteLoader />;
-    }
-    if (!isAuthenticated) {
-      return <Navigate to="/login" replace />;
-    }
-    return canAccessAnalytics ? element : <Navigate to="/home" replace />;
   };
 
   const developerOnlyRoute = (element: ReactElement) => {
@@ -307,7 +312,23 @@ function App() {
                     />
                     <Route
                       path="/dashboard"
-                      element={protectedRoute(<Dashboard />)}
+                      element={<Navigate to="/home" replace />}
+                    />
+                    <Route
+                      path="/research"
+                      element={protectedRoute(<Research />)}
+                    />
+                    <Route
+                      path="/workspaces"
+                      element={protectedRoute(<Workspaces />)}
+                    />
+                    <Route
+                      path="/reports"
+                      element={protectedRoute(<Reports />)}
+                    />
+                    <Route
+                      path="/library"
+                      element={protectedRoute(<Library />)}
                     />
                     <Route
                       path="/search"
@@ -319,11 +340,11 @@ function App() {
                     />
                     <Route
                       path="/mindmap"
-                      element={protectedRoute(<Mindmap />)}
+                      element={<Navigate to="/home" replace />}
                     />
                     <Route
                       path="/compare"
-                      element={protectedRoute(<ComparePapers />)}
+                      element={<Navigate to="/home" replace />}
                     />
                     <Route
                       path="/research-report"
@@ -331,7 +352,7 @@ function App() {
                     />
                     <Route
                       path="/ai-tools"
-                      element={protectedRoute(<AITools />)}
+                      element={<Navigate to="/settings" replace />}
                     />
                     <Route
                       path="/research-agent"
@@ -351,16 +372,16 @@ function App() {
                     />
                     <Route
                       path="/research-chat"
-                      element={protectedRoute(<WritingChat />)}
+                      element={<Navigate to="/home" replace />}
                     />
                     <Route
                       path="/ask-workspace"
-                      element={protectedRoute(<AskWorkspace />)}
+                      element={<Navigate to="/home" replace />}
                     />
-                    <Route path="/writing-chat" element={<Navigate to="/research-chat" replace />} />
+                    <Route path="/writing-chat" element={<Navigate to="/home" replace />} />
                     <Route
                       path="/account"
-                      element={protectedRoute(<AccountSettings />)}
+                      element={<Navigate to="/settings" replace />}
                     />
                     <Route
                       path="/settings"
@@ -372,7 +393,7 @@ function App() {
                     />
                     <Route
                       path="/analytics"
-                      element={adminAnalyticsRoute(<AnalyticsDashboard />)}
+                      element={<Navigate to="/settings" replace />}
                     />
                     <Route path="/privacy" element={<PrivacyPolicy />} />
                     <Route path="/terms" element={<TermsOfService />} />

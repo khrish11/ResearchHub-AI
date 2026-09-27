@@ -95,7 +95,9 @@ async def index_workspace_content(
         workspace_id=payload.workspace_id,
         user_id=int(current_user.id),
     )
-    runtime = get_rag_runtime(db=getattr(repo, "db", None))
+    # Use the Firestore db from the repository for persistent vector storage
+    db = getattr(repo, "db", None)
+    runtime = get_rag_runtime(db=db)
     index_service = RAGIndexService(
         runtime.embedding_service,
         runtime.vector_store,
@@ -137,7 +139,9 @@ async def index_custom_items(
         workspace_id=payload.workspace_id,
         user_id=int(current_user.id),
     )
-    runtime = get_rag_runtime(db=getattr(repo, "db", None))
+    # Use the Firestore db from the repository for persistent vector storage
+    db = getattr(repo, "db", None)
+    runtime = get_rag_runtime(db=db)
     index_service = RAGIndexService(
         runtime.embedding_service,
         runtime.vector_store,
@@ -168,7 +172,9 @@ async def retrieve_context(
         workspace_id=workspace_id,
         user_id=int(current_user.id),
     )
-    runtime = get_rag_runtime(db=getattr(repo, "db", None))
+    # Use the Firestore db from the repository for persistent vector storage
+    db = getattr(repo, "db", None)
+    runtime = get_rag_runtime(db=db)
     results = await runtime.retrieval_service.retrieve(
         query=query,
         workspace_id=workspace_id,
@@ -206,7 +212,9 @@ async def query_workspace(
         workspace_id=payload.workspace_id,
         user_id=int(current_user.id),
     )
-    runtime = get_rag_runtime(db=getattr(repo, "db", None))
+    # Use the Firestore db from the repository for persistent vector storage
+    db = getattr(repo, "db", None)
+    runtime = get_rag_runtime(db=db)
 
     results = await runtime.retrieval_service.retrieve(
         query=payload.query,
@@ -236,7 +244,7 @@ async def query_workspace(
             strict_grounding=payload.strict_grounding,
             max_tokens=min(2200, payload.max_context_tokens + 300),
         ),
-        db=getattr(repo, "db", None),
+        db=db,
         user_id=str(current_user.id),
     )
 

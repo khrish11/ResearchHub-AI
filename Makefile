@@ -11,7 +11,7 @@ start-frontend:
 	cd frontend && $(NPM) run dev
 
 test:
-	cd backend && FIRESTORE_EMULATOR_HOST=localhost:8080 $(PYTHON) -m pytest -q
+	cd backend && FIRESTORE_EMULATOR_HOST=localhost:8081 $(PYTHON) -m pytest -q
 
 build-frontend:
 	cd frontend && $(NPM) run build

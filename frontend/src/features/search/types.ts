@@ -72,3 +72,26 @@ export type YearFilter = 'any' | '2026' | '2024' | '2020' | '2015' | '2010';
 export type SortMode = 'relevance' | 'newest' | 'oldest' | 'title';
 export type SearchMode = 'fast' | 'balanced' | 'deep';
 export type ResultView = 'comfortable' | 'compact';
+
+export interface ResearchSearchContext {
+  query: string;
+  intent?: string | null;
+  focus?: string | null;
+  research_type?: string | null;
+  research_intent?: string | null;
+  suggested_scope?: string | null;
+  created_at: number;
+}
+
+export interface SearchStrategy {
+  recommended_mode: 'fast' | 'balanced' | 'deep';
+  description: string;
+  recency_bias: 'low' | 'medium' | 'high';
+}
+
+export interface ResearchEnhancedQuery {
+  original: string;
+  enhanced: string;
+  wasEnhanced: boolean;
+  intent: string | null;
+}

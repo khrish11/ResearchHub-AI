@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   Bot,
@@ -44,6 +44,8 @@ import type {
   SourceStatusMeta,
   Workspace,
   YearFilter,
+  ResearchSearchContext,
+  ResearchEnhancedQuery,
 } from './types';
 import {
   GLOBAL_SEARCH_ENDPOINT,
@@ -59,10 +61,15 @@ import {
   SOURCE_LABELS,
   canonicalSourceKey,
   citationCacheKey,
+  clearResearchContext,
   formatHistoryTime,
+  buildResearchEnhancedQuery,
   getCitationMetadata,
+  getSearchStrategy,
   hasPdfLink,
   isLikelyOpenAccess,
+  isResearchContextValid,
+  loadResearchContext,
   normalizeKey,
   parseYear,
 } from './searchUtils';
@@ -70,6 +77,9 @@ import { useSavedQueries } from './hooks/useSavedQueries';
 
 const SearchPapers: React.FC = () => {
   const { success: toastSuccess, error: toastError } = useToast();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const urlQuery = searchParams.get('q') || '';
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Paper[]>([]);
@@ -77,6 +87,11 @@ const SearchPapers: React.FC = () => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusText, setStatusText] = useState(`Ready. Search across ${SOURCE_CATALOG.length} connected sources.`);
+  const [researchContext, setResearchContext] = useState<ResearchSearchContext | null>(null);
+  const [recommendedMode, setRecommendedMode] = useState<SearchMode | null>(null);
+  const [userExplicitMode, setUserExplicitMode] = useState<boolean>(false);
+  const [researchEnhancedQuery, setResearchEnhancedQuery] = useState<ResearchEnhancedQuery | null>(null);
+  const [useOriginalQuery, setUseOriginalQuery] = useState<boolean>(false);
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null);
@@ -373,8 +388,15 @@ const SearchPapers: React.FC = () => {
 
   const runSearch = useCallback(
     async (append: boolean, forcedQuery?: string) => {
-      const finalQuery = (forcedQuery ?? query).trim();
-      if (!finalQuery) {
+      // Determine which query to use: enhanced or original
+      let searchQuery = (forcedQuery ?? query).trim();
+      
+      // Use enhanced query if available and user hasn't chosen original
+      if (!forcedQuery && researchEnhancedQuery && researchEnhancedQuery.wasEnhanced && !useOriginalQuery) {
+        searchQuery = researchEnhancedQuery.enhanced;
+      }
+      
+      if (!searchQuery) {
         setError('Enter a search query.');
         return;
       }
@@ -407,7 +429,7 @@ const SearchPapers: React.FC = () => {
         const offset = append ? nextOffset : 0;
         const response = await api.get<SearchResponse>(GLOBAL_SEARCH_ENDPOINT, {
           params: {
-            query: finalQuery,
+            query: searchQuery,
             max_results: append ? Math.min(maxResults, LOAD_MORE_MAX_RESULTS) : maxResults,
             offset,
             search_mode: searchMode,
@@ -458,7 +480,7 @@ const SearchPapers: React.FC = () => {
           : '';
         setStatusText(`${cachedTag} | ${shownCount} papers${sourceTag}${durationTag}`);
         void fetchSearchHistory();
-        void persistSessionState(finalQuery).catch(() => undefined);
+        void persistSessionState(searchQuery).catch(() => undefined);
       } catch (err: unknown) {
         if (controller.signal.aborted) {
           return;
@@ -466,7 +488,7 @@ const SearchPapers: React.FC = () => {
         const message = apiErrorMessage(err, 'Search request failed.');
         setError(message);
         setStatusText('Search failed. Retry with fewer words or another topic phrase.');
-        void persistSessionState(finalQuery).catch(() => undefined);
+        void persistSessionState(searchQuery).catch(() => undefined);
       } finally {
         if (runId === runIdRef.current) {
           setLoading(false);
@@ -475,7 +497,7 @@ const SearchPapers: React.FC = () => {
         }
       }
     },
-    [fetchSearchHistory, maxResults, mergeUnique, nextOffset, persistSessionState, query, searchMode],
+    [fetchSearchHistory, maxResults, mergeUnique, nextOffset, persistSessionState, query, searchMode, researchEnhancedQuery, useOriginalQuery],
   );
 
   useEffect(() => {
@@ -488,6 +510,50 @@ const SearchPapers: React.FC = () => {
     void runSearch(false, resumeQuery);
     setResumeQuery(null);
   }, [activeWorkspaceId, loading, loadingMore, resumeQuery, runSearch]);
+
+  // Handle URL query parameter for automatic search
+  useEffect(() => {
+    if (urlQuery && urlQuery.trim()) {
+      const decodedQuery = decodeURIComponent(urlQuery).trim();
+      setQuery(decodedQuery);
+      
+      // Load and validate research context
+      const loadedContext = loadResearchContext();
+      const isValidContext = isResearchContextValid(loadedContext, decodedQuery);
+      
+      if (isValidContext && loadedContext) {
+        setResearchContext(loadedContext);
+        
+        // Calculate recommended search mode based on intent
+        const strategy = getSearchStrategy(loadedContext.intent);
+        if (strategy && !userExplicitMode) {
+          setRecommendedMode(strategy.recommended_mode);
+          setSearchMode(strategy.recommended_mode);
+        }
+
+        // Build research-enhanced query
+        const enhanced = buildResearchEnhancedQuery(decodedQuery, loadedContext.intent, loadedContext.focus);
+        setResearchEnhancedQuery(enhanced);
+        setUseOriginalQuery(false); // Default to using enhanced query
+      } else {
+        setResearchContext(null);
+        setRecommendedMode(null);
+        setResearchEnhancedQuery(null);
+        setUseOriginalQuery(false);
+      }
+      
+      // Trigger search after a short delay to ensure state is set
+      const timer = setTimeout(() => {
+        if (decodedQuery) {
+          runSearch(false, decodedQuery).catch(() => {
+            // If auto-search fails, still keep the query in the input
+            setError(null);
+          });
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [urlQuery, runSearch, userExplicitMode]);
 
   const filteredResults = useMemo(() => {
     let filtered = [...results];
@@ -701,6 +767,26 @@ const SearchPapers: React.FC = () => {
         workspace_id: activeWorkspaceId,
         last_query: query.trim(),
       });
+
+      // Save research context to workspace description if available
+      if (researchContext && activeWorkspaceId) {
+        let contextDescription = `Research: ${researchContext.query}`;
+        if (researchContext.focus) {
+          contextDescription += `\nFocus: ${researchContext.focus}`;
+        }
+        if (researchContext.research_intent) {
+          contextDescription += `\nIntent: ${researchContext.research_intent}`;
+        }
+        try {
+          await api.put(`/workspaces/${activeWorkspaceId}/description`, {
+            description: contextDescription.trim(),
+          });
+        } catch (err) {
+          // Don't fail import if description update fails
+          console.warn('Failed to update workspace description:', err);
+        }
+      }
+
       setImportedSet((prev) => {
         const next = new Set(prev);
         next.add(normalizeKey(paper));
@@ -959,6 +1045,21 @@ const SearchPapers: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handleClearResearchContext = () => {
+    clearResearchContext();
+    setResearchContext(null);
+    toastSuccess('Research context cleared');
+  };
+
+  const handleRefineResearch = () => {
+    navigate(`/research?q=${encodeURIComponent(query.trim())}`);
+  };
+
+  const handleSearchModeChange = (newMode: SearchMode) => {
+    setSearchMode(newMode);
+    setUserExplicitMode(true); // User has explicitly chosen a mode
+  };
+
   useEffect(() => {
     renderedResults.slice(0, 10).forEach((paper) => {
       void ensureCitation(paper, true);
@@ -1048,6 +1149,99 @@ const SearchPapers: React.FC = () => {
             </button>
             </div>
 
+            {/* Research Context Indicator */}
+            {researchContext && (
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-2 w-2 rounded-full bg-indigo-500" />
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-700">Research context</span>
+                    <span className="mx-2 text-slate-400">·</span>
+                    <span className="text-slate-600">
+                      {researchContext.research_type || researchContext.intent || 'General research'}
+                      {researchContext.focus && ` · ${researchContext.focus}`}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRefineResearch}
+                    className="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
+                  >
+                    Refine research
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearResearchContext}
+                    className="text-xs text-slate-500 hover:text-slate-700"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Research Strategy Indicator */}
+            {researchContext && recommendedMode && !userExplicitMode && (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-700">Research strategy</span>
+                    <span className="mx-2 text-slate-400">·</span>
+                    <span className="text-slate-600">
+                      {researchContext.research_type || researchContext.intent || 'General research'} · {recommendedMode} search recommended
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Research-Enhanced Query Indicator */}
+            {researchEnhancedQuery && researchEnhancedQuery.wasEnhanced && !useOriginalQuery && (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-700">Research context applied</span>
+                    <span className="mx-2 text-slate-400">·</span>
+                    <span className="text-slate-600">
+                      Searching with enhanced query
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setUseOriginalQuery(true)}
+                  className="text-xs text-slate-500 hover:text-slate-700 underline"
+                >
+                  Use original query
+                </button>
+              </div>
+            )}
+
+            {/* Original Query Indicator (when user switched back) */}
+            {researchEnhancedQuery && researchEnhancedQuery.wasEnhanced && useOriginalQuery && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-2 w-2 rounded-full bg-slate-400" />
+                  <div className="text-sm">
+                    <span className="font-semibold text-slate-700">Original query</span>
+                    <span className="mx-2 text-slate-400">·</span>
+                    <span className="text-slate-600">
+                      Using original search query
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setUseOriginalQuery(false)}
+                  className="text-xs text-slate-500 hover:text-slate-700 underline"
+                >
+                  Use enhanced query
+                </button>
+              </div>
+            )}
+
             <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
               Use <span className="font-semibold text-slate-900">Fast</span> for quick scouting,{' '}
               <span className="font-semibold text-slate-900">Balanced</span> for daily work, and{' '}
@@ -1077,13 +1271,23 @@ const SearchPapers: React.FC = () => {
                   <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Search mode</span>
                   <select
                     value={searchMode}
-                    onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+                    onChange={(event) => handleSearchModeChange(event.target.value as SearchMode)}
                     className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"
                   >
                     <option value="fast">Fast</option>
                     <option value="balanced">Balanced</option>
                     <option value="deep">Deep (more papers)</option>
                   </select>
+                  {recommendedMode && !userExplicitMode && (
+                    <p className="mt-1 text-xs text-indigo-600">
+                      Recommended for your research: <span className="font-semibold">{recommendedMode}</span>
+                    </p>
+                  )}
+                  {userExplicitMode && (
+                    <p className="mt-1 text-xs text-slate-500">
+                      Using {searchMode} search
+                    </p>
+                  )}
                 </label>
               </div>
 

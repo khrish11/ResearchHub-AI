@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from google.cloud import storage
 from google.oauth2 import service_account
+from google.auth.credentials import AnonymousCredentials
 from utils.firebase_service_account import load_service_account_info_from_env
 
 
@@ -83,22 +84,34 @@ def _storage_client() -> storage.Client:
         if _STORAGE_CLIENT is not None:
             return _STORAGE_CLIENT
         client_kwargs: Dict[str, Any] = {}
-        service_account_info = load_service_account_info_from_env()
-        project_id = _firebase_project_id()
-        if not project_id and service_account_info:
-            project_id = str(service_account_info.get("project_id") or "").strip()
-        if project_id:
-            client_kwargs["project"] = project_id
-        if service_account_info:
-            client_kwargs["credentials"] = service_account.Credentials.from_service_account_info(
-                service_account_info,
-            )
+
+        # Check for Storage emulator
+        storage_emulator_host = os.getenv("STORAGE_EMULATOR_HOST", "").strip()
+        if storage_emulator_host:
+            # Use emulator with anonymous credentials
+            client_kwargs["credentials"] = AnonymousCredentials()
+            client_kwargs["project"] = _firebase_project_id() or "demo-test"
+            # Set emulator host as environment variable for the client
+            os.environ["STORAGE_EMULATOR_HOST"] = storage_emulator_host
+            logger.info(f"Using Firebase Storage emulator at {storage_emulator_host}")
         else:
-            credentials_path = _credentials_path()
-            if credentials_path:
-                client_kwargs["credentials"] = service_account.Credentials.from_service_account_file(
-                    credentials_path,
+            service_account_info = load_service_account_info_from_env()
+            project_id = _firebase_project_id()
+            if not project_id and service_account_info:
+                project_id = str(service_account_info.get("project_id") or "").strip()
+            if project_id:
+                client_kwargs["project"] = project_id
+            if service_account_info:
+                client_kwargs["credentials"] = service_account.Credentials.from_service_account_info(
+                    service_account_info,
                 )
+            else:
+                credentials_path = _credentials_path()
+                if credentials_path:
+                    client_kwargs["credentials"] = service_account.Credentials.from_service_account_file(
+                        credentials_path,
+                    )
+
         _STORAGE_CLIENT = storage.Client(**client_kwargs)
         return _STORAGE_CLIENT
 

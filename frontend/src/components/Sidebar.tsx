@@ -1,8 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Home, LayoutDashboard, Search, Brain, Upload, FileText, LogOut, Microscope, Settings, UserCog, Workflow, Bot, MessageSquareCode, BarChart3, Shield, Database } from 'lucide-react';
+import { Home, Search, FileText, LogOut, Microscope, Settings, Shield, Folder, BookOpen, BarChart3 } from 'lucide-react';
 import ThemeToggle from './ThemeToggle';
-import { toAppPath } from '../utils/routing';
 import { clearAuthSession } from '../utils/authSession';
 
 interface SidebarProps {
@@ -24,21 +23,15 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const menuItems = [
     { path: '/home', label: 'Home', icon: Home },
-    { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { path: '/search', label: 'Search Papers', icon: Search },
-    { path: '/ai-tools', label: 'AI Tools', icon: Brain },
-    { path: '/research-agent', label: 'Research Agent', icon: Bot },
-    { path: '/research-chat', label: 'Research Chat', icon: MessageSquareCode },
-    { path: '/ask-workspace', label: 'Ask Workspace', icon: Database },
-    { path: '/upload', label: 'Upload PDF', icon: Upload },
-    { path: '/docs', label: 'DocSpace', icon: FileText },
-    { path: '/mindmap', label: 'Mindmap', icon: Workflow },
-    { path: '/account', label: 'Account', icon: UserCog },
+    { path: '/research', label: 'Research', icon: Search },
+    { path: '/workspaces', label: 'Workspaces', icon: Folder },
+    { path: '/reports', label: 'Reports', icon: FileText },
+    { path: '/library', label: 'Library', icon: BookOpen },
     ...(isDeveloper
-      ? [{ path: '/developer', label: 'Admin Console', icon: Shield }]
+      ? [{ path: '/developer', label: 'Developer Console', icon: Shield }]
       : []),
     ...(canAccessAnalytics
-      ? [{ path: '/analytics', label: 'AI Analytics', icon: BarChart3 }]
+      ? [{ path: '/analytics', label: 'Analytics', icon: BarChart3 }]
       : []),
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
@@ -61,9 +54,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleLogout = () => {
-    void clearAuthSession().finally(() => {
-      window.location.href = toAppPath('/login');
-    });
+    void clearAuthSession();
   };
 
   return (

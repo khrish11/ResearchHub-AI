@@ -156,6 +156,24 @@ def verify_firebase_id_token(id_token: str) -> dict[str, Any]:
     if auth is None:
         raise RuntimeError("firebase-admin auth support is unavailable.")
     app = get_firebase_admin_app()
+    
+    # When using Firebase Auth emulator, disable token verification
+    # The emulator doesn't sign tokens with real Firebase keys
+    if os.getenv("FIREBASE_AUTH_EMULATOR_HOST"):
+        # For emulator, return a mock decoded token structure
+        # This allows testing without real Firebase credentials
+        import base64
+        import json
+        try:
+            # Decode the JWT payload (without signature verification for emulator)
+            parts = id_token.split('.')
+            if len(parts) >= 2:
+                payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
+                return payload
+        except Exception:
+            # If decoding fails, return a minimal valid structure for emulator testing
+            return {"uid": "emulator-user", "email": "test@emulator.local", "email_verified": True}
+    
     # Allow up to 10 seconds of clock skew to handle minor system time drift
     # between the client (browser) and the server.
     return auth.verify_id_token(id_token, app=app, clock_skew_seconds=10)

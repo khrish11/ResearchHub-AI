@@ -14,7 +14,6 @@ Soyog AI is an AI-native research workspace for searching, synthesizing, and ana
 - FastAPI backend with modular routes for auth, papers, chat, workspaces, AI, analytics, compliance, health checks, and the research agent.
 - React + Vite + TypeScript frontend built around a workspace-centric research workflow.
 - Firebase-first runtime for request-path persistence with Firestore and Firebase Storage.
-- Legacy SQLAlchemy code retained for compatibility and migration workflows.
 
 ### AI and search
 
@@ -37,7 +36,7 @@ Soyog AI is an AI-native research workspace for searching, synthesizing, and ana
 | Backend | Python, FastAPI, Pydantic, Authlib |
 | AI Models | Groq-hosted Llama 3.3 and DeepSeek R1 variants |
 | Auth | Firebase Authentication, Google OAuth, email/password |
-| Storage | Firestore, Firebase Storage, compatibility SQLAlchemy code |
+| Storage | Firestore, Firebase Storage |
 | Hosting | Render, Vercel |
 | Observability | Sentry, Prometheus metrics, Google Cloud Logging |
 
@@ -117,7 +116,7 @@ Recommended on Windows:
 
 `run_dev.ps1` starts:
 
-- the Firestore emulator on `localhost:8080`
+- the Firestore emulator on `localhost:8081`
 - the backend on `http://localhost:8010`
 - the frontend via Vite
 
@@ -125,11 +124,11 @@ Manual startup is also possible:
 
 ```powershell
 # Terminal 1
-gcloud beta emulators firestore start --project=studio-5606596663-2ca06 --host-port=localhost:8080
+gcloud beta emulators firestore start --project=studio-5606596663-2ca06 --host-port=localhost:8081
 
 # Terminal 2
 cd backend
-$env:FIRESTORE_EMULATOR_HOST='localhost:8080'
+$env:FIRESTORE_EMULATOR_HOST='localhost:8081'
 ..\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8010
 
 # Terminal 3
@@ -142,7 +141,7 @@ npm run dev
 Backend tests with the Firestore emulator running:
 
 ```powershell
-$env:FIRESTORE_EMULATOR_HOST='localhost:8080'
+$env:FIRESTORE_EMULATOR_HOST='localhost:8081'
 .\.venv\Scripts\python.exe -m pytest backend\tests -q
 ```
 
@@ -168,16 +167,22 @@ Validate local environment (Windows):
 
 ## Additional Docs
 
+- Architecture guide: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- Database schema: [`docs/DATABASE.md`](docs/DATABASE.md)
 - Deployment guide: [`DEPLOYMENT.md`](DEPLOYMENT.md)
 - Monitoring guide: [`MONITORING.md`](MONITORING.md)
 - Security guide: [`SECURITY.md`](SECURITY.md)
-- Firebase runtime notes: [`docs/firebase-migration.md`](docs/firebase-migration.md)
+- Testing guide: [`docs/TESTING.md`](docs/TESTING.md)
+- Firebase setup: [`docs/firebase-setup.md`](docs/firebase-setup.md)
 - Edge deployment guide: [`docs/edge/global-edge-deployment.md`](docs/edge/global-edge-deployment.md)
 - Disaster recovery plan: [`docs/resilience/backup-restore-dr-plan.md`](docs/resilience/backup-restore-dr-plan.md)
+- Cleanup report: [`CLEANUP_REPORT.md`](CLEANUP_REPORT.md)
+- Documentation configuration audit: [`DOCUMENTATION_CONFIGURATION_AUDIT.md`](DOCUMENTATION_CONFIGURATION_AUDIT.md)
+- Integration validation: [`INTEGRATION_VALIDATION_REPORT.md`](INTEGRATION_VALIDATION_REPORT.md)
 
 ## Roadmap
 
-- [ ] Add Pinecone or Weaviate-backed RAG retrieval
+- [ ] Optionally add external vector database backend (Pinecone/Weaviate) for enhanced RAG retrieval
 - [ ] Ship real-time collaboration for shared workspaces
 - [ ] Expand report export formats to Markdown and LaTeX
 - [ ] Improve full-text PDF parsing for non-open-access papers

@@ -1,4 +1,4 @@
-import api from '../api';
+import api, { API_URL } from '../api';
 import { apiErrorMessage } from './apiError';
 
 export type CitationStyle = 'apa' | 'mla' | 'ieee' | 'chicago' | 'bibtex';
@@ -251,7 +251,7 @@ export const fallbackCitation = (metadata: CitationMetadata, style: CitationStyl
 };
 
 export const fetchCitation = async (metadata: CitationMetadata, style: CitationStyle): Promise<CitationResponse> => {
-  const response = await api.post<CitationResponse | StructuredErrorResponse>('/papers/citation', buildCitationPayload(metadata, style));
+  const response = await api.post<CitationResponse | StructuredErrorResponse>(`${API_URL}/papers/citation`, buildCitationPayload(metadata, style));
   const data = response.data as CitationResponse & StructuredErrorResponse;
   if (data?.error?.message) {
     throw new Error(data.error.message);
@@ -260,7 +260,7 @@ export const fetchCitation = async (metadata: CitationMetadata, style: CitationS
 };
 
 export const fetchPaperCitation = async (paperId: number, style: CitationStyle): Promise<CitationResponse> => {
-  const response = await api.get<CitationResponse | StructuredErrorResponse>(`/papers/${paperId}/citation`, {
+  const response = await api.get<CitationResponse | StructuredErrorResponse>(`${API_URL}/papers/${paperId}/citation`, {
     params: { style },
   });
   const data = response.data as CitationResponse & StructuredErrorResponse;
@@ -274,7 +274,7 @@ export const fetchPaperExplanation = async (
   paperId: number,
   options: { refresh?: boolean; includeRag?: boolean } = {}
 ): Promise<PaperExplanationResponse> => {
-  const response = await api.get<PaperExplanationResponse>(`/papers/${paperId}/explain`, {
+  const response = await api.get<PaperExplanationResponse>(`${API_URL}/papers/${paperId}/explain`, {
     params: {
       refresh: Boolean(options.refresh),
       include_rag: Boolean(options.includeRag),
@@ -307,7 +307,7 @@ export const runPaperCheck = async (
   const start = Date.now();
 
   const response = await api.post<InitialPaperCheckResponse>(
-    '/research/paper-check',
+    `/research/paper-check`,
     payload
   );
   const initial = response.data;
@@ -348,7 +348,7 @@ export const getLatestPaperCheck = async (
     return null;
   }
   try {
-    const response = await api.get<LatestPaperCheckResponse>('/research/paper-check/latest', {
+    const response = await api.get<LatestPaperCheckResponse>(`/research/paper-check/latest`, {
       params: {
         paper_id: paperId,
         workspace_id: workspaceId,
@@ -368,10 +368,9 @@ export const getLatestPaperCheck = async (
       },
     };
   } catch (err: unknown) {
-    if ((err as { response?: { status?: number } })?.response?.status === 404) {
-      return null;
-    }
-    throw err;
+    // Return null for paper-check errors instead of throwing - this is a non-critical feature
+    console.warn('Paper check failed (non-critical):', err);
+    return null;
   }
 };
 

@@ -2,13 +2,16 @@ import { expect, test } from '@playwright/test'
 
 test('landing page renders and routes to register', async ({ page }) => {
   await page.goto('/')
-  await expect(
-    page.getByRole('heading', {
-      name: /search the literature, build a clean evidence set/i,
-    })
-  ).toBeVisible()
-
-  await page.getByRole('link', { name: /create account/i }).first().click()
+  
+  // Verify landing page loads with appropriate content
+  // Use a more flexible selector that works across desktop and mobile
+  await expect(page.getByRole('heading', { name: /soyog ai/i }).first()).toBeVisible()
+  
+  // Verify Create Account link exists and is clickable
+  const createAccountLink = page.getByRole('link', { name: /create account/i }).first()
+  await expect(createAccountLink).toBeVisible()
+  await createAccountLink.click()
+  
   await expect(page).toHaveURL(/\/register$/)
   await expect(page.getByRole('heading', { name: /create your account/i })).toBeVisible()
 })

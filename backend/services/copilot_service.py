@@ -493,7 +493,6 @@ async def _route_rag_query(
         workspace_id=workspace_id,
         top_k=6,
         source_types=["paper", "summary", "checker", "report"],
-        min_similarity=0.3,
     )
     truncated = runtime.retrieval_service.truncate_results_for_context(results, max_context_tokens=1800)
     context_rows = [

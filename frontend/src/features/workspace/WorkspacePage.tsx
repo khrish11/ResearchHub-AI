@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  ArrowRight,
   BrainCircuit,
   ChevronDown,
   ChevronUp,
@@ -17,6 +18,9 @@ import {
   Sparkles,
   Trash2,
   Workflow,
+  Target,
+  Lightbulb,
+  TrendingUp,
 } from 'lucide-react';
 import Layout from '../../components/Layout';
 import UnifiedCopilotPanel from '../../components/UnifiedCopilotPanel';
@@ -41,6 +45,12 @@ import {
   getLatestPaperCheck,
   runPaperCheck,
 } from '../../utils/researchArtifacts';
+import {
+  analyzeEvidence,
+  detectGaps,
+  rankOpportunities,
+  generateQuestions,
+} from '../../api/researchIntelligence';
 
 const formatPaperCheckDate = (value?: string): string => {
   if (!value) {
@@ -53,10 +63,46 @@ const formatPaperCheckDate = (value?: string): string => {
   return date.toLocaleString();
 };
 
+const parseResearchContext = (description?: string | null): {
+  researchQuestion?: string;
+  focus?: string;
+  intent?: string;
+  isResearchContext: boolean;
+} => {
+  if (!description) {
+    return { isResearchContext: false };
+  }
+
+  const lines = description.split('\n').map(line => line.trim()).filter(Boolean);
+  if (lines.length === 0 || !lines[0].startsWith('Research:')) {
+    return { isResearchContext: false };
+  }
+
+  const result: {
+    researchQuestion?: string;
+    focus?: string;
+    intent?: string;
+    isResearchContext: boolean;
+  } = { isResearchContext: true };
+
+  for (const line of lines) {
+    if (line.startsWith('Research:')) {
+      result.researchQuestion = line.replace('Research:', '').trim();
+    } else if (line.startsWith('Focus:')) {
+      result.focus = line.replace('Focus:', '').trim();
+    } else if (line.startsWith('Intent:')) {
+      result.intent = line.replace('Intent:', '').trim();
+    }
+  }
+
+  return result;
+};
+
 const Workspace: React.FC = () => {
   const { success: toastSuccess, error: toastError } = useToast();
   const { id } = useParams();
   const navigate = useNavigate();
+  
   const [chatInput, setChatInput] = useState('');
   const [sending, setSending] = useState(false);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('papers');
@@ -85,6 +131,78 @@ const Workspace: React.FC = () => {
   const [paperExplainError, setPaperExplainError] = useState<string | null>(null);
   const [paperExplainCollapsed, setPaperExplainCollapsed] = useState(false);
   const [deletingPaperId, setDeletingPaperId] = useState<number | null>(null);
+
+  // Research Intelligence state
+  const [intelligenceState, setIntelligenceState] = useState({
+    hasEvidence: false,
+    hasGaps: false,
+    hasOpportunities: false,
+    hasQuestions: false,
+    evidenceCount: 0,
+    gapCount: 0,
+    opportunityCount: 0,
+    questionCount: 0,
+    evidencePreview: '',
+    gapPreview: '',
+    opportunityPreview: '',
+    questionPreview: '',
+  });
+  const [intelligenceLoading, setIntelligenceLoading] = useState<string | null>(null);
+  const [intelligenceError, setIntelligenceError] = useState<string | null>(null);
+
+  // Session storage key for intelligence state
+  const INTELLIGENCE_STATE_KEY = 'soyog.workspace.intelligence.v1';
+
+  // Load intelligence state from sessionStorage on mount
+  useEffect(() => {
+    if (!id) return;
+    try {
+      const stored = sessionStorage.getItem(INTELLIGENCE_STATE_KEY);
+      if (!stored) return;
+      
+      const parsed = JSON.parse(stored);
+      const state = parsed as typeof intelligenceState & { workspaceId: number; updatedAt: string };
+      
+      // Validate workspace ID
+      if (state.workspaceId !== Number(id)) return;
+      
+      // Expire stale state (>24 hours)
+      const age = Date.now() - new Date(state.updatedAt).getTime();
+      if (age > 24 * 60 * 60 * 1000) {
+        sessionStorage.removeItem(INTELLIGENCE_STATE_KEY);
+        return;
+      }
+      
+      setIntelligenceState({
+        hasEvidence: state.hasEvidence || false,
+        hasGaps: state.hasGaps,
+        hasOpportunities: state.hasOpportunities,
+        hasQuestions: state.hasQuestions,
+        evidenceCount: state.evidenceCount || 0,
+        gapCount: state.gapCount || 0,
+        opportunityCount: state.opportunityCount || 0,
+        questionCount: state.questionCount || 0,
+        evidencePreview: state.evidencePreview || '',
+        gapPreview: state.gapPreview || '',
+        opportunityPreview: state.opportunityPreview || '',
+        questionPreview: state.questionPreview || '',
+      });
+    } catch {
+      // Ignore malformed state
+      sessionStorage.removeItem(INTELLIGENCE_STATE_KEY);
+    }
+  }, [id]);
+
+  // Save intelligence state to sessionStorage on change
+  useEffect(() => {
+    if (!id) return;
+    const stateToSave = {
+      workspaceId: Number(id),
+      ...intelligenceState,
+      updatedAt: new Date().toISOString(),
+    };
+    sessionStorage.setItem(INTELLIGENCE_STATE_KEY, JSON.stringify(stateToSave));
+  }, [id, intelligenceState]);
 
   const {
     workspace,
@@ -594,6 +712,133 @@ const Workspace: React.FC = () => {
     }
   };
 
+  // Research Intelligence actions
+  const handleAnalyzeEvidence = async () => {
+    if (!workspace) return;
+    setIntelligenceLoading('analyzing-evidence');
+    setIntelligenceError(null);
+    try {
+      const paperIds = workspace.papers.map((p) => p.id);
+      const response = await analyzeEvidence({
+        workspace_id: workspace.id,
+        paper_ids: paperIds,
+        topic: workspace.name,
+        claim: workspace.name || 'Analyze evidence for this research topic',
+      });
+      // Extract evidence count and preview from response
+      const evidenceCount = response.classification.supporting_count + response.classification.contradicting_count;
+      const evidencePreview = `Supporting: ${response.classification.supporting_count} · Contradicting: ${response.classification.contradicting_count}`;
+      setIntelligenceState((prev) => ({ ...prev, hasEvidence: true, evidenceCount, evidencePreview }));
+      toastSuccess('Evidence analyzed successfully');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Failed to analyze evidence.');
+      setIntelligenceError(message);
+      toastError(message);
+    } finally {
+      setIntelligenceLoading(null);
+    }
+  };
+
+  const handleDetectGaps = async () => {
+    if (!workspace) return;
+    setIntelligenceLoading('detecting-gaps');
+    setIntelligenceError(null);
+    try {
+      const paperIds = workspace.papers.map((p) => p.id);
+      const response = await detectGaps({
+        workspace_id: workspace.id,
+        paper_ids: paperIds,
+        topic: workspace.name,
+      });
+      // Extract gap count and preview from response
+      const gapCount = response.gaps_by_category
+        ? Object.values(response.gaps_by_category).reduce(
+            (sum, gaps) => sum + (Array.isArray(gaps) ? gaps.length : 0),
+            0
+          )
+        : 0;
+      // Extract top gap description for preview
+      const allGaps = response.gaps_by_category ? Object.values(response.gaps_by_category).flat() : [];
+      const gapPreview = allGaps.length > 0 ? allGaps[0].description : '';
+      setIntelligenceState((prev) => ({ ...prev, hasGaps: true, gapCount, gapPreview }));
+      toastSuccess('Research gaps detected successfully');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Failed to detect research gaps.');
+      setIntelligenceError(message);
+      toastError(message);
+    } finally {
+      setIntelligenceLoading(null);
+    }
+  };
+
+  const handleRankOpportunities = async () => {
+    if (!workspace) return;
+    setIntelligenceLoading('ranking-opportunities');
+    setIntelligenceError(null);
+    try {
+      const paperIds = workspace.papers.map((p) => p.id);
+      const response = await rankOpportunities({
+        workspace_id: workspace.id,
+        paper_ids: paperIds,
+        topic: workspace.name,
+      });
+      // Extract opportunity count and preview from response
+      const opportunityCount = typeof response.total_opportunities === 'number' ? response.total_opportunities : 0;
+      // Extract top opportunity description for preview
+      const opportunityPreview = response.top_opportunity ? response.top_opportunity.gap_description : '';
+      setIntelligenceState((prev) => ({
+        ...prev,
+        hasOpportunities: true,
+        opportunityCount,
+        opportunityPreview
+      }));
+      toastSuccess('Research opportunities ranked successfully');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Failed to rank research opportunities.');
+      setIntelligenceError(message);
+      toastError(message);
+    } finally {
+      setIntelligenceLoading(null);
+    }
+  };
+
+  const handleGenerateQuestions = async () => {
+    if (!workspace) return;
+    setIntelligenceLoading('generating-questions');
+    setIntelligenceError(null);
+    try {
+      const paperIds = workspace.papers.map((p) => p.id);
+      const response = await generateQuestions({
+        workspace_id: workspace.id,
+        paper_ids: paperIds,
+        topic: workspace.name,
+        max_questions: 5,
+      });
+      // Extract question count and preview from response
+      const questionCount = typeof response.total_questions === 'number' ? response.total_questions : 0;
+      // Extract top question for preview
+      const questionPreview = response.top_questions && response.top_questions.length > 0 ? response.top_questions[0].question : '';
+      setIntelligenceState((prev) => ({ 
+        ...prev, 
+        hasQuestions: true, 
+        questionCount,
+        questionPreview
+      }));
+      toastSuccess('Research questions generated successfully');
+    } catch (err: unknown) {
+      const message = apiErrorMessage(err, 'Failed to generate research questions.');
+      setIntelligenceError(message);
+      toastError(message);
+    } finally {
+      setIntelligenceLoading(null);
+    }
+  };
+
+  const handleCreateResearchPlan = () => {
+    if (!workspace) return;
+    navigate(`/research-intelligence/${workspace.id}`);
+  };
+
   const handleOpenFile = async (url: string, fallbackFilename: string) => {
     try {
       await openFileUrl(url, fallbackFilename);
@@ -670,10 +915,37 @@ const Workspace: React.FC = () => {
                 Workspace core
               </span>
               <h2>{workspace.name}</h2>
-              <p>
-                {workspace.description ||
-                  'Focused environment for paper organization, AI chat, and synthesis output.'}
-              </p>
+              {(() => {
+                const researchContext = parseResearchContext(workspace.description);
+                if (researchContext.isResearchContext) {
+                  return (
+                    <div className="space-y-2">
+                      <div>
+                        <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Research Question:</span>
+                        <p className="text-base text-slate-900 dark:text-slate-100">{researchContext.researchQuestion}</p>
+                      </div>
+                      {researchContext.focus && (
+                        <div>
+                          <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Focus:</span>
+                          <p className="text-sm text-slate-700 dark:text-slate-300">{researchContext.focus}</p>
+                        </div>
+                      )}
+                      {researchContext.intent && (
+                        <div>
+                          <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Intent:</span>
+                          <p className="text-sm text-slate-700 dark:text-slate-300">{researchContext.intent}</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return (
+                  <p>
+                    {workspace.description ||
+                      'Focused environment for paper organization, AI chat, and synthesis output.'}
+                  </p>
+                );
+              })()}
               <div className="studio-chip-row">
                 <span className="studio-chip">
                   <FileText className="h-3.5 w-3.5" />
@@ -772,6 +1044,7 @@ const Workspace: React.FC = () => {
                 }}
                 disabled={workspace.papers.length === 0}
                 className="hero-btn-primary disabled:opacity-55 disabled:cursor-not-allowed"
+                title="Analyze evidence, detect gaps, generate questions, and create research plans"
               >
                 <BrainCircuit className="h-4 w-4" />
                 Research Intelligence
@@ -811,20 +1084,283 @@ const Workspace: React.FC = () => {
 
             <section className="mb-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.05fr,0.95fr]">
               <div className="studio-panel p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Workspace flow</p>
-                <h3 className="mt-2 text-lg font-semibold text-slate-900">Move from evidence intake to synthesis without leaving this page.</h3>
-                <div className="mt-4 grid gap-3">
-                  {[
-                    'Filter the paper list, inspect one paper in detail, then add it to the chat context only when it is actually relevant.',
-                    'Resolve full-text access before asking AI questions so the workspace keeps the strongest evidence possible.',
-                    'Use the operations tab for exports and imports instead of mixing those tasks into every reading step.',
-                  ].map((item, index) => (
-                    <div key={item} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-600">Step {index + 1}</p>
-                      <p className="mt-1 text-sm leading-relaxed text-slate-600">{item}</p>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Research Intelligence</p>
+                <h3 className="mt-2 text-lg font-semibold text-slate-900">What should you investigate next?</h3>
+                
+                {workspace.papers.length === 0 ? (
+                  <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-sm text-slate-600">Add papers to begin research intelligence analysis.</p>
+                    <Link to="/search" className="mt-2 inline-flex items-center gap-1.5 text-sm font-semibold text-indigo-600">
+                      Search papers
+                      <ExternalLink className="h-4 w-4" />
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {/* Completed: Evidence */}
+                    {intelligenceState.hasEvidence && (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-full bg-emerald-100 p-1 text-emerald-600">
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {intelligenceState.evidenceCount === 0
+                                  ? 'Evidence analyzed'
+                                  : `${intelligenceState.evidenceCount} evidence item${intelligenceState.evidenceCount !== 1 ? 's' : ''} analyzed`}
+                              </p>
+                              {intelligenceState.evidencePreview && (
+                                <p className="text-xs text-slate-600 mt-0.5">{intelligenceState.evidencePreview}</p>
+                              )}
+                            </div>
+                          </div>
+                          <Link
+                            to={`/research-intelligence/${workspace.id}`}
+                            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                          >
+                            View results →
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Completed: Gaps */}
+                    {intelligenceState.hasGaps && (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-full bg-emerald-100 p-1 text-emerald-600">
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {intelligenceState.gapCount === 0
+                                  ? 'Analysis completed'
+                                  : `${intelligenceState.gapCount} gap${intelligenceState.gapCount !== 1 ? 's' : ''} found`}
+                              </p>
+                              {intelligenceState.gapPreview && (
+                                <p className="text-xs text-slate-600 mt-0.5 truncate max-w-xs">
+                                  {intelligenceState.gapPreview}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <Link
+                            to={`/research-intelligence/${workspace.id}`}
+                            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                          >
+                            View results →
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Completed: Opportunities */}
+                    {intelligenceState.hasOpportunities && (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-full bg-emerald-100 p-1 text-emerald-600">
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {intelligenceState.opportunityCount === 0
+                                  ? 'Analysis completed'
+                                  : `${intelligenceState.opportunityCount} opportunit${intelligenceState.opportunityCount !== 1 ? 'ies' : 'y'} found`}
+                              </p>
+                              {intelligenceState.opportunityPreview && (
+                                <p className="text-xs text-slate-600 mt-0.5 truncate max-w-xs">
+                                  {intelligenceState.opportunityPreview}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <Link
+                            to={`/research-intelligence/${workspace.id}`}
+                            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                          >
+                            View results →
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Completed: Questions */}
+                    {intelligenceState.hasQuestions && (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-full bg-emerald-100 p-1 text-emerald-600">
+                              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">
+                                {intelligenceState.questionCount === 0
+                                  ? 'Analysis completed'
+                                  : `${intelligenceState.questionCount} question${intelligenceState.questionCount !== 1 ? 's' : ''} generated`}
+                              </p>
+                              {intelligenceState.questionPreview && (
+                                <p className="text-xs text-slate-600 mt-0.5 truncate max-w-xs">
+                                  {intelligenceState.questionPreview}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <Link
+                            to={`/research-intelligence/${workspace.id}`}
+                            className="text-xs font-semibold text-emerald-600 hover:text-emerald-700"
+                          >
+                            View results →
+                          </Link>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Next Action: Analyze Evidence */}
+                    {!intelligenceState.hasEvidence && (
+                      <button
+                        onClick={handleAnalyzeEvidence}
+                        disabled={intelligenceLoading !== null}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-blue-300 hover:bg-blue-50/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-xl bg-blue-100 p-2 text-blue-600">
+                              <FileText className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Analyze Evidence</p>
+                              <p className="text-xs text-slate-600">Understand the evidence landscape</p>
+                            </div>
+                          </div>
+                          {intelligenceLoading === 'analyzing-evidence' && (
+                            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                          )}
+                        </div>
+                      </button>
+                    )}
+                    
+                    {/* Next Action: Detect Gaps */}
+                    {intelligenceState.hasEvidence && !intelligenceState.hasGaps && (
+                      <button
+                        onClick={handleDetectGaps}
+                        disabled={intelligenceLoading !== null}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-indigo-300 hover:bg-indigo-50/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-xl bg-indigo-100 p-2 text-indigo-600">
+                              <Target className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Detect Research Gaps</p>
+                              <p className="text-xs text-slate-600">Find gaps in the current literature</p>
+                            </div>
+                          </div>
+                          {intelligenceLoading === 'detecting-gaps' && (
+                            <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                          )}
+                        </div>
+                      </button>
+                    )}
+                    
+                    {/* Next Action: Find Opportunities */}
+                    {intelligenceState.hasGaps && !intelligenceState.hasOpportunities && (
+                      <button
+                        onClick={handleRankOpportunities}
+                        disabled={intelligenceLoading !== null}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-emerald-300 hover:bg-emerald-50/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-xl bg-emerald-100 p-2 text-emerald-600">
+                              <Lightbulb className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Find Opportunities</p>
+                              <p className="text-xs text-slate-600">Turn gaps into research opportunities</p>
+                            </div>
+                          </div>
+                          {intelligenceLoading === 'ranking-opportunities' && (
+                            <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
+                          )}
+                        </div>
+                      </button>
+                    )}
+                    
+                    {/* Next Action: Generate Questions */}
+                    {intelligenceState.hasOpportunities && !intelligenceState.hasQuestions && (
+                      <button
+                        onClick={handleGenerateQuestions}
+                        disabled={intelligenceLoading !== null}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-amber-300 hover:bg-amber-50/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-xl bg-amber-100 p-2 text-amber-600">
+                              <TrendingUp className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Generate Questions</p>
+                              <p className="text-xs text-slate-600">Create research questions from opportunities</p>
+                            </div>
+                          </div>
+                          {intelligenceLoading === 'generating-questions' && (
+                            <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
+                          )}
+                        </div>
+                      </button>
+                    )}
+                    
+                    {/* Next Action: Create Research Plan */}
+                    {intelligenceState.hasQuestions && (
+                      <button
+                        onClick={handleCreateResearchPlan}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-purple-300 hover:bg-purple-50/30 transition"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="inline-flex rounded-xl bg-purple-100 p-2 text-purple-600">
+                              <BrainCircuit className="h-4 w-4" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Create Research Plan</p>
+                              <p className="text-xs text-slate-600">Turn your strongest direction into a plan</p>
+                            </div>
+                          </div>
+                          <ArrowRight className="h-4 w-4 text-slate-400" />
+                        </div>
+                      </button>
+                    )}
+                    
+                    {intelligenceError && (
+                      <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3">
+                        <p className="text-sm text-red-700">{intelligenceError}</p>
+                        <button
+                          onClick={() => {
+                            if (!intelligenceState.hasGaps) handleDetectGaps();
+                            else if (!intelligenceState.hasOpportunities) handleRankOpportunities();
+                            else if (!intelligenceState.hasQuestions) handleGenerateQuestions();
+                          }}
+                          className="mt-2 text-sm font-semibold text-red-600 hover:text-red-700"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -947,11 +1483,28 @@ const Workspace: React.FC = () => {
                     <div className="mt-4 space-y-3">
                       {workspace.papers.length === 0 ? (
                         <div className="studio-panel-quiet p-8 text-center">
-                          <p className="text-sm text-slate-600">
-                            No papers in this workspace yet. Import papers from Search to begin.
-                          </p>
+                          {(() => {
+                            const researchContext = parseResearchContext(workspace.description);
+                            if (researchContext.isResearchContext) {
+                              return (
+                                <>
+                                  <p className="text-sm text-slate-600 mb-2">
+                                    No papers in this workspace yet. Search for papers related to your research question.
+                                  </p>
+                                  <p className="text-xs text-slate-500 mb-3 italic">
+                                    "{researchContext.researchQuestion}"
+                                  </p>
+                                </>
+                              );
+                            }
+                            return (
+                              <p className="text-sm text-slate-600 mb-2">
+                                No papers in this workspace yet. Import papers from Search to begin your research.
+                              </p>
+                            );
+                          })()}
                           <Link to="/search" className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-indigo-600">
-                            Open search
+                            Search papers
                             <ExternalLink className="h-4 w-4" />
                           </Link>
                         </div>

@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from typing import Optional
 import os
 import re
+import logging
+import socket
+import time
 
 from repositories.research import User
 from repositories import ResearchRepository, get_research_repository
@@ -11,6 +14,7 @@ from services.rag_hooks import index_paper_best_effort
 from utils.groq_client import client, model_config
 from utils.firebase_storage import download_bytes, storage_is_configured, upload_bytes
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/papers", tags=["upload"])
 
 
@@ -146,47 +150,80 @@ async def upload_pdf(
             .title()
         )
         new_paper = repo.create_paper(
-            workspace_id=workspace_id,
+            workspace_id=workspace.id,
             title=title,
             authors="Uploaded PDF",
             abstract=ai_summary or extracted_text[:500],
             url=None,
         )
         paper_id = new_paper.id
+        
+        # Try storage upload only if emulator is actually reachable
+        storage_upload_attempted = False
         if storage_is_configured():
+            # Quick check if storage emulator is actually reachable
+            try:
+                storage_host = os.getenv("STORAGE_EMULATOR_HOST", "").replace("http://", "").replace("https://", "")
+                if storage_host:
+                    host, port = storage_host.split(":") if ":" in storage_host else (storage_host, "9199")
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex((host, int(port)))
+                    sock.close()
+                    if result != 0:
+                        logger.warning(f"UPLOAD_STORAGE_EMULATOR_NOT_REACHABLE: {storage_host} - skipping storage")
+                        storage_upload_attempted = False
+                    else:
+                        storage_upload_attempted = True
+            except Exception as check_error:
+                logger.warning(f"UPLOAD_STORAGE_CHECK_FAILED: {str(check_error)} - skipping storage")
+                storage_upload_attempted = False
+        
+        if storage_upload_attempted:
             safe_name = _safe_filename(file.filename, fallback=f"paper-{paper_id}.pdf")
             storage_path = (
-                f"workspace-files/{current_user.id}/{workspace_id}/uploads/"
+                f"workspace-files/{current_user.id}/{workspace.id}/uploads/"
                 f"{paper_id}-{safe_name}"
             )
-            uploaded = upload_bytes(
-                storage_path=storage_path,
-                data=file_bytes,
-                content_type=file.content_type or "application/pdf",
-                metadata={
-                    "workspace_id": str(workspace_id),
-                    "paper_id": str(paper_id),
-                    "kind": "uploaded_pdf",
-                },
-            )
-            pdf_url = f"{_backend_base_url()}/papers/uploaded/{paper_id}/download"
-            new_paper.pdf_url = pdf_url
-            repo.save(new_paper)
-            file_record = repo.create_workspace_file(
-                workspace_id=workspace_id,
-                user_id=current_user.id,
-                kind="uploaded_pdf",
-                filename=safe_name,
-                storage_bucket=uploaded.bucket,
-                storage_path=uploaded.path,
-                content_type=uploaded.content_type,
-                size_bytes=uploaded.size_bytes,
-                download_url=pdf_url,
-                paper_id=paper_id,
-            )
-            file_record_id = file_record.id
-            storage_bucket = uploaded.bucket
-        index_paper_best_effort(repo=repo, paper=new_paper)
+            try:
+                uploaded = upload_bytes(
+                    storage_path=storage_path,
+                    data=file_bytes,
+                    content_type=file.content_type or "application/pdf",
+                    metadata={
+                        "workspace_id": str(workspace.id),
+                        "paper_id": str(paper_id),
+                        "kind": "uploaded_pdf",
+                    },
+                )
+                
+                pdf_url = f"{_backend_base_url()}/papers/uploaded/{paper_id}/download"
+                new_paper.pdf_url = pdf_url
+                repo.save(new_paper)
+                
+                file_record = repo.create_workspace_file(
+                    workspace_id=workspace.id,
+                    user_id=current_user.id,
+                    kind="uploaded_pdf",
+                    filename=safe_name,
+                    storage_bucket=uploaded.bucket,
+                    storage_path=uploaded.path,
+                    content_type=uploaded.content_type,
+                    size_bytes=uploaded.size_bytes,
+                    download_url=pdf_url,
+                    paper_id=paper_id,
+                )
+                file_record_id = file_record.id
+                storage_bucket = uploaded.bucket
+            except Exception as storage_error:
+                logger.warning(f"UPLOAD_STORAGE_FAILED: {str(storage_error)} - continuing without storage")
+        else:
+            logger.info("UPLOAD_STORAGE_SKIPPED: emulator not reachable")
+        
+        try:
+            index_paper_best_effort(repo=repo, paper=new_paper)
+        except Exception as indexing_error:
+            logger.warning(f"UPLOAD_INDEXING_FAILED: {str(indexing_error)} - continuing without indexing")
 
     return {
         "filename": file.filename,

@@ -1,6 +1,8 @@
 param(
 	[string]$FirebaseProject = "demo-test",
-	[int]$FirestorePort = 8080,
+	[int]$AuthPort = 9099,
+	[int]$FirestorePort = 8081,
+	[int]$StoragePort = 9199,
 	[int]$BackendPort = 8010,
 	[int]$FrontendPort = 5173,
 	[int]$EmulatorWaitSeconds = 45
@@ -9,10 +11,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 $firestoreHost = "localhost:$FirestorePort"
+$authHost = "localhost:$AuthPort"
+$storageHost = "localhost:$StoragePort"
 $backendUrl = "http://localhost:$BackendPort"
 
-Write-Host "Starting Firestore emulator on $firestoreHost (project=$FirebaseProject)..."
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "gcloud beta emulators firestore start --project=$FirebaseProject --host-port=$firestoreHost"
+Write-Host "Starting Firebase emulators with Auth emulator on $authHost, Firestore on $firestoreHost, Storage on $storageHost (project=$FirebaseProject)..."
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "firebase emulators:start --project=$FirebaseProject --auth port=$AuthPort --firestore port=$FirestorePort --storage port=$StoragePort"
 
 Write-Host "Waiting for Firestore emulator readiness..."
 $ready = $false

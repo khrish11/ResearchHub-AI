@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import os
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -414,9 +417,11 @@ class FirestoreVectorStore:
             key=lambda item: (item.similarity_score, item.created_at.timestamp()),
             reverse=True,
         )
-        return matches[: max(1, top_k)]
+        result = matches[: max(1, int(top_k))]
+        return result
 
     async def count_by_workspace(self, workspace_id: int) -> int:
+        return await asyncio.to_thread(self._count_by_workspace_sync, workspace_id)
         return await asyncio.to_thread(self._count_by_workspace_sync, workspace_id)
 
     def _count_by_workspace_sync(self, workspace_id: int) -> int:

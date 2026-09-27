@@ -14,10 +14,11 @@ import {
 } from 'lucide-react';
 import Layout from '../components/Layout';
 import PaperCheckReport from '../components/PaperCheckReport';
-import api from '../api';
+import { API_URL } from '../api';
 import { apiErrorMessage } from '../utils/apiError';
 import { useToast } from '../contexts/ToastContext';
 import { downloadTextFile } from '../utils/exportUtils';
+import { getBackendToken } from '../utils/authSession';
 import {
   citationMissingFieldLabel,
   extractPaperTitleFromFilename,
@@ -115,29 +116,45 @@ const UploadPDF: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    api
-      .get('/workspaces/')
-      .then(async (res) => {
-        const wsList: Workspace[] = res.data;
-        setWorkspaces(wsList);
-        if (wsList.length > 0) {
-          setSelectedWorkspaceId((current) => current || wsList[0].id);
-          return;
-        }
-        try {
-          const defaultWs = await api.post('/workspaces/', {
+    // Use direct API URL with Authorization header
+    const token = getBackendToken();
+    fetch(`${API_URL}/workspaces/`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': token ? `Bearer ${token}` : ''
+      }
+    })
+    .then(async (res) => {
+      if (!res.ok) throw new Error('Failed to fetch workspaces');
+      const wsList: Workspace[] = await res.json();
+      setWorkspaces(wsList);
+      if (wsList.length > 0) {
+        setSelectedWorkspaceId((current) => current || wsList[0].id);
+        return;
+      }
+      try {
+        const defaultWsRes = await fetch(`${API_URL}/workspaces/`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : ''
+          },
+          body: JSON.stringify({
             name: 'My Research Workspace',
             description: 'Default workspace for organizing research papers',
-          });
-          setWorkspaces([defaultWs.data]);
-          setSelectedWorkspaceId(defaultWs.data.id);
-        } catch {
-          setWorkspaces([]);
-        }
-      })
-      .catch(() => {
+          })
+        });
+        if (!defaultWsRes.ok) throw new Error('Failed to create default workspace');
+        const defaultWs = await defaultWsRes.json();
+        setWorkspaces([defaultWs]);
+        setSelectedWorkspaceId(defaultWs.id);
+      } catch {
         setWorkspaces([]);
-      });
+      }
+    })
+    .catch(() => {
+      setWorkspaces([]);
+    });
   }, []);
 
   const handleFile = (nextFile: File) => {
@@ -190,19 +207,51 @@ const UploadPDF: React.FC = () => {
     }
 
     try {
-      const res = await api.post('/papers/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      // Use XMLHttpRequest for upload to avoid Axios issues with direct URLs and multipart/form-data
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/papers/upload', true);
+      
+      // Add Authorization header with JWT token
+      const token = getBackendToken();
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      }
+      
+      const responsePromise = new Promise<any>((resolve, reject) => {
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve(data);
+            } catch {
+              reject(new Error('Failed to parse response'));
+            }
+          } else {
+            reject(new Error(`Upload failed: ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => {
+          reject(new Error('Network error'));
+        };
+        xhr.ontimeout = () => {
+          reject(new Error('Request timeout'));
+        };
       });
-      setExtractedText(res.data.extracted_text);
-      setAiSummary(res.data.ai_summary);
-      setCharCount(res.data.char_count);
-      setSavedPaperId(res.data.paper_id);
+      
+      xhr.timeout = 300000; // 5 minutes for upload processing (PDF extraction can be slow)
+      xhr.send(formData);
+      
+      const res = await responsePromise;
+      setExtractedText(res.extracted_text);
+      setAiSummary(res.ai_summary);
+      setCharCount(res.char_count);
+      setSavedPaperId(res.paper_id);
       setUploadState('done');
-      if (res.data.paper_id) {
+      if (res.paper_id) {
         writeUploadPaperSession({
-          paperId: Number(res.data.paper_id),
+          paperId: Number(res.paper_id),
           workspaceId: selectedWorkspaceId === '' ? undefined : selectedWorkspaceId,
-          charCount: Number(res.data.char_count || 0) || undefined,
+          charCount: Number(res.char_count || 0) || undefined,
         });
       }
     } catch (err: unknown) {
@@ -469,6 +518,7 @@ const UploadPDF: React.FC = () => {
               aria-label="Upload PDF file"
               title="Upload PDF file"
               className="hidden"
+              data-testid="file-input"
               onChange={(e) => {
                 if (e.target.files?.[0]) {
                   handleFile(e.target.files[0]);
@@ -530,7 +580,7 @@ const UploadPDF: React.FC = () => {
         )}
 
         {uploadState === 'done' && (
-          <div className="studio-panel px-4 py-3 mb-4 text-sm text-emerald-700 border-emerald-200 bg-emerald-50 flex items-center gap-2">
+          <div className="studio-panel px-4 py-3 mb-4 text-sm text-emerald-700 border-emerald-200 bg-emerald-50 flex items-center gap-2" data-testid="upload-success">
             <CheckCircle className="h-4 w-4 flex-shrink-0" />
             PDF processed. {charCount.toLocaleString()} characters extracted.
             {savedPaperId && <span> Saved as paper ID {savedPaperId}.</span>}
@@ -580,6 +630,7 @@ const UploadPDF: React.FC = () => {
                   onClick={() => void handleRunPaperCheck()}
                   disabled={paperCheckLoading}
                   className="hero-btn-primary disabled:cursor-not-allowed disabled:opacity-55"
+                  data-testid="run-ai-checker-button"
                 >
                   {paperCheckLoading ? (
                     <>

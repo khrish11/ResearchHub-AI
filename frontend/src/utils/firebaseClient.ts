@@ -92,6 +92,22 @@ export const getFirebaseAuthClient = async (): Promise<Auth | null> => {
   }
   if (!auth) {
     auth = getAuth(firebaseApp);
+    
+    // Connect to Firebase Auth emulator in development
+    if (import.meta.env.DEV && import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST) {
+      try {
+        // Parse the emulator URL to extract host and port
+        const emulatorUrl = new URL(import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST);
+        const host = emulatorUrl.hostname;
+        const port = emulatorUrl.port || '9099';
+        // Use connectAuthEmulator for Firebase v9+
+        (auth as any).connectAuthEmulator?.(`${host}:${port}`, { disableWarnings: true });
+        console.log('Firebase Auth using emulator:', `${host}:${port}`);
+      } catch (error) {
+        console.warn('Failed to connect to Firebase Auth emulator:', error);
+      }
+    }
+    
     try {
       const persistPromise = setPersistence(auth, browserLocalPersistence);
       const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Persistence timeout')), 1000));

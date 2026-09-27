@@ -1,12 +1,12 @@
 # Node
 node_modules/
-/dist
+dist/
+build/
 
 # Environment files
 .env
-backend/.env
-frontend/.env
-frontend/.env.*
+.env.*
+!.env.example
 deploy/*.env.local
 
 # Python
@@ -14,23 +14,42 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.sqlite
 *.sqlite3
 *.db
 venv/
 .venv/
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Tests / temp files
 backend/tests/test_temp*.db
 backend/test_temp.db
 
-# Build
-dist/
+# Playwright & E2E
+playwright-report/
+test-results/
 frontend/playwright-report/
 frontend/test-results/
 frontend/.playwright/
+.playwright/
 
 # Logs
 *.log
 firebase-debug.log
+firestore-debug.log
 ui-debug.log
+
+# Firebase & IDE
+.firebase/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*service-account*.json
+*credentials*.json

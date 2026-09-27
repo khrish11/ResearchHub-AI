@@ -26,6 +26,15 @@ class WorkspaceCreate(BaseModel):
     description: Optional[str] = None
 
 
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class WorkspaceDescriptionUpdate(BaseModel):
+    description: str
+
+
 class WorkspaceOut(BaseModel):
     id: int
     name: str
@@ -1048,6 +1057,24 @@ def get_workspace(
         description=workspace.description,
         papers=papers,
         chats=chats,
+    )
+
+
+@router.put("/{workspace_id}/description", response_model=WorkspaceOut)
+def update_workspace_description(
+    workspace_id: int,
+    payload: WorkspaceDescriptionUpdate,
+    repo: ResearchRepository = Depends(get_research_repository),
+    current_user: User = Depends(get_current_user),
+):
+    workspace = _owned_workspace_or_404(repo, workspace_id, current_user.id)
+    workspace.description = (payload.description or "").strip()[:2000]
+    workspace.updated_at = datetime.now(timezone.utc)
+    repo.save(workspace)
+    return WorkspaceOut(
+        id=workspace.id,
+        name=workspace.name,
+        description=workspace.description,
     )
 
 

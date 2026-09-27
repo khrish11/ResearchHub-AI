@@ -449,10 +449,10 @@ export async function getResearchIntelligenceArtifact(artifactId: string): Promi
 
 /**
  * List Workspace Research Intelligence Artifacts
- * GET /workspaces/{workspace_id}/research-intelligence
+ * GET /research/workspaces/{workspace_id}/research-intelligence
  */
 export async function listWorkspaceResearchIntelligenceArtifacts(workspaceId: number): Promise<ListArtifactsResponse> {
-  const response = await api.get<ListArtifactsResponse>(`/workspaces/${workspaceId}/research-intelligence`);
+  const response = await api.get<ListArtifactsResponse>(`/research/workspaces/${workspaceId}/research-intelligence`);
   return response.data;
 }
 
@@ -735,5 +735,49 @@ export async function deleteResearchPlan(planId: string): Promise<{ success: boo
  */
 export async function exportResearchPlanToDocspace(planId: string): Promise<ResearchPlan> {
   const response = await api.post<ResearchPlan>(`/research/plans/${planId}/export`);
+  return response.data;
+}
+
+// ============================================================================
+// QUERY CLASSIFICATION
+// ============================================================================
+
+export interface QueryClassificationRequest {
+  query: string;
+}
+
+export interface QueryClassification {
+  category: string;
+  confidence: number;
+  user_friendly_description: string;
+  requires_clarification: boolean;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  question: string;
+  options: string[];
+}
+
+export interface ResearchDirection {
+  topic: string;
+  focus: string | null;
+  research_intent: string;
+  suggested_scope: string;
+}
+
+export interface QueryClassificationResponse {
+  query: string;
+  classification: QueryClassification;
+  clarification_questions: ClarificationQuestion[];
+  research_direction: ResearchDirection | null;
+}
+
+/**
+ * Classify Research Query
+ * POST /research/classify-query
+ */
+export async function classifyQuery(request: QueryClassificationRequest): Promise<QueryClassificationResponse> {
+  const response = await api.post<QueryClassificationResponse>('/research/classify-query', request);
   return response.data;
 }

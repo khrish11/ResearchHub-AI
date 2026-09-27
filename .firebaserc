@@ -3,6 +3,14 @@
     "default": "demo-test",
     "production": "studio-5606596663-2ca06"
   },
-  "targets": {},
+  "targets": {
+    "studio-5606596663-2ca06": {
+      "storage": {
+        "default": [
+          "studio-5606596663-2ca06.firebasestorage.app"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

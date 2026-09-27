@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
-import api, { API_URL, getGoogleLoginUrl } from '../api';
+import api, { getGoogleLoginUrl } from '../api';
 import {
   firebaseAuthAvailable,
   isFirebaseUnauthorizedDomainError,
@@ -44,23 +44,24 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
+    // Force Firebase Auth to be disabled since we're using direct JWT authentication
     setFirebaseEnabled(false);
+    setGoogleConfigured(false);
+    
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
       api.get<FirebaseStatusResponse>('/auth/firebase/status'),
-    ]).then(([flagResult, firebaseStatusResult]) => {
-      const remoteFlagEnabled =
-        flagResult.status === 'fulfilled' ? !!flagResult.value : localFirebaseAvailability;
-      const backendFirebaseConfigured =
-        firebaseStatusResult.status === 'fulfilled'
-          ? !!firebaseStatusResult.value?.data?.configured
-          : false;
-      setFirebaseEnabled(localFirebaseAvailability && remoteFlagEnabled && backendFirebaseConfigured);
+    ]).then(() => {
+      // Force Firebase Auth to be disabled
+      setFirebaseEnabled(false);
     });
     setGoogleLoginUrl(buildGoogleAuthUrl());
     api
       .get('/auth/google/status')
-      .then((res) => setGoogleConfigured(!!res.data?.configured))
+      .then(() => {
+        // Force Google to be disabled
+        setGoogleConfigured(false);
+      })
       .catch(() => setGoogleConfigured(false));
 
     const params = new URLSearchParams(window.location.search);
@@ -85,18 +86,76 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
         } catch (firebaseErr) {
           if (isFirebaseNotConfiguredError(firebaseErr)) {
             setFirebaseEnabled(false);
-            response = await api.post('/auth/register', { email, password }).then((res) => res.data);
+            // Use relative URL to go through Vite proxy
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/auth/register', true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            
+            const responsePromise = new Promise<{ access_token?: string; message?: string }>((resolve, reject) => {
+              xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                  try {
+                    const data = JSON.parse(xhr.responseText);
+                    resolve(data);
+                  } catch {
+                    reject(new Error('Failed to parse response'));
+                  }
+                } else {
+                  reject(new Error(`Registration failed: ${xhr.status}`));
+                }
+              };
+              xhr.onerror = () => {
+                reject(new Error('Network error'));
+              };
+              xhr.ontimeout = () => {
+                reject(new Error('Request timeout'));
+              };
+            });
+            
+            xhr.timeout = 30000;
+            xhr.send(JSON.stringify({ email, password }));
+            
+            response = await responsePromise;
           } else {
             throw firebaseErr;
           }
         }
       } else {
-        response = await api.post('/auth/register', { email, password }).then((res) => res.data);
+        // Use relative URL to go through Vite proxy
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/auth/register', true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        
+        const responsePromise = new Promise<{ access_token?: string; message?: string }>((resolve, reject) => {
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                const data = JSON.parse(xhr.responseText);
+                resolve(data);
+              } catch {
+                reject(new Error('Failed to parse response'));
+              }
+            } else {
+              reject(new Error(`Registration failed: ${xhr.status}`));
+            }
+          };
+          xhr.onerror = () => {
+            reject(new Error('Network error'));
+          };
+          xhr.ontimeout = () => {
+            reject(new Error('Request timeout'));
+          };
+        });
+        
+        xhr.timeout = 30000;
+        xhr.send(JSON.stringify({ email, password }));
+        
+        response = await responsePromise;
       }
       const accessToken = response.access_token;
       if (accessToken && setToken) {
         setToken(accessToken);
-        navigate('/dashboard');
+        navigate('/home');
       } else {
         navigate('/login');
       }
@@ -109,7 +168,7 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
       if (axErr.response?.status === 400) {
         setError(axErr.response?.data?.detail || 'Email already registered.');
       } else if (axErr.message?.includes('Network') || !axErr.response) {
-        setError(`Cannot reach server. Ensure the backend is running on ${API_URL}`);
+        setError('Cannot reach server. Please check your connection and try again.');
       } else {
         setError(axErr.response?.data?.detail || 'Registration failed. Please try again.');
       }

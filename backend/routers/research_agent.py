@@ -30,6 +30,7 @@ from services.citation_verification_service import get_citation_service
 from services.knowledge_graph_enhancement_service import get_graph_enhancement_service
 from services.research_plan_service import get_plan_service
 from services.research_intelligence_artifact_service import get_artifact_service_instance
+from services.query_classification_service import get_query_classification_service
 from utils.groq_client import client as groq_client
 from utils.groq_client import model_config
 from utils.groq_client import groq_client_status
@@ -270,6 +271,10 @@ class GenerateResearchReportRequest(BaseModel):
     intelligence_artifact_id: Optional[str] = Field(default=None, max_length=100)
 
 
+class QueryClassificationRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+
+
 @router.post("/generate-report")
 async def generate_research_report(
     request: GenerateResearchReportRequest,
@@ -293,6 +298,52 @@ async def generate_research_report(
             intelligence_artifact_id=request.intelligence_artifact_id,
         )
         return {"result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/classify-query")
+async def classify_query(
+    request: QueryClassificationRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Classify a research query into intent categories and detect ambiguity.
+    
+    This endpoint is used for the initial research entry experience before workspace selection.
+    It classifies the query, detects ambiguity, and generates clarification questions if needed.
+    """
+    try:
+        service = get_query_classification_service()
+        result = service.classify_query(
+            query=request.query,
+            use_cache=True,
+            use_ai=False  # Use heuristics for now, AI can be added later
+        )
+        
+        return {
+            "query": result.query,
+            "classification": {
+                "category": result.classification.category,
+                "confidence": result.classification.confidence,
+                "user_friendly_description": result.classification.user_friendly_description,
+                "requires_clarification": result.classification.requires_clarification,
+            },
+            "clarification_questions": [
+                {
+                    "id": q.id,
+                    "question": q.question,
+                    "options": q.options,
+                }
+                for q in result.clarification_questions
+            ],
+            "research_direction": {
+                "topic": result.research_direction.topic,
+                "focus": result.research_direction.focus,
+                "research_intent": result.research_direction.research_intent,
+                "suggested_scope": result.research_direction.suggested_scope,
+            } if result.research_direction else None,
+        }
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

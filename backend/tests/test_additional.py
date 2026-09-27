@@ -6,7 +6,6 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from main import app
 from repositories import get_research_repository
 from tests.env_flags import IS_PRODUCTION
 
@@ -17,6 +16,7 @@ TEST_PASSWORD = "Passw0rd!"
 @pytest.fixture()
 def c(repo):
     """TestClient wired to the emulator repo (injected via conftest)."""
+    from main import app
     app.state._repo = repo
     app.dependency_overrides[get_research_repository] = lambda: repo
     with TestClient(app, raise_server_exceptions=False) as tc:

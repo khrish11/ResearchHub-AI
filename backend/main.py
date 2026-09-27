@@ -34,6 +34,7 @@ import json
 import ipaddress
 import re
 import time
+import asyncio
 from collections import deque
 from threading import Lock
 from typing import Any, Deque, Dict, Optional, Tuple
@@ -55,6 +56,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.gzip import GZipMiddleware
+from contextlib import asynccontextmanager
 
 
 from routers import (
@@ -217,7 +219,26 @@ if SENTRY_DSN:
         environment=APP_ENV
     )
 
-app = FastAPI(title="Soyog AI API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    if os.getenv("PAPER_CHECK_DEV_WORKER_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
+        from repositories import get_research_repository
+        from workers.dev_paper_check_worker import start_dev_worker
+        
+        repo = get_research_repository()
+        await start_dev_worker(repo)
+    
+    yield
+    
+    # Shutdown
+    if os.getenv("PAPER_CHECK_DEV_WORKER_ENABLED", "0").strip().lower() in {"1", "true", "yes"}:
+        from workers.dev_paper_check_worker import stop_dev_worker
+        await stop_dev_worker()
+
+
+app = FastAPI(title="Soyog AI API", version="1.0.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -425,9 +446,11 @@ else:
         "http://localhost",
         "http://127.0.0.1",
         "http://localhost:3000",
+        "http://localhost:4173",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:4173",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
     }

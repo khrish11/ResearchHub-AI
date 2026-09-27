@@ -150,9 +150,9 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
 
   const mobileLinks = [
     { to: '/home', icon: House, label: 'Home' },
-    { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { to: '/search', icon: Search, label: 'Search' },
-    { to: '/research-agent', icon: Bot, label: 'Agent' },
+    { to: '/research', icon: Search, label: 'Research' },
+    { to: '/workspaces', icon: LayoutDashboard, label: 'Workspaces' },
+    { to: '/reports', icon: Files, label: 'Reports' },
   ];
 
   const HeaderActionIcon = headerMeta.action.icon;

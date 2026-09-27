@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import { toAppPath } from './utils/routing';
 import { getAppCheckTokenValue } from './utils/firebaseClient';
 import { clearAuthSession, getBackendToken, setBackendToken } from './utils/authSession';
@@ -36,7 +36,7 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
   }
 
   const res = await fetch(`${API_URL}${path}`, {
-    credentials: "include", // IMPORTANT for cookies
+    // credentials: "include", // Disable credentials to test CORS preflight issue
     headers,
     ...options
   });
@@ -67,9 +67,9 @@ export const getGoogleLoginUrl = () => {
 };
 
 const api = axios.create({
-    baseURL: API_URL,
+    baseURL: '', // Use relative URLs to go through Vite proxy
     withCredentials: true,
-    timeout: DEFAULT_API_TIMEOUT_MS,
+    timeout: 30000, // Reduced timeout for debugging
 });
 
 // Single combined request interceptor — merges auth token + Firebase App Check.
@@ -78,10 +78,10 @@ api.interceptors.request.use(async (config) => {
     // Long-running routes can legitimately exceed the default timeout.
     if (
         url.includes('/research/full-pipeline') ||
-        url.includes('/research/multi-agent-analysis') ||
-        url.includes('/research/paper-draft')
+        url.includes('/research/ingest') ||
+        url.includes('/research/analyze')
     ) {
-        config.timeout = Math.max(DEFAULT_API_TIMEOUT_MS, 180000);
+        config.timeout = 120000; // 2 minutes for long-running operations
     } else if (
         url.includes('/workspace-insights/') ||
         url.includes('/workspace-feed/')
@@ -93,13 +93,18 @@ api.interceptors.request.use(async (config) => {
     if (token) {
         config.headers.Authorization = `Bearer ${token}`;
     }
-    try {
-        const appCheckToken = await getAppCheckTokenValue();
-        if (appCheckToken) {
-            config.headers['X-Firebase-AppCheck'] = appCheckToken;
+
+    // Skip AppCheck token for auth endpoints to prevent hanging
+    const isAuthEndpoint = url.includes('/auth/');
+    if (!isAuthEndpoint) {
+        try {
+            const appCheckToken = await getAppCheckTokenValue();
+            if (appCheckToken) {
+                config.headers['X-Firebase-AppCheck'] = appCheckToken;
+            }
+        } catch {
+            // App Check token failure must never block the request.
         }
-    } catch {
-        // App Check token failure must never block the request.
     }
     return config;
 });
@@ -117,8 +122,15 @@ const shouldSkipAutoAuthHandling = (path: string) =>
     path.includes('/auth/logout');
 
 api.interceptors.response.use(
-    (response) => response,
-    async (error) => {
+    (response) => {
+        // Detect if response is HTML instead of expected JSON (backend likely down)
+        if (typeof response.data === 'string' && response.data.trim().startsWith('<!doctype')) {
+            console.error('API returned HTML instead of JSON - backend may be down:', response.config.url);
+            return Promise.reject(new Error('Backend service unavailable'));
+        }
+        return response;
+    },
+    async (error: AxiosError) => {
         const status = error?.response?.status;
         const path = String(error?.config?.url || '');
         const originalConfig = error?.config || {};
@@ -143,7 +155,8 @@ api.interceptors.response.use(
                 await refreshInFlight;
                 return api(originalConfig);
             } catch (err) {
-                await clearAuthSession();
+                // Clear session without notifying to prevent infinite loop with useUser
+                await clearAuthSession(false);
                 const pathName = window.location.pathname;
                 const publicPaths = [
                     '/',

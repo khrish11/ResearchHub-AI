@@ -27,7 +27,7 @@ jobs:
 
     env:
       # ── Emulator config ───────────────────────────────────────────────────
-      FIRESTORE_EMULATOR_HOST: "localhost:8080"
+      FIRESTORE_EMULATOR_HOST: "localhost:8081"
       FIREBASE_PROJECT_ID: "demo-test"
       # ── App config (all test-safe dummies) ───────────────────────────────
       APP_ENV: "development"
@@ -80,7 +80,7 @@ jobs:
           # Wait until the emulator is accepting connections
           echo "Waiting for Firestore emulator..."
           for i in $(seq 1 30); do
-            if curl -s http://localhost:8080 > /dev/null 2>&1; then
+            if curl -s http://localhost:8081 > /dev/null 2>&1; then
               echo "Emulator ready after ${i}s"
               break
             fi

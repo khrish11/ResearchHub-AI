@@ -60,6 +60,15 @@
       ]
     },
     {
+      "collectionGroup": "workspace_insight_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "workspace_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "workspace_feed_jobs",
       "queryScope": "COLLECTION",
       "fields": [
@@ -82,6 +91,15 @@
         { "fieldPath": "workspace_id", "order": "ASCENDING" },
         { "fieldPath": "user_id", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workspace_feed_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "user_id", "order": "ASCENDING" },
+        { "fieldPath": "workspace_id", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "ASCENDING" }
       ]
     },

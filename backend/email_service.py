@@ -8,17 +8,6 @@ from typing import Optional
 import aiosmtplib
 from jinja2 import Template
 
-# SQLAlchemy imports are only used in the legacy verify_email_token helper below,
-# which is guarded so it never executes in Firebase mode.
-try:
-    from repositories.research import User as _SQLUser  # type: ignore[import]
-    
-    _SQLALCHEMY_AVAILABLE = True
-except Exception:
-    _SQLALCHEMY_AVAILABLE = False
-    _SQLUser = None  # type: ignore[assignment]
-    _Session = None  # type: ignore[assignment]
-
 MAIL_USERNAME = os.getenv("MAIL_USERNAME", "").strip()
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "").strip()
 MAIL_FROM = (
@@ -210,20 +199,4 @@ async def send_password_reset_email(
     """)
 
     html_content = template.render(name=user_name, email=email, reset_url=reset_url)
-    now = utc_now()
-    user = (
-        db.query(_SQLUser)
-        .filter(  # type: ignore[union-attr]
-            _SQLUser.verification_token == token,
-            _SQLUser.verification_token_expires > now,
-            _SQLUser.is_active == True,
-        )
-        .first()
-    )
-    if user:
-        user.is_verified = True
-        user.verification_token = None
-        user.verification_token_expires = None
-        db.commit()  # type: ignore[union-attr]
-        db.refresh(user)  # type: ignore[union-attr]
-    return user
+    await _send_html_email("Reset Your Password - Soyog AI", email, html_content)

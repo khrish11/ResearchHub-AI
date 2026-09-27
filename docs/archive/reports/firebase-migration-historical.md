@@ -82,10 +82,4 @@ After migration and config:
 
 ## Compatibility notes
 
-SQLAlchemy is still present for:
-
-1. local compatibility fallback when `STORAGE_BACKEND=sqlalchemy`
-2. migration-source reads
-3. legacy helper code that is no longer on the active request path
-
-It is no longer the primary runtime path once `STORAGE_BACKEND=firebase` is enabled.
+The project has been fully migrated to Firebase/Firestore architecture. Legacy SQLAlchemy code has been removed from the active codebase. The system now uses Firebase as the sole persistence layer for all data storage requirements.

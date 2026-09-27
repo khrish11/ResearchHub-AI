@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, memo } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { Bot, Loader2, RefreshCcw, Send, ShieldAlert, Sparkles } from 'lucide-react';
 import api from '../api';
@@ -248,7 +248,7 @@ function renderGenericContent(content: unknown) {
   );
 }
 
-export default function UnifiedCopilotPanel({
+function UnifiedCopilotPanel({
   workspaceId,
   paperIds,
   heading = 'AI Copilot',
@@ -256,11 +256,6 @@ export default function UnifiedCopilotPanel({
   initialQuery = '',
   suggestedPrompts = [],
 }: UnifiedCopilotPanelProps) {
-  const [query, setQuery] = useState(initialQuery);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<CopilotResponse | null>(null);
-
   const normalizedPaperIds = useMemo(() => toIntList(paperIds), [paperIds]);
   const normalizedWorkspaceId = useMemo(() => {
     const id = Number(workspaceId || 0);
@@ -277,6 +272,11 @@ export default function UnifiedCopilotPanel({
     }
     return payload;
   }, [normalizedPaperIds, normalizedWorkspaceId]);
+
+  const [query, setQuery] = useState(initialQuery);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<CopilotResponse | null>(null);
 
   const submit = async (refresh = false, overrideQuery?: string) => {
     const activeQuery = typeof overrideQuery === 'string' ? overrideQuery : query;
@@ -328,13 +328,21 @@ export default function UnifiedCopilotPanel({
     if (result.type === 'insights' && result.content && typeof result.content === 'object') {
       return renderInsightsContent(result.content as Record<string, unknown>);
     }
+    if (result.type === 'rag_query' && result.content && typeof result.content === 'object') {
+      // RAG queries need special handling for answer field
+      const ragContent = result.content as Record<string, unknown>;
+      const answer = stringifyText(ragContent.answer);
+      if (answer) {
+        return <p className="text-sm leading-relaxed text-slate-700" data-testid="rag-answer">{answer}</p>;
+      }
+    }
     return renderGenericContent(result.content);
   };
 
   const confidencePct = Math.round(Math.max(0, Math.min(1, Number(result?.confidence || 0))) * 100);
 
   return (
-    <section className="feature-surface">
+    <section className="feature-surface" data-testid="unified-copilot-panel">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Unified AI</p>
@@ -370,9 +378,18 @@ export default function UnifiedCopilotPanel({
         <input
           type="text"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              void submit(false);
+            }
+          }}
           placeholder='Try: "Explain this paper" or "What are the main trends?"'
           className="w-full flex-1 rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          data-testid="unified-copilot-input"
         />
         <button
           type="button"
@@ -381,6 +398,7 @@ export default function UnifiedCopilotPanel({
           }}
           disabled={loading}
           className="hero-btn-primary disabled:cursor-not-allowed disabled:opacity-55"
+          data-testid="unified-copilot-submit"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           Ask
@@ -485,3 +503,6 @@ export default function UnifiedCopilotPanel({
     </section>
   );
 }
+
+// Memoize component to prevent unnecessary remounts when props haven't changed
+export default memo(UnifiedCopilotPanel);

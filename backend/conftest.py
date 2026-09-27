@@ -14,7 +14,7 @@ Usage:
 import os
 
 # ── Must be set BEFORE firebase_admin / google.cloud.firestore imports ──
-os.environ.setdefault("FIRESTORE_EMULATOR_HOST", "localhost:8080")
+os.environ.setdefault("FIRESTORE_EMULATOR_HOST", "localhost:8081")
 os.environ.setdefault("FIREBASE_PROJECT_ID", "demo-test")          # demo-* = local only
 os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")

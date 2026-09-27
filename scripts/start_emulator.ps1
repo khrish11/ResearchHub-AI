@@ -3,7 +3,7 @@
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "Starting Firestore emulator on localhost:8080 (gRPC) and localhost:9080 (REST)..." -ForegroundColor Cyan
+Write-Host "Starting Firestore emulator on localhost:8081 (gRPC) and localhost:9081 (REST)..." -ForegroundColor Cyan
 
 # Kill any existing emulator processes
 $emulatorProcesses = Get-Process | Where-Object { $_.CommandLine -like "*cloud_firestore_emulator*" }
@@ -14,7 +14,7 @@ if ($emulatorProcesses) {
 }
 
 # Set required environment variables
-$env:FIRESTORE_EMULATOR_HOST = "localhost:8080"
+$env:FIRESTORE_EMULATOR_HOST = "localhost:8081"
 $env:FIREBASE_PROJECT_ID = "studio-5606596663-2ca06"
 
 # Use full path to gcloud (installed via Cloud SDK)
@@ -23,19 +23,19 @@ $gcloudPath = "C:\Users\Girish P\AppData\Local\Google\Cloud SDK\google-cloud-sdk
 # Start the emulator in background
 Start-Process `
     -FilePath "cmd.exe" `
-    -ArgumentList "/c", "`"$gcloudPath`" beta emulators firestore start --project=studio-5606596663-2ca06 --host-port=localhost:8080" `
+    -ArgumentList "/c", "`"$gcloudPath`" beta emulators firestore start --project=studio-5606596663-2ca06 --host-port=localhost:8081" `
     -NoNewWindow `
     -PassThru
 
 Start-Sleep -Seconds 10
 
 # Verify it's running
-$tcpTest = Test-NetConnection -ComputerName "localhost" -Port 8080 -WarningAction SilentlyContinue
+$tcpTest = Test-NetConnection -ComputerName "localhost" -Port 8081 -WarningAction SilentlyContinue
 if ($tcpTest.TcpTestSucceeded) {
-    Write-Host "Firestore emulator is running on localhost:8080 (gRPC) and localhost:9080 (REST)" -ForegroundColor Green
+    Write-Host "Firestore emulator is running on localhost:8081 (gRPC) and localhost:9081 (REST)" -ForegroundColor Green
     Write-Host ""
     Write-Host "To run tests with the emulator:" -ForegroundColor Yellow
-    Write-Host '  $env:FIRESTORE_EMULATOR_HOST = "localhost:8080"' -ForegroundColor White
+    Write-Host '  $env:FIRESTORE_EMULATOR_HOST = "localhost:8081"' -ForegroundColor White
     Write-Host "  python -m pytest tests/" -ForegroundColor White
 } else {
     Write-Host "WARNING: Emulator may not be running yet. Try again in a few seconds." -ForegroundColor Red
