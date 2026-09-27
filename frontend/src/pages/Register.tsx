@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
-import api, { getGoogleLoginUrl } from '../api';
+import api, { getGoogleLoginUrl, API_URL } from '../api';
 import {
   firebaseAuthAvailable,
   isFirebaseUnauthorizedDomainError,
@@ -84,9 +84,9 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
         } catch (firebaseErr) {
           if (isFirebaseNotConfiguredError(firebaseErr)) {
             setFirebaseEnabled(false);
-            // Use relative URL to go through Vite proxy
+            // Use full API URL for production (no Vite proxy in production)
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/auth/register', true);
+            xhr.open('POST', `${API_URL}/auth/register`, true);
             xhr.setRequestHeader('Content-Type', 'application/json');
             
             const responsePromise = new Promise<{ access_token?: string; message?: string }>((resolve, reject) => {
@@ -119,9 +119,9 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
           }
         }
       } else {
-        // Use relative URL to go through Vite proxy
+        // Use full API URL for production (no Vite proxy in production)
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/auth/register', true);
+        xhr.open('POST', `${API_URL}/auth/register`, true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         
         const responsePromise = new Promise<{ access_token?: string; message?: string }>((resolve, reject) => {
