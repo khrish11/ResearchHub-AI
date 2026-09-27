@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
-import api, { getGoogleLoginUrl, API_URL } from '../api';
+import { getGoogleLoginUrl, API_URL, apiRequest } from '../api';
 import {
   firebaseAuthAvailable,
   isFirebaseUnauthorizedDomainError,
@@ -49,14 +49,13 @@ const Register: React.FC<RegisterProps> = ({ setToken }) => {
     
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
-      api.get<FirebaseStatusResponse>('/auth/firebase/status'),
+      apiRequest<FirebaseStatusResponse>('/auth/firebase/status'),
     ]).then(() => {
       // Keep Firebase disabled in production
       setFirebaseEnabled(false);
     });
     setGoogleLoginUrl(buildGoogleAuthUrl());
-    api
-      .get('/auth/google/status')
+    apiRequest('/auth/google/status')
       .then(() => {
         setGoogleConfigured(true);
       })
