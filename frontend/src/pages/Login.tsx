@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Atom, Microscope, Sparkles } from 'lucide-react';
-import api, { getGoogleLoginUrl } from '../api';
+import api, { getGoogleLoginUrl, API_URL } from '../api';
 import {
   firebaseAuthAvailable,
   isFirebaseUnauthorizedDomainError,
@@ -42,23 +42,23 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
 
   useEffect(() => {
     const localFirebaseAvailability = firebaseAuthAvailable();
-    // Force Firebase Auth to be disabled since we're using direct JWT authentication
-    setFirebaseEnabled(false);
+    setFirebaseEnabled(localFirebaseAvailability);
     setGoogleConfigured(false);
     
     void Promise.allSettled([
       getRemoteBoolean('feature_firebase_auth', localFirebaseAvailability),
       api.get<FirebaseStatusResponse>('/auth/firebase/status'),
-    ]).then(() => {
-      // Force Firebase Auth to be disabled
-      setFirebaseEnabled(false);
+    ]).then(([featureFlag, apiStatus]) => {
+      const enabled = 
+        (featureFlag.status === 'fulfilled' ? featureFlag.value : localFirebaseAvailability) || 
+        (apiStatus.status === 'fulfilled' && apiStatus.value.data.configured);
+      setFirebaseEnabled(enabled);
     });
     setGoogleLoginUrl(getGoogleLoginUrl());
     api
       .get<GoogleStatusResponse>('/auth/google/status')
-      .then(() => {
-        // Force Google to be disabled
-        setGoogleConfigured(false);
+      .then((res) => {
+        setGoogleConfigured(res.data.configured);
       })
       .catch(() => {
         setGoogleConfigured(false);
@@ -86,9 +86,9 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
         } catch (firebaseErr) {
           if (isFirebaseNotConfiguredError(firebaseErr)) {
             setFirebaseEnabled(false);
-            // Use relative URL to go through Vite proxy
+            // Use full API URL for production (no Vite proxy in production)
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/auth/token', true);
+            xhr.open('POST', `${API_URL}/token`, true);
             xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
             
             const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
@@ -118,9 +118,9 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
           }
         }
       } else {
-        // Use relative URL to go through Vite proxy
+        // Use full API URL for production (no Vite proxy in production)
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/auth/token', true);
+        xhr.open('POST', `${API_URL}/token`, true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         
         const responsePromise = new Promise<{ access_token: string }>((resolve, reject) => {
