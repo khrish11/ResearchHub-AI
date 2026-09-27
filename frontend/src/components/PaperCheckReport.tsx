@@ -155,7 +155,7 @@ const PaperCheckReport: React.FC<PaperCheckReportProps> = ({
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {displayedResult.metadata?.model_used && (
               <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 font-semibold text-indigo-700">
-                {displayedResult.metadata.model_used}
+                AI Analysis
               </span>
             )}
             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-600">

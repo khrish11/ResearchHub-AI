@@ -811,9 +811,9 @@ const ResearchAgent: React.FC = () => {
               AI generation is offline{aiStatus.error ? `: ${aiStatus.error}` : '.'} Configure `GROQ_API_KEY` and restart backend.
             </p>
           )}
-          {aiStatus?.enabled && aiStatus.model && (
+          {aiStatus?.enabled && (
             <p className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-              AI model in use: {aiStatus.model}
+              AI generation enabled
             </p>
           )}
           {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
