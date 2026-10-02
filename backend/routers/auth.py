@@ -1568,19 +1568,25 @@ async def google_callback(
         )
 
     redirect_uri = _resolve_google_redirect_uri(request)
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+    logging.info("Google OAuth token exchange: client_id=%s, redirect_uri=%s", client_id[:20] + "..." if client_id else None, redirect_uri)
     try:
         async with httpx.AsyncClient(timeout=GOOGLE_OAUTH_TIMEOUT) as client:
             token_resp = await client.post(
                 "https://oauth2.googleapis.com/token",
                 data={
                     "code": code,
-                    "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                    "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",
                 },
                 headers={"Accept": "application/json"},
             )
+            logging.info("Google OAuth token response status: %s", token_resp.status_code)
+            if token_resp.status_code != 200:
+                logging.error("Google OAuth token response body: %s", token_resp.text)
             token_resp.raise_for_status()
             token_payload = token_resp.json()
             access_token = (
