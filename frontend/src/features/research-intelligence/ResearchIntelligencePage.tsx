@@ -608,10 +608,29 @@ const ResearchIntelligencePage: React.FC = () => {
   }, [runStage]);
 
   // Question handlers
-  const handleAddToWorkspace = useCallback(() => {
-    // TODO: Implement add to workspace functionality
-    toastSuccess('Question added to workspace (TODO: implement)');
-  }, [toastSuccess]);
+  const handleAddToWorkspace = useCallback((question: ResearchQuestion) => {
+    if (!state.workspaceId) {
+      toastError('No workspace selected');
+      return;
+    }
+    saveResearchQuestion({
+      workspace_id: state.workspaceId,
+      question: question.question,
+      category: question.category || 'general',
+      complexity: 'medium',
+      confidence: 0.7,
+      novelty: 0.7,
+      feasibility: 0.7,
+      impact: 0.7,
+    })
+      .then(() => {
+        toastSuccess('Question saved to workspace');
+      })
+      .catch((err) => {
+        toastError('Failed to save question');
+        console.error(err);
+      });
+  }, [state.workspaceId, toastSuccess, toastError]);
 
   const handleChallengeQuestion = useCallback((question: ResearchQuestion) => {
     setState(prev => ({

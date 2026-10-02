@@ -71,6 +71,7 @@ const CookiePolicy = lazyWithRetry(() => import('./pages/CookiePolicy'), 'cookie
 const DataRights = lazyWithRetry(() => import('./pages/DataRights'), 'data-rights') as unknown as ComponentType<Record<string, unknown>>;
 const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'), 'forgot-password') as unknown as ComponentType<Record<string, unknown>>;
 const ResetPassword = lazyWithRetry(() => import('./pages/ResetPassword'), 'reset-password') as unknown as ComponentType<Record<string, unknown>>;
+const NotFound = lazyWithRetry(() => import('./pages/NotFound'), 'not-found') as unknown as ComponentType<Record<string, unknown>>;
 
 const RouteLoader = () => {
   const [showRecovery, setShowRecovery] = useState(false);
@@ -403,6 +404,7 @@ function App() {
                     <Route path="/forgot-password" element={<ForgotPassword />} />
                     <Route path="/reset-password" element={<ResetPassword />} />
                     <Route path="/" element={authChecked && isAuthenticated ? <Navigate to="/home" replace /> : <Landing />} />
+                    <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Suspense>
               </main>

@@ -84,7 +84,7 @@ const Landing: React.FC = () => {
     <div className="landing-shell">
       <div className="landing-wrap">
         <header className="landing-nav">
-          <div className="landing-brand">
+          <Link to="/" className="landing-brand">
             <div className="landing-brand-chip">
               <Microscope className="h-4.5 w-4.5" />
             </div>
@@ -92,7 +92,7 @@ const Landing: React.FC = () => {
               <h1>Soyog AI</h1>
               <p>Research Operating Surface</p>
             </div>
-          </div>
+          </Link>
           <div className="landing-actions">
             <Link to="/login" className="landing-btn-ghost">
               Sign in

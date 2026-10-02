@@ -10,6 +10,7 @@ import {
   Files,
   House,
   LayoutDashboard,
+  Microscope,
   Search,
   Sparkles,
   Workflow,
@@ -23,8 +24,6 @@ interface HeaderProps {
   userEmail?: string;
   userInitials?: string;
 }
-
-
 
 interface HeaderMeta {
   title: string;
@@ -163,6 +162,11 @@ const Header: React.FC<HeaderProps> = ({ userEmail, userInitials = 'U' }) => {
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="min-w-0 flex-1">
             <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Link to="/home" className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity" title="Go to Home">
+                <Microscope className="h-4 w-4 text-indigo-600" />
+                <span className="text-sm font-semibold text-slate-900">Soyog AI</span>
+              </Link>
+              <span className="text-slate-300">|</span>
               <p className="m-0 flex items-center gap-1.5 text-[11px] uppercase tracking-[0.2em] text-slate-500">
                 <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
                 {headerMeta.eyebrow}
