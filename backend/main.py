@@ -873,10 +873,8 @@ async def request_logging_middleware(request: Request, call_next):
                 "/docs",
                 "/redoc",
                 "/openapi.json",
-                "/auth/google/",
-                "/auth/firebase/status",
+                "/auth/",
             )
-        )
         ):
             app_check_token = (
                 request.headers.get("X-Firebase-AppCheck")
