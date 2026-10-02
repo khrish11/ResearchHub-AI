@@ -154,9 +154,9 @@ const Login: React.FC<LoginProps> = ({ setToken }) => {
         setError(err.message || 'Firebase sign-in failed. Please try again.');
         return;
       }
-      if (axErr.response?.status === 401) {
+      if (axErr.response?.status === 401 || /Login failed:\s*401/.test(axErr.message || '')) {
         setError('Incorrect email or password. Try again or register a new account.');
-      } else if (axErr.message?.includes('Network') || !axErr.response) {
+      } else if (axErr.message === 'Network error' || axErr.message === 'Request timeout') {
         setError('Cannot reach server. Please check your connection and try again.');
       } else {
         setError(axErr.response?.data?.detail || 'Login failed. Please try again.');
