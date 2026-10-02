@@ -14,11 +14,12 @@
     "a11y:ci": "node scripts/run-a11y-ci.mjs"
   },
   "dependencies": {
+    "@firebase/app-check": "^0.13.1",
     "@grpc/grpc-js": "^1.14.5",
     "@types/dompurify": "^3.0.5",
     "axios": "^1.18.1",
     "dompurify": "^3.4.14",
-    "firebase": "^12.15.0",
+    "firebase": "^10.14.1",
     "framer-motion": "^12.42.2",
     "lucide-react": "^0.575.0",
     "react": "^19.2.7",
