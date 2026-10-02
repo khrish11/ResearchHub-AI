@@ -868,12 +868,13 @@ async def request_logging_middleware(request: Request, call_next):
             not allow_local
             and request.method != "OPTIONS"
             and not request.url.path.startswith(
-            (
-                "/health/",
-                "/docs",
-                "/redoc",
-                "/openapi.json",
-                "/auth/",
+                (
+                    "/health/",
+                    "/docs",
+                    "/redoc",
+                    "/openapi.json",
+                    "/auth/",
+                )
             )
         ):
             app_check_token = (
