@@ -53,3 +53,6 @@ Thumbs.db
 # Secrets
 *service-account*.json
 *credentials*.json
+
+.vercel
+.env*.local
